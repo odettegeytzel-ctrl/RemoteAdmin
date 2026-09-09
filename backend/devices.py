@@ -84,6 +84,47 @@ def update_heartbeat(data: DeviceHeartbeat):
     }
 
 
+def update_system_info(device_id, system_info):
+    connection = get_connection()
+
+    cursor = connection.execute(
+        """
+        UPDATE devices
+        SET
+            hostname = ?,
+            username = ?,
+            operating_system = ?,
+            ip_address = ?,
+            processor = ?,
+            cpu_count = ?
+        WHERE device_id = ?
+        """,
+        (
+            system_info.get("hostname"),
+            system_info.get("username"),
+            system_info.get("operating_system"),
+            system_info.get("ip_address"),
+            system_info.get("processor"),
+            system_info.get("cpu_count"),
+            device_id
+        )
+    )
+
+    connection.commit()
+    connection.close()
+
+    if cursor.rowcount == 0:
+        return {
+            "status": "error",
+            "message": "Device not registered"
+        }
+
+    return {
+        "status": "updated",
+        "device_id": device_id
+    }
+
+
 def get_devices():
     connection = get_connection()
 
@@ -95,6 +136,9 @@ def get_devices():
             hostname,
             operating_system,
             ip_address,
+            username,
+            processor,
+            cpu_count,
             status,
             last_seen,
             created_at

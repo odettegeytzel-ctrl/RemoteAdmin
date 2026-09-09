@@ -1,88 +1,583 @@
+
 <!DOCTYPE html>
 <html lang="es">
 <head>
+
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
     <title>RemoteAdmin</title>
 
-    <link rel="stylesheet" href="/frontend/style.css">
+    <script src="https://cdn.tailwindcss.com"></script>
+
 </head>
 
-<body>
 
-    <header class="header">
-        <div>
-            <h1>RemoteAdmin</h1>
-            <p>Administración remota de dispositivos</p>
-        </div>
-
-        <div id="server-status" class="status">
-            Conectando...
-        </div>
-    </header>
+<body class="bg-slate-100 text-slate-900">
 
 
-    <main class="container">
+    <div class="min-h-screen flex">
 
-        <section class="dashboard">
 
-            <div class="card">
-                <span class="card-title">Dispositivos</span>
-                <strong id="total-devices">0</strong>
+        <aside class="w-64 bg-slate-900 text-white hidden md:flex flex-col">
+
+            <div class="h-20 flex items-center px-6 border-b border-slate-800">
+
+                <div>
+
+                    <h1 class="text-xl font-bold">
+                        RemoteAdmin
+                    </h1>
+
+                    <p class="text-xs text-slate-400 mt-1">
+                        Administración remota
+                    </p>
+
+                </div>
+
             </div>
 
-            <div class="card">
-                <span class="card-title">Online</span>
-                <strong id="online-devices">0</strong>
-            </div>
 
-            <div class="card">
-                <span class="card-title">Offline</span>
-                <strong id="offline-devices">0</strong>
-            </div>
+            <nav class="flex-1 px-4 py-6">
 
-        </section>
+                <p class="text-xs uppercase tracking-wider text-slate-500 px-3 mb-3">
+                    Principal
+                </p>
 
 
-        <section class="devices-section">
+                <button
+                    class="w-full flex items-center gap-3 px-3 py-3 rounded-lg bg-slate-800 text-white text-sm font-medium"
+                >
+                    <span>▦</span>
 
-            <div class="section-header">
-                <h2>Dispositivos</h2>
+                    <span>
+                        Dashboard
+                    </span>
 
-                <button onclick="loadDevices()">
-                    Actualizar
                 </button>
+
+
+                <button
+                    class="w-full flex items-center gap-3 px-3 py-3 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition text-sm mt-1"
+                >
+                    <span>▣</span>
+
+                    <span>
+                        Dispositivos
+                    </span>
+
+                </button>
+
+
+                <button
+                    class="w-full flex items-center gap-3 px-3 py-3 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition text-sm mt-1"
+                >
+                    <span>⚠</span>
+
+                    <span>
+                        Alertas
+                    </span>
+
+                </button>
+
+
+                <p class="text-xs uppercase tracking-wider text-slate-500 px-3 mb-3 mt-8">
+                    Sistema
+                </p>
+
+
+                <button
+                    class="w-full flex items-center gap-3 px-3 py-3 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition text-sm"
+                >
+                    <span>⚙</span>
+
+                    <span>
+                        Configuración
+                    </span>
+
+                </button>
+
+            </nav>
+
+
+            <div class="p-4 border-t border-slate-800">
+
+                <div class="flex items-center gap-3">
+
+                    <div class="w-9 h-9 rounded-full bg-slate-700 flex items-center justify-center">
+
+                        <span class="text-sm">
+                            A
+                        </span>
+
+                    </div>
+
+
+                    <div>
+
+                        <p class="text-sm font-medium">
+                            Administrador
+                        </p>
+
+                        <p class="text-xs text-slate-500">
+                            RemoteAdmin
+                        </p>
+
+                    </div>
+
+                </div>
+
             </div>
 
+        </aside>
 
-            <div class="table-container">
 
-                <table>
 
-                    <thead>
-                        <tr>
-                            <th>Equipo</th>
-                            <th>Sistema</th>
-                            <th>IP</th>
-                            <th>Estado</th>
-                            <th>Último contacto</th>
-                        </tr>
-                    </thead>
+        <div class="flex-1 min-w-0">
 
-                    <tbody id="devices-table">
-                    </tbody>
 
-                </table>
+            <header class="h-20 bg-white border-b border-slate-200 flex items-center justify-between px-6">
 
-            </div>
+                <div>
 
-        </section>
+                    <h2 class="text-xl font-semibold">
+                        Dashboard
+                    </h2>
 
-    </main>
+                    <p class="text-sm text-slate-500">
+                        Resumen de tus dispositivos
+                    </p>
+
+                </div>
+
+
+                <div class="flex items-center gap-3">
+
+                    <div
+                        id="server-status"
+                        class="px-4 py-2 rounded-full bg-slate-100 text-sm text-slate-600"
+                    >
+                        Conectando...
+                    </div>
+
+
+                    <button
+                        onclick="loadDevices()"
+                        class="px-4 py-2 rounded-lg bg-slate-900 text-white text-sm hover:bg-slate-700 transition"
+                    >
+                        Actualizar
+                    </button>
+
+                </div>
+
+            </header>
+
+
+
+            <main class="p-6">
+
+
+                <section class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-5 mb-8">
+
+
+                    <div class="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
+
+                        <div class="flex items-center justify-between">
+
+                            <div>
+
+                                <p class="text-sm text-slate-500">
+                                    Dispositivos
+                                </p>
+
+                                <strong
+                                    id="total-devices"
+                                    class="block text-3xl font-bold mt-2"
+                                >
+                                    0
+                                </strong>
+
+                            </div>
+
+
+                            <div class="w-11 h-11 rounded-lg bg-slate-100 flex items-center justify-center text-xl">
+                                💻
+                            </div>
+
+                        </div>
+
+                    </div>
+
+
+
+                    <div class="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
+
+                        <div class="flex items-center justify-between">
+
+                            <div>
+
+                                <p class="text-sm text-slate-500">
+                                    Online
+                                </p>
+
+                                <strong
+                                    id="online-devices"
+                                    class="block text-3xl font-bold text-emerald-600 mt-2"
+                                >
+                                    0
+                                </strong>
+
+                            </div>
+
+
+                            <div class="w-11 h-11 rounded-lg bg-emerald-50 flex items-center justify-center">
+
+                                <span class="w-3 h-3 rounded-full bg-emerald-500"></span>
+
+                            </div>
+
+                        </div>
+
+                    </div>
+
+
+
+                    <div class="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
+
+                        <div class="flex items-center justify-between">
+
+                            <div>
+
+                                <p class="text-sm text-slate-500">
+                                    Offline
+                                </p>
+
+                                <strong
+                                    id="offline-devices"
+                                    class="block text-3xl font-bold text-red-600 mt-2"
+                                >
+                                    0
+                                </strong>
+
+                            </div>
+
+
+                            <div class="w-11 h-11 rounded-lg bg-red-50 flex items-center justify-center">
+
+                                <span class="w-3 h-3 rounded-full bg-red-500"></span>
+
+                            </div>
+
+                        </div>
+
+                    </div>
+
+
+
+                    <div class="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
+
+                        <div class="flex items-center justify-between">
+
+                            <div>
+
+                                <p class="text-sm text-slate-500">
+                                    Servidor
+                                </p>
+
+                                <strong class="block text-lg font-semibold text-emerald-600 mt-3">
+                                    Operativo
+                                </strong>
+
+                            </div>
+
+
+                            <div class="w-11 h-11 rounded-lg bg-blue-50 flex items-center justify-center text-xl">
+                                ⚡
+                            </div>
+
+                        </div>
+
+                    </div>
+
+                </section>
+
+
+
+                <section class="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+
+
+                    <div class="px-6 py-5 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+
+                        <div>
+
+                            <h3 class="text-lg font-semibold">
+                                Dispositivos
+                            </h3>
+
+                            <p class="text-sm text-slate-500 mt-1">
+                                Equipos registrados en RemoteAdmin
+                            </p>
+
+                        </div>
+
+
+                        <button
+                            onclick="loadDevices()"
+                            class="px-4 py-2 rounded-lg bg-slate-100 text-slate-700 text-sm hover:bg-slate-200 transition"
+                        >
+                            Actualizar lista
+                        </button>
+
+                    </div>
+
+
+
+                    <div class="overflow-x-auto">
+
+                        <table class="w-full text-sm">
+
+
+                            <thead class="bg-slate-50 border-b border-slate-200">
+
+                                <tr>
+
+                                    <th class="text-left px-6 py-4 font-semibold text-slate-600">
+                                        Equipo
+                                    </th>
+
+                                    <th class="text-left px-6 py-4 font-semibold text-slate-600">
+                                        Sistema
+                                    </th>
+
+                                    <th class="text-left px-6 py-4 font-semibold text-slate-600">
+                                        IP
+                                    </th>
+
+                                    <th class="text-left px-6 py-4 font-semibold text-slate-600">
+                                        Estado
+                                    </th>
+
+                                    <th class="text-left px-6 py-4 font-semibold text-slate-600">
+                                        Último contacto
+                                    </th>
+
+                                </tr>
+
+                            </thead>
+
+
+                            <tbody
+                                id="devices-table"
+                                class="divide-y divide-slate-100"
+                            >
+                            </tbody>
+
+
+                        </table>
+
+                    </div>
+
+
+
+                    <section
+                        id="device-details"
+                        class="hidden border-t border-slate-200 p-6"
+                    >
+
+
+                        <div class="flex flex-col gap-5">
+
+
+                            <div class="flex items-center justify-between">
+
+
+                                <div>
+
+                                    <h3 class="text-lg font-semibold">
+                                        Detalles del dispositivo
+                                    </h3>
+
+                                    <p class="text-sm text-slate-500 mt-1">
+                                        Información del equipo seleccionado
+                                    </p>
+
+                                </div>
+
+
+                                <button
+                                    onclick="closeDeviceDetails()"
+                                    class="px-4 py-2 rounded-lg bg-slate-100 text-slate-700 text-sm hover:bg-slate-200 transition"
+                                >
+                                    Cerrar
+                                </button>
+
+
+                            </div>
+
+
+
+                            <div class="flex flex-wrap gap-3">
+
+
+                                <button
+                                    id="ping-device-button"
+                                    class="px-4 py-2 rounded-lg bg-slate-900 text-white text-sm hover:bg-slate-700 transition"
+                                >
+                                    Probar conexión
+                                </button>
+
+
+                                <button
+                                    id="system-info-button"
+                                    class="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm hover:bg-blue-500 transition"
+                                >
+                                    Actualizar información
+                                </button>
+
+
+                            </div>
+
+                            <div
+                                id="action-status"
+                                class="hidden px-4 py-3 rounded-lg text-sm"
+                            ></div>
+
+
+
+                            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+
+
+                                <div class="bg-slate-50 rounded-lg p-4">
+
+                                    <p class="text-xs text-slate-500 mb-1">
+                                        Equipo
+                                    </p>
+
+                                    <strong id="detail-hostname">
+                                        -
+                                    </strong>
+
+                                </div>
+
+
+                                <div class="bg-slate-50 rounded-lg p-4">
+
+                                    <p class="text-xs text-slate-500 mb-1">
+                                        Usuario
+                                    </p>
+
+                                    <strong id="detail-username">
+                                        -
+                                    </strong>
+
+                                </div>
+
+
+                                <div class="bg-slate-50 rounded-lg p-4">
+
+                                    <p class="text-xs text-slate-500 mb-1">
+                                        Sistema operativo
+                                    </p>
+
+                                    <strong id="detail-os">
+                                        -
+                                    </strong>
+
+                                </div>
+
+
+                                <div class="bg-slate-50 rounded-lg p-4">
+
+                                    <p class="text-xs text-slate-500 mb-1">
+                                        Dirección IP
+                                    </p>
+
+                                    <strong id="detail-ip">
+                                        -
+                                    </strong>
+
+                                </div>
+
+
+                                <div class="bg-slate-50 rounded-lg p-4">
+
+                                    <p class="text-xs text-slate-500 mb-1">
+                                        Procesador
+                                    </p>
+
+                                    <strong
+                                        id="detail-processor"
+                                        class="break-words"
+                                    >
+                                        -
+                                    </strong>
+
+                                </div>
+
+
+                                <div class="bg-slate-50 rounded-lg p-4">
+
+                                    <p class="text-xs text-slate-500 mb-1">
+                                        CPU
+                                    </p>
+
+                                    <strong id="detail-cpu">
+                                        -
+                                    </strong>
+
+                                </div>
+
+
+                                <div class="bg-slate-50 rounded-lg p-4">
+
+                                    <p class="text-xs text-slate-500 mb-1">
+                                        Estado
+                                    </p>
+
+                                    <strong id="detail-status">
+                                        -
+                                    </strong>
+
+                                </div>
+
+
+                                <div class="bg-slate-50 rounded-lg p-4">
+
+                                    <p class="text-xs text-slate-500 mb-1">
+                                        Último contacto
+                                    </p>
+
+                                    <strong id="detail-last-seen">
+                                        -
+                                    </strong>
+
+                                </div>
+
+
+                            </div>
+
+
+                        </div>
+
+
+                    </section>
+
+
+                </section>
+
+
+            </main>
+
+
+        </div>
+
+
+    </div>
 
 
     <script src="/frontend/app.js"></script>
 
+
 </body>
 </html>
+

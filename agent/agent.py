@@ -1,12 +1,19 @@
+import asyncio
 import hashlib
 import platform
 import socket
 import time
+import getpass
+import os
+import json
 
 import requests
+import websockets
 
 
 SERVER_URL = "http://127.0.0.1:8000"
+WEBSOCKET_URL = "ws://127.0.0.1:8000/ws/agent"
+
 HEARTBEAT_INTERVAL = 10
 
 
@@ -82,30 +89,109 @@ def send_heartbeat():
     print("Heartbeat sent")
 
 
-def main():
+def get_system_info():
+    return {
+        "hostname": socket.gethostname(),
+        "username": getpass.getuser(),
+        "operating_system": platform.platform(),
+        "ip_address": get_local_ip(),
+        "processor": platform.processor(),
+        "cpu_count": os.cpu_count()
+    }
+
+async def websocket_connection():
+    while True:
+        try:
+            print("Connecting to WebSocket...")
+
+            async with websockets.connect(
+                WEBSOCKET_URL
+            ) as websocket:
+
+                print("WebSocket connected")
+
+                await websocket.send(
+                    f"Agent connected: {get_device_id()}"
+                )
+
+                while True:
+                    message = await websocket.recv()
+
+                    print(
+                        f"Server message: {message}"
+                    )
+
+                    if message == "ping":
+                        await websocket.send("pong")
+
+                    elif message == "get_system_info":
+                        print("Obteniendo información del sistema...")
+
+                        system_info = get_system_info()
+
+                        print("Información obtenida:")
+                        print(system_info)
+
+                        message_to_send = f"system_info:{json.dumps(system_info)}"
+
+                        print("Enviando información al servidor...")
+
+                        await websocket.send(message_to_send)
+
+                        print("Información enviada")
+
+        except Exception as error:
+            print(
+                f"WebSocket error: {error}"
+            )
+
+            print(
+                "Retrying WebSocket connection in 5 seconds..."
+            )
+
+            await asyncio.sleep(5)
+
+
+async def heartbeat_loop():
+    while True:
+        try:
+            send_heartbeat()
+
+        except requests.RequestException as error:
+            print(
+                f"Heartbeat error: {error}"
+            )
+
+        await asyncio.sleep(
+            HEARTBEAT_INTERVAL
+        )
+
+
+async def main():
     print("RemoteAdmin Agent")
     print("------------------")
 
     while True:
         try:
             register_device()
-
             break
 
         except requests.RequestException as error:
-            print(f"Server unavailable: {error}")
-            print("Retrying in 5 seconds...")
-            time.sleep(5)
+            print(
+                f"Server unavailable: {error}"
+            )
 
-    while True:
-        try:
-            send_heartbeat()
+            print(
+                "Retrying in 5 seconds..."
+            )
 
-        except requests.RequestException as error:
-            print(f"Heartbeat error: {error}")
+            await asyncio.sleep(5)
 
-        time.sleep(HEARTBEAT_INTERVAL)
+    await asyncio.gather(
+        heartbeat_loop(),
+        websocket_connection()
+    )
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
