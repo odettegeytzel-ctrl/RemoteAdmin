@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>RemoteAdmin</title>
+
+    <link rel="stylesheet" href="/frontend/style.css">
+</head>
+
+<body>
+
+    <header class="header">
+        <div>
+            <h1>RemoteAdmin</h1>
+            <p>Administración remota de dispositivos</p>
+        </div>
+
+        <div id="server-status" class="status">
+            Conectando...
+        </div>
+    </header>
+
+
+    <main class="container">
+
+        <section class="dashboard">
+
+            <div class="card">
+                <span class="card-title">Dispositivos</span>
+                <strong id="total-devices">0</strong>
+            </div>
+
+            <div class="card">
+                <span class="card-title">Online</span>
+                <strong id="online-devices">0</strong>
+            </div>
+
+            <div class="card">
+                <span class="card-title">Offline</span>
+                <strong id="offline-devices">0</strong>
+            </div>
+
+        </section>
+
+
+        <section class="devices-section">
+
+            <div class="section-header">
+                <h2>Dispositivos</h2>
+
+                <button onclick="loadDevices()">
+                    Actualizar
+                </button>
+            </div>
+
+
+            <div class="table-container">
+
+                <table>
+
+                    <thead>
+                        <tr>
+                            <th>Equipo</th>
+                            <th>Sistema</th>
+                            <th>IP</th>
+                            <th>Estado</th>
+                            <th>Último contacto</th>
+                        </tr>
+                    </thead>
+
+                    <tbody id="devices-table">
+                    </tbody>
+
+                </table>
+
+            </div>
+
+        </section>
+
+    </main>
+
+
+    <script src="/frontend/app.js"></script>
+
+</body>
+</html>
