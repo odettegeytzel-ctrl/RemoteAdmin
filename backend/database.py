@@ -44,7 +44,18 @@ def init_db():
     new_columns = {
         "username": "TEXT",
         "processor": "TEXT",
-        "cpu_count": "INTEGER"
+        "cpu_count": "INTEGER",
+        "ram_total": "INTEGER",
+        "ram_available": "INTEGER",
+        "ram_used": "INTEGER",
+        "ram_percent": "REAL",
+        "storage_total": "INTEGER",
+        "storage_free": "INTEGER",
+        "storage_used": "INTEGER",
+        "windows_version": "TEXT",
+        "architecture": "TEXT",
+        "manufacturer": "TEXT",
+        "model": "TEXT"
     }
 
     for column_name, column_type in new_columns.items():

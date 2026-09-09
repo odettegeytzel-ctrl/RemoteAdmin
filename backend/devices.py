@@ -87,7 +87,27 @@ def update_heartbeat(data: DeviceHeartbeat):
 def update_system_info(device_id, system_info):
     connection = get_connection()
 
-    cursor = connection.execute(
+    disks = system_info.get("disks", [])
+
+    storage_total = None
+    storage_free = None
+    storage_used = None
+
+    if disks:
+        system_disk = next(
+            (
+                disk
+                for disk in disks
+                if disk.get("mountpoint", "").upper() == "C:\\"
+            ),
+            disks[0]
+        )
+
+        storage_total = system_disk.get("total")
+        storage_free = system_disk.get("free")
+        storage_used = system_disk.get("used")
+
+        cursor = connection.execute(
         """
         UPDATE devices
         SET
@@ -96,7 +116,18 @@ def update_system_info(device_id, system_info):
             operating_system = ?,
             ip_address = ?,
             processor = ?,
-            cpu_count = ?
+            cpu_count = ?,
+            ram_total = ?,
+            ram_available = ?,
+            ram_used = ?,
+            ram_percent = ?,
+            storage_total = ?,
+            storage_free = ?,
+            storage_used = ?,
+            windows_version = ?,
+            architecture = ?,
+            manufacturer = ?,
+            model = ?
         WHERE device_id = ?
         """,
         (
@@ -106,9 +137,21 @@ def update_system_info(device_id, system_info):
             system_info.get("ip_address"),
             system_info.get("processor"),
             system_info.get("cpu_count"),
+            system_info.get("ram_total"),
+            system_info.get("ram_available"),
+            system_info.get("ram_used"),
+            system_info.get("ram_percent"),
+            storage_total,
+            storage_free,
+            storage_used,
+            system_info.get("windows_version"),
+            system_info.get("architecture"),
+            system_info.get("manufacturer"),
+            system_info.get("model"),
             device_id
         )
     )
+    
 
     connection.commit()
     connection.close()
@@ -131,17 +174,28 @@ def get_devices():
     devices = connection.execute(
         """
         SELECT
-            id,
-            device_id,
-            hostname,
-            operating_system,
-            ip_address,
-            username,
-            processor,
-            cpu_count,
-            status,
-            last_seen,
-            created_at
+             id,
+             device_id,
+             hostname,
+             operating_system,
+             ip_address,
+             username,
+             processor,
+             cpu_count,
+             ram_total,
+             ram_available,
+             ram_used,
+             ram_percent,
+             storage_total,
+             storage_free,
+             storage_used,
+             windows_version,
+             architecture,
+             manufacturer,
+             model,
+             status,
+             last_seen,
+             created_at
         FROM devices
         ORDER BY hostname
         """
