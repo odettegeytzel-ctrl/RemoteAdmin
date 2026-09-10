@@ -2,14 +2,15 @@ import asyncio
 import hashlib
 import platform
 import socket
-import time
 import getpass
 import os
 import json
+import subprocess
 
+import psutil
 import requests
 import websockets
-
+import wmi
 
 SERVER_URL = "http://127.0.0.1:8000"
 WEBSOCKET_URL = "ws://127.0.0.1:8000/ws/agent"
@@ -89,14 +90,99 @@ def send_heartbeat():
     print("Heartbeat sent")
 
 
+def get_computer_info():
+    command = [
+        "powershell",
+        "-NoProfile",
+        "-Command",
+        "Get-CimInstance Win32_ComputerSystem | Select-Object Manufacturer, Model | ConvertTo-Json"
+    ]
+
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        timeout=10
+    )
+
+    computer_info = json.loads(result.stdout)
+
+    return {
+        "manufacturer": computer_info.get("Manufacturer"),
+        "model": computer_info.get("Model")
+    }
+
+
 def get_system_info():
+    memory = psutil.virtual_memory()
+
+    computer_info = get_computer_info()
+
+    disks = []
+
+    for partition in psutil.disk_partitions():
+        try:
+            usage = psutil.disk_usage(partition.mountpoint)
+
+            disks.append({
+                "device": partition.device,
+                "mountpoint": partition.mountpoint,
+                "filesystem": partition.fstype,
+                "total": usage.total,
+                "free": usage.free,
+                "used": usage.used
+            })
+
+        except PermissionError:
+            continue
+
     return {
         "hostname": socket.gethostname(),
         "username": getpass.getuser(),
         "operating_system": platform.platform(),
         "ip_address": get_local_ip(),
         "processor": platform.processor(),
-        "cpu_count": os.cpu_count()
+        "cpu_count": os.cpu_count(),
+        "ram_total": memory.total,
+        "ram_available": memory.available,
+        "ram_used": memory.used,
+        "ram_percent": memory.percent,
+        "disks": disks,
+        "windows_version": platform.version(),
+        "architecture": platform.machine(),
+        "manufacturer": computer_info["manufacturer"],
+        "model": computer_info["model"],
+    }
+
+
+
+def get_hardware_info():
+    memory = psutil.virtual_memory()
+
+    disks = []
+
+    for partition in psutil.disk_partitions():
+        try:
+            usage = psutil.disk_usage(partition.mountpoint)
+
+            disks.append({
+                "device": partition.device,
+                "mountpoint": partition.mountpoint,
+                "filesystem": partition.fstype,
+                "total": usage.total,
+                "free": usage.free,
+                "used": usage.used
+            })
+
+        except PermissionError:
+            continue
+
+    return {
+        "ram_total": memory.total,
+        "ram_available": memory.available,
+        "ram_used": memory.used,
+        "ram_percent": memory.percent,
+        "disks": disks
     }
 
 async def websocket_connection():

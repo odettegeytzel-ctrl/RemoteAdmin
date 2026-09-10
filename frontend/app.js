@@ -220,6 +220,17 @@ function formatDate(dateString) {
     );
 }
 
+function formatBytes(bytes) {
+
+    if (!bytes) {
+        return "Sin información";
+    }
+
+    const gigabytes =
+        bytes / (1024 ** 3);
+
+    return `${gigabytes.toFixed(1)} GB`;
+}
 
 function showDeviceDetails(device) {
     selectedDevice = device;
@@ -242,6 +253,34 @@ function showDeviceDetails(device) {
     document.getElementById("detail-cpu").textContent =
         device.cpu_count !== null && device.cpu_count !== undefined
             ? `${device.cpu_count} núcleos`
+            : "Sin información";
+
+    document.getElementById("detail-windows-version").textContent =
+        device.windows_version || "Sin información";
+
+    document.getElementById("detail-architecture").textContent =
+        device.architecture || "Sin información";
+
+    document.getElementById("detail-manufacturer").textContent =
+        device.manufacturer || "Sin información";
+
+    document.getElementById("detail-model").textContent =
+        device.model || "Sin información";
+
+    document.getElementById("detail-ram").textContent =
+        formatBytes(device.ram_total);
+
+    document.getElementById("detail-ram-usage").textContent =
+        device.ram_percent !== null && device.ram_percent !== undefined
+            ? `${device.ram_percent}% utilizada`
+            : "Sin información";
+
+    document.getElementById("detail-storage").textContent =
+        formatBytes(device.storage_total);
+
+    document.getElementById("detail-storage-free").textContent =
+        device.storage_free !== null && device.storage_free !== undefined
+            ? `${formatBytes(device.storage_free)} libres`
             : "Sin información";
 
     document.getElementById("detail-status").textContent =
