@@ -5,8 +5,23 @@ AUTENTICACION
 ============================== */
 
 const AUTH_TOKEN_KEY = "remoteadmin_token";
+const AUTH_COOKIE_NAME = "remoteadmin_token";
 
 let appStarted = false;
+
+// La cookie acompaña automáticamente a fetch, XHR e <img src> del mismo origen,
+// así los endpoints protegidos reciben el token sin tocar cada llamada.
+function setAuthCookie(token) {
+
+if (token) {
+    document.cookie =
+        `${AUTH_COOKIE_NAME}=${token}; path=/; max-age=${12 * 3600}; SameSite=Strict`;
+} else {
+    document.cookie =
+        `${AUTH_COOKIE_NAME}=; path=/; max-age=0; SameSite=Strict`;
+}
+
+}
 
 function getAuthToken() {
 
@@ -19,6 +34,9 @@ try {
 }
 
 function setAuthToken(token) {
+
+// La cookie y el localStorage se mantienen sincronizados
+setAuthCookie(token);
 
 try {
     if (token) {
@@ -173,6 +191,9 @@ try {
 
     const data =
         await response.json();
+
+    // Reafirma la cookie por si expiró aunque el token siga guardado
+    setAuthCookie(token);
 
     showAppShell(data.username);
 

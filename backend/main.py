@@ -37,6 +37,57 @@ from backend.auth import (
 app = FastAPI(title="RemoteAdmin")
 
 
+# Nombre de la cookie donde el navegador guarda el token de sesion
+AUTH_COOKIE_NAME = "remoteadmin_token"
+
+# Rutas /api/* accesibles sin autenticacion:
+# - login/logout/me: flujo de sesion
+# - health: comprobacion del servidor
+# - register/heartbeat: las usa el Agent, que todavia no se autentica
+OPEN_API_PATHS = {
+    "/api/health",
+    "/api/auth/login",
+    "/api/auth/logout",
+    "/api/auth/me",
+    "/api/devices/register",
+    "/api/devices/heartbeat"
+}
+
+
+@app.middleware("http")
+async def require_authentication(request: Request, call_next):
+
+    path = request.url.path
+
+    # Solo se protege /api/*. El WebSocket /ws/agent usa otro scope y no pasa por aqui.
+    needs_auth = (
+        path.startswith("/api/")
+        and path not in OPEN_API_PATHS
+        and request.method != "OPTIONS"
+    )
+
+    if needs_auth:
+
+        # El token puede venir en el header (frontend) o en la cookie
+        # (peticiones del navegador como <img>, XHR y fetch).
+        token = (
+            token_from_header(request.headers.get("Authorization"))
+            or request.cookies.get(AUTH_COOKIE_NAME)
+        )
+
+        if not verify_token(token):
+
+            return JSONResponse(
+                status_code=401,
+                content={
+                    "status": "error",
+                    "message": "No autenticado"
+                }
+            )
+
+    return await call_next(request)
+
+
 connected_agents = {}
 latest_screens = {}
 latest_cursors = {}
