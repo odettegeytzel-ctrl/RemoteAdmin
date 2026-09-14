@@ -63,11 +63,49 @@ if not AGENT_TOKEN:
         "El servidor rechazará este Agent."
     )
 
-# Grabación de pantalla (Fase 1: solo local). El grabador queda inactivo
-# hasta que se llame a start_screen_recording(); no interfiere con nada.
+# Grabación de pantalla. El grabador queda inactivo hasta que se llame a
+# start_screen_recording(); no interfiere con nada. Al cerrar cada segmento
+# se sube al backend (autenticado con AGENT_TOKEN) y queda registrado en SQLite.
 from recorder import ScreenRecorder
 
-screen_recorder = ScreenRecorder()
+
+def upload_recording_segment(segment):
+
+    path = segment.get("path")
+
+    if not path or not os.path.exists(path):
+        return
+
+    params = {
+        "filename": os.path.basename(path),
+        "started_at": segment.get("started_at", ""),
+        "ended_at": segment.get("ended_at", ""),
+        "duration_sec": segment.get("duration_sec", 0)
+    }
+
+    try:
+        with open(path, "rb") as handle:
+            response = requests.post(
+                f"{SERVER_URL}/api/devices/{get_device_id()}/recordings/upload",
+                params=params,
+                data=handle,
+                headers={
+                    "X-Agent-Token": AGENT_TOKEN,
+                    "Content-Type": "application/octet-stream"
+                },
+                timeout=120
+            )
+        response.raise_for_status()
+        print(f"[agent] Grabación subida: {os.path.basename(path)}")
+
+    except requests.RequestException as error:
+        # Local-first: el MP4 ya está en disco; se puede reintentar luego
+        print(f"[agent] No se pudo subir la grabación ({error})")
+
+
+screen_recorder = ScreenRecorder(
+    on_segment_complete=upload_recording_segment
+)
 
 
 def start_screen_recording():

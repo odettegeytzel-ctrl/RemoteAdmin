@@ -16,7 +16,7 @@ import os
 import threading
 import time
 import subprocess
-from datetime import datetime
+from datetime import datetime, timezone
 
 import mss
 import imageio_ffmpeg
@@ -31,10 +31,14 @@ DEFAULT_SEGMENT_SECONDS = 15 * 60  # 15 minutos
 
 class ScreenRecorder:
 
-    def __init__(self, fps=DEFAULT_FPS, segment_seconds=DEFAULT_SEGMENT_SECONDS):
+    def __init__(self, fps=DEFAULT_FPS, segment_seconds=DEFAULT_SEGMENT_SECONDS,
+                 on_segment_complete=None):
 
         self.fps = max(1, int(fps))
         self.segment_seconds = max(5, int(segment_seconds))
+
+        # Callback opcional que recibe el dict del segmento al cerrarse
+        self.on_segment_complete = on_segment_complete
 
         self._thread = None
         self._stop_event = threading.Event()
@@ -42,6 +46,7 @@ class ScreenRecorder:
 
         self._running = False
         self._current_path = None
+        self._segment_started = None
         self._segments = []
 
     # ---------- Control ----------
@@ -160,6 +165,7 @@ class ScreenRecorder:
 
                     # Abre un segmento nuevo
                     self._current_path = self._segment_path()
+                    self._segment_started = datetime.now(timezone.utc)
                     process = self._open_ffmpeg(width, height)
 
                     segment_start = time.time()
@@ -231,15 +237,34 @@ class ScreenRecorder:
         # Registra el segmento si quedó un archivo válido
         if path and os.path.exists(path) and os.path.getsize(path) > 0:
 
+            started = self._segment_started
+            ended = datetime.now(timezone.utc)
+
+            duration = 0
+            if started is not None:
+                duration = int((ended - started).total_seconds())
+
+            segment = {
+                "path": path,
+                "size_bytes": os.path.getsize(path),
+                "width": width,
+                "height": height,
+                "started_at": started.isoformat() if started else "",
+                "ended_at": ended.isoformat(),
+                "duration_sec": duration
+            }
+
             with self._lock:
-                self._segments.append({
-                    "path": path,
-                    "size_bytes": os.path.getsize(path),
-                    "width": width,
-                    "height": height
-                })
+                self._segments.append(segment)
 
             print(f"[recorder] Segmento guardado: {path}")
+
+            # Notifica (p. ej. para subir el segmento al backend)
+            if self.on_segment_complete is not None:
+                try:
+                    self.on_segment_complete(segment)
+                except Exception as error:
+                    print(f"[recorder] Error en on_segment_complete: {error}")
 
         else:
 

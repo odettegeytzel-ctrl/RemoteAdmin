@@ -63,6 +63,22 @@ def init_db():
         )
     """)
 
+    # Tabla de grabaciones: una fila por segmento MP4
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS recordings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id TEXT NOT NULL,
+            started_at TEXT,
+            ended_at TEXT,
+            duration_sec INTEGER,
+            size_bytes INTEGER,
+            path TEXT NOT NULL,
+            status TEXT DEFAULT 'stored',
+            keep INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     existing_columns = connection.execute(
         "PRAGMA table_info(devices)"
     ).fetchall()

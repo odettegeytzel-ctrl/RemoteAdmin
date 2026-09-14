@@ -33,6 +33,11 @@ from backend.auth import (
     token_from_header,
     verify_agent_token
 )
+from backend.recordings import (
+    add_recording,
+    list_recordings,
+    get_recordings_dir
+)
 
 
 app = FastAPI(title="RemoteAdmin")
@@ -64,6 +69,9 @@ async def require_authentication(request: Request, call_next):
     needs_auth = (
         path.startswith("/api/")
         and path not in OPEN_API_PATHS
+        # La subida de grabaciones la hace el Agent con su AGENT_TOKEN,
+        # no con sesión de panel; se valida dentro del endpoint.
+        and not path.endswith("/recordings/upload")
         and request.method != "OPTIONS"
     )
 
@@ -1239,6 +1247,79 @@ async def recording_stop(device_id: str):
 
     return {
         "status": "sent"
+    }
+
+
+@app.post("/api/devices/{device_id}/recordings/upload")
+async def upload_recording(
+    device_id: str,
+    request: Request,
+    filename: str = "",
+    started_at: str = "",
+    ended_at: str = "",
+    duration_sec: int = 0,
+    x_agent_token: str = Header(default=None)
+):
+
+    # Autenticado con el AGENT_TOKEN (lo sube el Agent, no una sesión de panel)
+    if not verify_agent_token(x_agent_token):
+        return _agent_unauthorized()
+
+    # Nombre seguro (solo el nombre de archivo, sin rutas)
+    safe_name = _os.path.basename(filename or "").strip()
+
+    if not safe_name.lower().endswith(".mp4"):
+        return file_transfer_error(400, "Nombre de archivo inválido")
+
+    # Carpeta destino: server_recordings/{device_id}/AAAA/MM/DD/
+    from datetime import datetime, timezone
+
+    try:
+        when = datetime.fromisoformat(started_at) if started_at else datetime.now(timezone.utc)
+    except ValueError:
+        when = datetime.now(timezone.utc)
+
+    rel_dir = _os.path.join(
+        device_id,
+        when.strftime("%Y"),
+        when.strftime("%m"),
+        when.strftime("%d")
+    )
+
+    dest_dir = _os.path.join(str(get_recordings_dir()), rel_dir)
+    _os.makedirs(dest_dir, exist_ok=True)
+
+    dest_path = _os.path.join(dest_dir, safe_name)
+    rel_path = _os.path.join(rel_dir, safe_name).replace("\\", "/")
+
+    received = 0
+
+    try:
+        with open(dest_path, "wb") as handle:
+            async for chunk in request.stream():
+                received += len(chunk)
+                if received > MAX_FILE_SIZE:
+                    handle.close()
+                    _os.remove(dest_path)
+                    return file_transfer_error(413, "La grabación supera el límite de tamaño")
+                handle.write(chunk)
+    except Exception as error:
+        return file_transfer_error(500, f"Error guardando la grabación: {error}")
+
+    recording_id = add_recording(
+        device_id=device_id,
+        path=rel_path,
+        started_at=started_at or when.isoformat(),
+        ended_at=ended_at,
+        duration_sec=duration_sec,
+        size_bytes=received
+    )
+
+    return {
+        "status": "stored",
+        "id": recording_id,
+        "size_bytes": received,
+        "path": rel_path
     }
 
 
