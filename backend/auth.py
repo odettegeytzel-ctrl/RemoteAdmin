@@ -19,6 +19,9 @@ load_dotenv()
 AUTH_USERNAME = os.getenv("AUTH_USERNAME", "admin")
 AUTH_PASSWORD_HASH = os.getenv("AUTH_PASSWORD_HASH", "")
 
+# Token compartido que autentica a los Agents (register, heartbeat y WebSocket)
+AGENT_TOKEN = os.getenv("AGENT_TOKEN", "")
+
 # Si no hay clave en .env se genera una temporal (las sesiones no sobreviven al reinicio)
 SECRET_KEY = os.getenv("AUTH_SECRET_KEY") or secrets.token_hex(32)
 
@@ -155,6 +158,18 @@ def authenticate(username, password):
         return create_token(username)
 
     return None
+
+
+def verify_agent_token(token):
+
+    # Sin AGENT_TOKEN configurado en .env no se autoriza ningun Agent
+    if not AGENT_TOKEN:
+        return False
+
+    return hmac.compare_digest(
+        (token or "").encode("utf-8"),
+        AGENT_TOKEN.encode("utf-8")
+    )
 
 
 def token_from_header(authorization):

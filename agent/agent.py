@@ -9,6 +9,7 @@ import subprocess
 import base64
 import io
 import re
+import urllib.parse
 
 import psutil
 import requests
@@ -33,6 +34,24 @@ SERVER_URL = "http://127.0.0.1:8000"
 WEBSOCKET_URL = "ws://127.0.0.1:8000/ws/agent"
 
 HEARTBEAT_INTERVAL = 10
+
+# Token de este Agent: se configura en el .env, nunca en el código.
+from dotenv import load_dotenv
+
+load_dotenv()
+
+AGENT_TOKEN = os.getenv("AGENT_TOKEN", "")
+
+if not AGENT_TOKEN:
+    print(
+        "ADVERTENCIA: falta AGENT_TOKEN en el .env. "
+        "El servidor rechazará este Agent."
+    )
+
+# Cabecera que autentica register y heartbeat
+AGENT_HEADERS = {
+    "X-Agent-Token": AGENT_TOKEN
+}
 
 screen_stream_task = None
 
@@ -82,6 +101,7 @@ def register_device():
     response = requests.post(
         f"{SERVER_URL}/api/devices/register",
         json=data,
+        headers=AGENT_HEADERS,
         timeout=10
     )
 
@@ -103,6 +123,7 @@ def send_heartbeat():
     response = requests.post(
         f"{SERVER_URL}/api/devices/heartbeat",
         json=data,
+        headers=AGENT_HEADERS,
         timeout=10
     )
 
@@ -967,8 +988,13 @@ async def websocket_connection():
                 "Connecting to WebSocket..."
             )
 
+            # El token viaja como query param y se valida antes del handshake
+            websocket_url = (
+                f"{WEBSOCKET_URL}?token={urllib.parse.quote(AGENT_TOKEN)}"
+            )
+
             async with websockets.connect(
-                WEBSOCKET_URL
+                websocket_url
             ) as websocket:
 
                 print(

@@ -30,7 +30,8 @@ from backend.settings import (
 from backend.auth import (
     authenticate,
     verify_token,
-    token_from_header
+    token_from_header,
+    verify_agent_token
 )
 
 
@@ -106,13 +107,35 @@ def health():
     return {"status": "ok", "auth": "required"}
 
 
+def _agent_unauthorized():
+    return JSONResponse(
+        status_code=401,
+        content={
+            "status": "error",
+            "message": "Agent no autorizado"
+        }
+    )
+
+
 @app.post("/api/devices/register")
-def register(data: DeviceRegister):
+def register(
+    data: DeviceRegister,
+    x_agent_token: str = Header(default=None)
+):
+    if not verify_agent_token(x_agent_token):
+        return _agent_unauthorized()
+
     return register_device(data)
 
 
 @app.post("/api/devices/heartbeat")
-def heartbeat(data: DeviceHeartbeat):
+def heartbeat(
+    data: DeviceHeartbeat,
+    x_agent_token: str = Header(default=None)
+):
+    if not verify_agent_token(x_agent_token):
+        return _agent_unauthorized()
+
     return update_heartbeat(data)
 
 
@@ -212,6 +235,11 @@ def auth_logout():
 
 @app.websocket("/ws/agent")
 async def agent_websocket(websocket: WebSocket):
+
+    # Se valida el token ANTES de aceptar el handshake (rechazo = 403)
+    if not verify_agent_token(websocket.query_params.get("token")):
+        await websocket.close(code=1008)
+        return
 
     await websocket.accept()
 
