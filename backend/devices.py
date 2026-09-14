@@ -167,6 +167,66 @@ def update_system_info(device_id, system_info):
         "device_id": device_id
     }
 
+def update_installed_software(device_id, software):
+    connection = get_connection()
+
+    connection.execute(
+        "DELETE FROM installed_software WHERE device_id = ?",
+        (device_id,)
+    )
+
+    for item in software:
+        connection.execute(
+            """
+            INSERT INTO installed_software (
+                device_id,
+                name,
+                version,
+                publisher,
+                install_date
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                device_id,
+                item.get("name"),
+                item.get("version"),
+                item.get("publisher"),
+                item.get("install_date")
+            )
+        )
+
+    connection.commit()
+    connection.close()
+
+    return {
+        "status": "updated",
+        "device_id": device_id,
+        "software_count": len(software)
+    }
+
+
+def get_installed_software(device_id):
+    connection = get_connection()
+
+    software = connection.execute(
+        """
+        SELECT
+            name,
+            version,
+            publisher,
+            install_date
+        FROM installed_software
+        WHERE device_id = ?
+        ORDER BY name
+        """,
+        (device_id,)
+    ).fetchall()
+
+    connection.close()
+
+    return [dict(item) for item in software]
+
 
 def get_devices():
     connection = get_connection()

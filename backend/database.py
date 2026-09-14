@@ -31,6 +31,37 @@ def init_db():
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS installed_software (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            version TEXT,
+            publisher TEXT,
+            install_date TEXT
+        )
+    """)
+
+    # Tabla de alertas: una fila por cambio de estado de un dispositivo
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS alerts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id TEXT NOT NULL,
+            hostname TEXT,
+            type TEXT NOT NULL,
+            message TEXT NOT NULL,
+            is_read INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # Tabla de configuracion: pares clave/valor
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    """)
 
     existing_columns = connection.execute(
         "PRAGMA table_info(devices)"
@@ -55,7 +86,8 @@ def init_db():
         "windows_version": "TEXT",
         "architecture": "TEXT",
         "manufacturer": "TEXT",
-        "model": "TEXT"
+        "model": "TEXT",
+        "last_alert_status": "TEXT"
     }
 
     for column_name, column_type in new_columns.items():
