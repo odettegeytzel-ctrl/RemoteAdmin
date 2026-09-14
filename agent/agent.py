@@ -30,16 +30,31 @@ pyautogui.FAILSAFE = False
 MOUSEEVENTF_MOVE = 0x0001
 
 
-SERVER_URL = "http://127.0.0.1:8000"
-WEBSOCKET_URL = "ws://127.0.0.1:8000/ws/agent"
+# El .env vive en la raíz del proyecto. Se carga por ruta absoluta para que
+# funcione aunque el servicio arranque con otro directorio de trabajo.
+from dotenv import load_dotenv
+
+ENV_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    ".env"
+)
+
+load_dotenv(ENV_PATH)
+
+# Dirección del servidor RemoteAdmin (configurable para PCs remotas)
+SERVER_URL = os.getenv(
+    "REMOTEADMIN_SERVER",
+    "http://127.0.0.1:8000"
+).rstrip("/")
+
+if SERVER_URL.startswith("https://"):
+    WEBSOCKET_URL = "wss://" + SERVER_URL[len("https://"):] + "/ws/agent"
+else:
+    WEBSOCKET_URL = "ws://" + SERVER_URL[len("http://"):] + "/ws/agent"
 
 HEARTBEAT_INTERVAL = 10
 
 # Token de este Agent: se configura en el .env, nunca en el código.
-from dotenv import load_dotenv
-
-load_dotenv()
-
 AGENT_TOKEN = os.getenv("AGENT_TOKEN", "")
 
 if not AGENT_TOKEN:
