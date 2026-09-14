@@ -92,6 +92,7 @@ async def require_authentication(request: Request, call_next):
 connected_agents = {}
 latest_screens = {}
 latest_cursors = {}
+latest_recording_status = {}
 
 
 @app.on_event("startup")
@@ -387,6 +388,16 @@ async def agent_websocket(websocket: WebSocket):
                 )
 
 
+            elif message.startswith("recording_status:"):
+
+                try:
+                    latest_recording_status[device_id] = json.loads(
+                        message.split(":", 1)[1]
+                    )
+                except json.JSONDecodeError:
+                    pass
+
+
             elif message == "pong":
 
                 print(
@@ -418,6 +429,11 @@ async def agent_websocket(websocket: WebSocket):
 
             fail_device_file_downloads(
                 device_id
+            )
+
+            latest_recording_status.pop(
+                device_id,
+                None
             )
 
             print(
@@ -1175,6 +1191,73 @@ async def keyboard_input(device_id: str, data: dict):
 
     return {
         "status": "sent"
+    }
+
+
+# ==============================
+# GRABACION DE PANTALLA (start/stop remoto; los MP4 quedan en el Agent)
+# ==============================
+
+@app.post("/api/devices/{device_id}/recording/start")
+async def recording_start(device_id: str):
+
+    websocket = connected_agents.get(
+        device_id
+    )
+
+    if not websocket:
+        return {
+            "status": "error",
+            "message": "Agent is not connected"
+        }
+
+    await websocket.send_text(
+        "start_recording"
+    )
+
+    return {
+        "status": "sent"
+    }
+
+
+@app.post("/api/devices/{device_id}/recording/stop")
+async def recording_stop(device_id: str):
+
+    websocket = connected_agents.get(
+        device_id
+    )
+
+    if not websocket:
+        return {
+            "status": "error",
+            "message": "Agent is not connected"
+        }
+
+    await websocket.send_text(
+        "stop_recording"
+    )
+
+    return {
+        "status": "sent"
+    }
+
+
+@app.get("/api/devices/{device_id}/recording/status")
+def recording_status(device_id: str):
+
+    status = latest_recording_status.get(
+        device_id
+    )
+
+    if status is None:
+        return {
+            "status": "unknown",
+            "recording": False
+        }
+
+    return {
+        "status": "ok",
+        **status
     }
 
 

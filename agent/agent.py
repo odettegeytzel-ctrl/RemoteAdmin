@@ -1064,6 +1064,29 @@ async def websocket_connection():
                             "pong"
                         )
 
+                    elif message == "start_recording":
+
+                        result = start_screen_recording()
+
+                        await websocket.send(
+                            "recording_status:" + json.dumps({
+                                "recording": screen_recorder.is_recording(),
+                                **result
+                            })
+                        )
+
+                    elif message == "stop_recording":
+
+                        result = stop_screen_recording()
+
+                        await websocket.send(
+                            "recording_status:" + json.dumps({
+                                "recording": screen_recorder.is_recording(),
+                                "status": result.get("status"),
+                                "segments": len(result.get("segments", []))
+                            })
+                        )
+
                     elif message == "get_system_info":
 
                         print(
