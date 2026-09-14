@@ -96,11 +96,14 @@ latest_cursors = {}
 @app.on_event("startup")
 def startup():
     init_db()
+    # Marca visible en la consola para confirmar que ESTE código está corriendo
+    print("[AUTH] Middleware de autenticación ACTIVO (protege /api/*)")
 
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok"}
+    # El campo "auth" permite comprobar en vivo si el servidor tiene esta versión
+    return {"status": "ok", "auth": "required"}
 
 
 @app.post("/api/devices/register")
