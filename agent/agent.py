@@ -63,6 +63,20 @@ if not AGENT_TOKEN:
         "El servidor rechazará este Agent."
     )
 
+# Grabación de pantalla (Fase 1: solo local). El grabador queda inactivo
+# hasta que se llame a start_screen_recording(); no interfiere con nada.
+from recorder import ScreenRecorder
+
+screen_recorder = ScreenRecorder()
+
+
+def start_screen_recording():
+    return screen_recorder.start()
+
+
+def stop_screen_recording():
+    return screen_recorder.stop()
+
 # Cabecera que autentica register y heartbeat
 AGENT_HEADERS = {
     "X-Agent-Token": AGENT_TOKEN
@@ -1317,10 +1331,18 @@ async def main():
                 5
             )
 
-    await asyncio.gather(
-        heartbeat_loop(),
-        websocket_connection()
-    )
+    try:
+
+        await asyncio.gather(
+            heartbeat_loop(),
+            websocket_connection()
+        )
+
+    finally:
+
+        # Cierra cualquier grabación en curso antes de salir
+        if screen_recorder.is_recording():
+            stop_screen_recording()
 
 
 if __name__ == "__main__":
