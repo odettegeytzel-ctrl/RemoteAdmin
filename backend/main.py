@@ -37,7 +37,10 @@ from backend.recordings import (
     add_recording,
     list_recordings,
     get_recording,
-    get_recordings_dir
+    get_recordings_dir,
+    set_keep,
+    apply_retention,
+    RETENTION_DAYS
 )
 
 
@@ -109,6 +112,44 @@ def startup():
     init_db()
     # Marca visible en la consola para confirmar que ESTE código está corriendo
     print("[AUTH] Middleware de autenticación ACTIVO (protege /api/*)")
+
+
+# Retención automática: limpia grabaciones de más de RETENTION_DAYS días una vez
+# al día. Corre en el event loop del proceso; con --reload se recrea en cada
+# recarga sin dejar hilos colgados.
+_retention_task = None
+
+
+async def _retention_loop():
+
+    while True:
+
+        try:
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(None, apply_retention, RETENTION_DAYS)
+
+            if result["deleted"] or result["skipped_traversal"]:
+                print(f"[RETENCIÓN] {result}")
+
+        except Exception as error:
+            print(f"[RETENCIÓN] error: {error}")
+
+        # Una vez al día
+        await asyncio.sleep(24 * 3600)
+
+
+@app.on_event("startup")
+async def start_retention():
+    global _retention_task
+    _retention_task = asyncio.create_task(_retention_loop())
+
+
+@app.on_event("shutdown")
+async def stop_retention():
+    global _retention_task
+    if _retention_task is not None:
+        _retention_task.cancel()
+        _retention_task = None
 
 
 @app.get("/api/health")
@@ -1335,6 +1376,22 @@ def recordings_list(device_id: str = None):
     return {
         "status": "ok",
         "recordings": list_recordings(device_id)
+    }
+
+
+@app.post("/api/recordings/{recording_id}/keep")
+def recording_keep(recording_id: int, data: dict):
+
+    # Protegido por sesión. Marca/desmarca "Conservar".
+    keep = 1 if data.get("keep") else 0
+
+    if not set_keep(recording_id, keep):
+        return file_transfer_error(404, "Grabación no encontrada")
+
+    return {
+        "status": "ok",
+        "id": recording_id,
+        "keep": keep
     }
 
 

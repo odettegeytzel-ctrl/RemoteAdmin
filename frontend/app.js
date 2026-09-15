@@ -2968,6 +2968,33 @@ function recordingsMessageRow(text) {
     `;
 }
 
+async function toggleKeep(id, currentKeep) {
+
+const nextKeep = currentKeep ? 0 : 1;
+
+try {
+
+    const response =
+        await fetch(`/api/recordings/${id}/keep`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ keep: nextKeep })
+        });
+
+    if (!response.ok) {
+        return;
+    }
+
+    // Refresca el listado para reflejar el nuevo estado
+    loadRecordings();
+
+} catch (error) {
+
+    // Si falla, se deja el estado actual
+}
+
+}
+
 function playRecording(id) {
 
 const player =
@@ -3097,8 +3124,22 @@ try {
         const end = formatRecordingDate(rec.ended_at);
         const pc = rec.hostname || rec.device_id || "-";
 
+        const kept = Boolean(rec.keep);
+
+        const keepCell = kept
+            ? `<span class="inline-flex items-center gap-1 text-amber-600 font-medium">⭐ Conservada</span>
+               <button onclick="toggleKeep(${rec.id}, 1)"
+                   class="ml-2 px-2 py-1 rounded-lg bg-slate-100 text-slate-600 text-xs hover:bg-slate-200 transition">
+                   Dejar de conservar
+               </button>`
+            : `<span class="text-slate-500">No</span>
+               <button onclick="toggleKeep(${rec.id}, 0)"
+                   class="ml-2 px-2 py-1 rounded-lg bg-amber-100 text-amber-700 text-xs hover:bg-amber-200 transition">
+                   Conservar
+               </button>`;
+
         return `
-            <tr class="hover:bg-slate-50 transition">
+            <tr class="hover:bg-slate-50 transition ${kept ? "bg-amber-50/40" : ""}">
                 <td class="px-6 py-4 font-medium text-slate-900">${pc}</td>
                 <td class="px-6 py-4 text-slate-600">${start.date}</td>
                 <td class="px-6 py-4 text-slate-600">${start.time}</td>
@@ -3110,7 +3151,7 @@ try {
                         ${rec.status || "-"}
                     </span>
                 </td>
-                <td class="px-6 py-4 text-slate-600">${rec.keep ? "Sí" : "No"}</td>
+                <td class="px-6 py-4 whitespace-nowrap">${keepCell}</td>
                 <td class="px-6 py-4">
                     <button
                         onclick="playRecording(${rec.id})"
