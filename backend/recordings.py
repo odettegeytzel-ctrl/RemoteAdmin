@@ -54,25 +54,23 @@ def list_recordings(device_id=None):
 
     connection = get_connection()
 
+    # LEFT JOIN a devices para incluir el hostname (sin alterar recordings)
+    base_query = """
+        SELECT r.id, r.device_id, r.started_at, r.ended_at,
+               r.duration_sec, r.size_bytes, r.path, r.status, r.keep,
+               r.created_at, d.hostname
+        FROM recordings r
+        LEFT JOIN devices d ON d.device_id = r.device_id
+    """
+
     if device_id:
         rows = connection.execute(
-            """
-            SELECT id, device_id, started_at, ended_at,
-                   duration_sec, size_bytes, path, status, keep, created_at
-            FROM recordings
-            WHERE device_id = ?
-            ORDER BY started_at DESC
-            """,
+            base_query + " WHERE r.device_id = ? ORDER BY r.started_at DESC",
             (device_id,)
         ).fetchall()
     else:
         rows = connection.execute(
-            """
-            SELECT id, device_id, started_at, ended_at,
-                   duration_sec, size_bytes, path, status, keep, created_at
-            FROM recordings
-            ORDER BY started_at DESC
-            """
+            base_query + " ORDER BY r.started_at DESC"
         ).fetchall()
 
     connection.close()

@@ -1323,6 +1323,20 @@ async def upload_recording(
     }
 
 
+@app.get("/api/recordings")
+def recordings_list(device_id: str = None):
+
+    # Protegido por sesión (el middleware exige token en /api/* salvo rutas abiertas).
+    # device_id se usa solo como filtro parametrizado (a prueba de inyección).
+    if device_id is not None and not device_id.strip():
+        device_id = None
+
+    return {
+        "status": "ok",
+        "recordings": list_recordings(device_id)
+    }
+
+
 @app.get("/api/devices/{device_id}/recording/status")
 def recording_status(device_id: str):
 
