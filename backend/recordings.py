@@ -50,6 +50,25 @@ def add_recording(device_id, path, started_at, ended_at, duration_sec, size_byte
     return recording_id
 
 
+def get_recording(recording_id):
+
+    connection = get_connection()
+
+    row = connection.execute(
+        """
+        SELECT id, device_id, started_at, ended_at,
+               duration_sec, size_bytes, path, status, keep, created_at
+        FROM recordings
+        WHERE id = ?
+        """,
+        (recording_id,)
+    ).fetchone()
+
+    connection.close()
+
+    return dict(row) if row else None
+
+
 def list_recordings(device_id=None):
 
     connection = get_connection()

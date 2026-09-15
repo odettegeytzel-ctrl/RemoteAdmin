@@ -36,6 +36,7 @@ from backend.auth import (
 from backend.recordings import (
     add_recording,
     list_recordings,
+    get_recording,
     get_recordings_dir
 )
 
@@ -1335,6 +1336,34 @@ def recordings_list(device_id: str = None):
         "status": "ok",
         "recordings": list_recordings(device_id)
     }
+
+
+@app.get("/api/recordings/{recording_id}/video")
+def recording_video(recording_id: int):
+
+    # Protegido por sesión (el middleware exige token en /api/*).
+    recording = get_recording(recording_id)
+
+    if not recording:
+        return file_transfer_error(404, "Grabación no encontrada")
+
+    rel_path = recording.get("path") or ""
+
+    base = _os.path.realpath(str(get_recordings_dir()))
+    target = _os.path.realpath(_os.path.join(base, rel_path))
+
+    # Defensa contra path traversal: el archivo debe quedar dentro de la carpeta
+    if target != base and not target.startswith(base + _os.sep):
+        return file_transfer_error(403, "Ruta de grabación no permitida")
+
+    if not _os.path.isfile(target):
+        return file_transfer_error(404, "El archivo de la grabación no existe")
+
+    return FileResponse(
+        target,
+        media_type="video/mp4",
+        filename=_os.path.basename(target)
+    )
 
 
 @app.get("/api/devices/{device_id}/recording/status")

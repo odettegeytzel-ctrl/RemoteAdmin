@@ -2961,11 +2961,69 @@ GRABACIONES
 function recordingsMessageRow(text) {
     return `
         <tr>
-            <td colspan="8" class="px-6 py-10 text-center text-slate-500">
+            <td colspan="9" class="px-6 py-10 text-center text-slate-500">
                 ${text}
             </td>
         </tr>
     `;
+}
+
+function playRecording(id) {
+
+const player =
+    document.getElementById("recording-player");
+
+const video =
+    document.getElementById("recording-video");
+
+const error =
+    document.getElementById("recording-player-error");
+
+const title =
+    document.getElementById("recording-player-title");
+
+if (!player || !video) {
+    return;
+}
+
+error.classList.add("hidden");
+title.textContent = `Grabación #${id}`;
+
+// La sesión viaja en la cookie; el endpoint exige autenticación
+video.src = `/api/recordings/${id}/video`;
+
+player.classList.remove("hidden");
+player.scrollIntoView({ behavior: "smooth", block: "nearest" });
+
+video.onerror = () => {
+    error.textContent = "No se pudo reproducir la grabación";
+    error.classList.remove("hidden");
+};
+
+video.play().catch(() => {
+    // Si el navegador bloquea el autoplay, el usuario pulsa play manualmente
+});
+
+}
+
+function closeRecordingPlayer() {
+
+const player =
+    document.getElementById("recording-player");
+
+const video =
+    document.getElementById("recording-video");
+
+if (video) {
+    video.pause();
+    video.removeAttribute("src");
+    video.load();
+}
+
+if (player) {
+    player.classList.add("hidden");
+}
+
 }
 
 function formatDuration(seconds) {
@@ -3053,6 +3111,14 @@ try {
                     </span>
                 </td>
                 <td class="px-6 py-4 text-slate-600">${rec.keep ? "Sí" : "No"}</td>
+                <td class="px-6 py-4">
+                    <button
+                        onclick="playRecording(${rec.id})"
+                        class="px-3 py-1.5 rounded-lg bg-slate-900 text-white text-xs hover:bg-slate-700 transition"
+                    >
+                        Ver grabación
+                    </button>
+                </td>
             </tr>
         `;
 
@@ -3520,6 +3586,15 @@ document
 .addEventListener(
 "click",
 loadRecordings
+);
+
+document
+.getElementById(
+"recording-player-close"
+)
+.addEventListener(
+"click",
+closeRecordingPlayer
 );
 
 document

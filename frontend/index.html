@@ -1160,6 +1160,7 @@
                                     <th class="text-left px-6 py-4 font-semibold text-slate-600">Tamaño</th>
                                     <th class="text-left px-6 py-4 font-semibold text-slate-600">Estado</th>
                                     <th class="text-left px-6 py-4 font-semibold text-slate-600">Conservar</th>
+                                    <th class="text-left px-6 py-4 font-semibold text-slate-600">Ver</th>
 
                                 </tr>
 
@@ -1172,6 +1173,53 @@
                             </tbody>
 
                         </table>
+
+                    </div>
+
+                    <div
+                        id="recording-player"
+                        class="hidden border-t border-slate-200 p-6"
+                    >
+
+                        <div class="flex items-center justify-between mb-4">
+
+                            <div>
+
+                                <h4 class="font-semibold text-slate-900">
+                                    Reproductor
+                                </h4>
+
+                                <p
+                                    id="recording-player-title"
+                                    class="text-sm text-slate-500 mt-1"
+                                ></p>
+
+                            </div>
+
+                            <button
+                                id="recording-player-close"
+                                class="px-4 py-2 rounded-lg bg-slate-100 text-slate-700 text-sm hover:bg-slate-200 transition"
+                            >
+                                Cerrar
+                            </button>
+
+                        </div>
+
+                        <div class="bg-black rounded-xl overflow-hidden">
+
+                            <video
+                                id="recording-video"
+                                class="w-full max-h-[70vh]"
+                                controls
+                                preload="metadata"
+                            ></video>
+
+                        </div>
+
+                        <p
+                            id="recording-player-error"
+                            class="hidden text-sm text-red-600 mt-3"
+                        ></p>
 
                     </div>
 
