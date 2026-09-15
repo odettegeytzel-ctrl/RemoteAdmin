@@ -36,6 +36,7 @@ from backend.auth import (
 from backend.recordings import (
     add_recording,
     list_recordings,
+    query_recordings,
     get_recording,
     get_recordings_dir,
     set_keep,
@@ -1366,16 +1367,22 @@ async def upload_recording(
 
 
 @app.get("/api/recordings")
-def recordings_list(device_id: str = None):
+def recordings_list(device_id: str = None, start: str = None, end: str = None):
 
     # Protegido por sesión (el middleware exige token en /api/* salvo rutas abiertas).
     # device_id se usa solo como filtro parametrizado (a prueba de inyección).
     if device_id is not None and not device_id.strip():
         device_id = None
 
+    if (start and start.strip()) or (end and end.strip()):
+        # Historial temporal: filtra por rango [start, end]
+        recordings = query_recordings(device_id, start, end)
+    else:
+        recordings = list_recordings(device_id)
+
     return {
         "status": "ok",
-        "recordings": list_recordings(device_id)
+        "recordings": recordings
     }
 
 

@@ -3086,6 +3086,107 @@ return {
 
 }
 
+async function populateRecordingsDeviceFilter() {
+
+const select =
+    document.getElementById("recordings-device");
+
+if (!select) {
+    return;
+}
+
+try {
+
+    const response =
+        await fetch("/api/devices");
+
+    if (!response.ok) {
+        return;
+    }
+
+    const data =
+        await response.json();
+
+    const devices =
+        Array.isArray(data) ? data : (data.devices || []);
+
+    const current =
+        select.value;
+
+    // Mantiene "Todos" y reconstruye el resto
+    select.innerHTML =
+        '<option value="">Todos</option>' +
+        devices.map(d =>
+            `<option value="${d.device_id}">${d.hostname || d.device_id}</option>`
+        ).join("");
+
+    select.value = current;
+
+} catch (error) {
+    // Si falla, el filtro queda solo con "Todos"
+}
+
+}
+
+function buildRecordingsQuery() {
+
+const deviceId =
+    document.getElementById("recordings-device").value;
+
+const date =
+    document.getElementById("recordings-date").value;
+
+const startTime =
+    document.getElementById("recordings-start").value;
+
+const endTime =
+    document.getElementById("recordings-end").value;
+
+const params =
+    new URLSearchParams();
+
+if (deviceId) {
+    params.set("device_id", deviceId);
+}
+
+const rangeInfo =
+    document.getElementById("recordings-range-info");
+
+const rangeText =
+    document.getElementById("recordings-range-text");
+
+// El rango solo aplica si hay fecha
+if (date) {
+
+    // La selección es hora local; se envía en UTC (ISO) para comparar con lo almacenado
+    if (startTime) {
+        const startDate = new Date(`${date}T${startTime}`);
+        if (!isNaN(startDate.getTime())) {
+            params.set("start", startDate.toISOString());
+        }
+    }
+
+    if (endTime) {
+        const endDate = new Date(`${date}T${endTime}`);
+        if (!isNaN(endDate.getTime())) {
+            params.set("end", endDate.toISOString());
+        }
+    }
+}
+
+// Prepara/visualiza el rango seleccionado (para descarga posterior)
+if (date && (startTime || endTime)) {
+    rangeText.textContent =
+        `Rango seleccionado: ${date} ${startTime || "00:00"} – ${endTime || "23:59"}`;
+    rangeInfo.classList.remove("hidden");
+} else {
+    rangeInfo.classList.add("hidden");
+}
+
+return params.toString();
+
+}
+
 async function loadRecordings() {
 
 const table =
@@ -3095,12 +3196,19 @@ if (!table) {
     return;
 }
 
+populateRecordingsDeviceFilter();
+
 table.innerHTML = recordingsMessageRow("Cargando...");
+
+const query =
+    buildRecordingsQuery();
 
 try {
 
     const response =
-        await fetch("/api/recordings");
+        await fetch(
+            query ? `/api/recordings?${query}` : "/api/recordings"
+        );
 
     if (!response.ok) {
         table.innerHTML = recordingsMessageRow("Error al cargar las grabaciones");
@@ -3642,6 +3750,31 @@ document
 .addEventListener(
 "click",
 closeRecordingPlayer
+);
+
+document
+.getElementById(
+"recordings-search-button"
+)
+.addEventListener(
+"click",
+loadRecordings
+);
+
+document
+.getElementById(
+"recordings-clear-button"
+)
+.addEventListener(
+"click",
+() => {
+    document.getElementById("recordings-device").value = "";
+    document.getElementById("recordings-date").value = "";
+    document.getElementById("recordings-start").value = "";
+    document.getElementById("recordings-end").value = "";
+    document.getElementById("recordings-range-info").classList.add("hidden");
+    loadRecordings();
+}
 );
 
 document

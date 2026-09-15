@@ -1144,6 +1144,67 @@
 
                     </div>
 
+                    <div class="px-6 py-4 border-b border-slate-200 bg-slate-50 flex flex-wrap items-end gap-4">
+
+                        <div>
+                            <label class="block text-xs text-slate-500 mb-1">Dispositivo</label>
+                            <select
+                                id="recordings-device"
+                                class="px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white"
+                            >
+                                <option value="">Todos</option>
+                            </select>
+                        </div>
+
+                        <div>
+                            <label class="block text-xs text-slate-500 mb-1">Fecha</label>
+                            <input id="recordings-date" type="date"
+                                class="px-3 py-2 border border-slate-300 rounded-lg text-sm">
+                        </div>
+
+                        <div>
+                            <label class="block text-xs text-slate-500 mb-1">Hora inicio</label>
+                            <input id="recordings-start" type="time"
+                                class="px-3 py-2 border border-slate-300 rounded-lg text-sm">
+                        </div>
+
+                        <div>
+                            <label class="block text-xs text-slate-500 mb-1">Hora fin</label>
+                            <input id="recordings-end" type="time"
+                                class="px-3 py-2 border border-slate-300 rounded-lg text-sm">
+                        </div>
+
+                        <button
+                            id="recordings-search-button"
+                            class="px-4 py-2 rounded-lg bg-slate-900 text-white text-sm hover:bg-slate-700 transition"
+                        >
+                            Buscar
+                        </button>
+
+                        <button
+                            id="recordings-clear-button"
+                            class="px-4 py-2 rounded-lg bg-slate-100 text-slate-700 text-sm hover:bg-slate-200 transition"
+                        >
+                            Limpiar
+                        </button>
+
+                        <div
+                            id="recordings-range-info"
+                            class="hidden w-full flex items-center gap-3 text-sm text-slate-600"
+                        >
+                            <span id="recordings-range-text"></span>
+                            <button
+                                id="recordings-download-range"
+                                class="px-3 py-1.5 rounded-lg bg-slate-200 text-slate-500 text-xs cursor-not-allowed"
+                                disabled
+                                title="La descarga recortada del rango llegará en una fase posterior"
+                            >
+                                Descargar rango (próximamente)
+                            </button>
+                        </div>
+
+                    </div>
+
                     <div class="overflow-x-auto">
 
                         <table class="w-full text-sm">

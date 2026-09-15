@@ -174,6 +174,58 @@ def apply_retention(days=RETENTION_DAYS):
     }
 
 
+def query_recordings(device_id=None, start=None, end=None):
+    """
+    Historial por rango. Devuelve los segmentos del dispositivo (o de todos)
+    que se solapan con el intervalo [start, end] (ISO 8601). Un segmento
+    [started_at, ended_at] se solapa si started_at <= end y ended_at >= start.
+    Si start/end no se indican, no se filtra por tiempo.
+    """
+
+    rows = list_recordings(device_id)
+
+    def parse(value):
+        if not value:
+            return None
+        try:
+            dt = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+
+    start_dt = parse(start)
+    end_dt = parse(end)
+
+    if start_dt is None and end_dt is None:
+        return rows
+
+    result = []
+
+    for row in rows:
+
+        seg_start = parse(row.get("started_at"))
+        # Si no hay fin, se usa el inicio como fin (segmento puntual)
+        seg_end = parse(row.get("ended_at")) or seg_start
+
+        if seg_start is None:
+            continue
+
+        if seg_end is None:
+            seg_end = seg_start
+
+        if start_dt is not None and seg_end < start_dt:
+            continue
+
+        if end_dt is not None and seg_start > end_dt:
+            continue
+
+        result.append(row)
+
+    return result
+
+
 def get_recording(recording_id):
 
     connection = get_connection()
