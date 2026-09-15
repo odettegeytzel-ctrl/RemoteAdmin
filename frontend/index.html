@@ -147,6 +147,20 @@
 
 
                 <button
+                    id="nav-recordings"
+                    data-view="recordings"
+                    class="nav-button w-full flex items-center gap-3 px-3 py-3 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition text-sm mt-1"
+                >
+                    <span>⏺</span>
+
+                    <span>
+                        Grabaciones
+                    </span>
+
+                </button>
+
+
+                <button
                     id="nav-alerts"
                     data-view="alerts"
                     class="nav-button w-full flex items-center gap-3 px-3 py-3 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition text-sm mt-1"
@@ -547,6 +561,31 @@
                                 >
                                     Control remoto
                                 </button>
+
+
+                                <button
+                                    id="start-recording-button"
+                                    class="px-4 py-2 rounded-lg bg-red-600 text-white text-sm hover:bg-red-500 transition"
+                                >
+                                    Iniciar grabación
+                                </button>
+
+
+                                <button
+                                    id="stop-recording-button"
+                                    class="hidden px-4 py-2 rounded-lg bg-slate-700 text-white text-sm hover:bg-slate-600 transition"
+                                >
+                                    Detener grabación
+                                </button>
+
+
+                                <span
+                                    id="recording-indicator"
+                                    class="hidden inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-red-50 text-red-700 text-sm"
+                                >
+                                    <span class="w-2.5 h-2.5 rounded-full bg-red-500"></span>
+                                    Grabando
+                                </span>
                             </div>
 
                             <div
@@ -1071,6 +1110,68 @@
                         <div class="px-6 py-10 text-center text-slate-500">
                             No hay alertas
                         </div>
+
+                    </div>
+
+                </section>
+
+
+                <section
+                    id="recordings-section"
+                    class="hidden bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden"
+                >
+
+                    <div class="px-6 py-5 border-b border-slate-200 flex items-center justify-between">
+
+                        <div>
+
+                            <h3 class="text-lg font-semibold">
+                                Grabaciones
+                            </h3>
+
+                            <p class="text-sm text-slate-500 mt-1">
+                                Grabaciones de pantalla almacenadas
+                            </p>
+
+                        </div>
+
+                        <button
+                            id="recordings-refresh-button"
+                            class="px-4 py-2 rounded-lg bg-slate-100 text-slate-700 text-sm hover:bg-slate-200 transition"
+                        >
+                            Actualizar
+                        </button>
+
+                    </div>
+
+                    <div class="overflow-x-auto">
+
+                        <table class="w-full text-sm">
+
+                            <thead class="bg-slate-50 border-b border-slate-200">
+
+                                <tr>
+
+                                    <th class="text-left px-6 py-4 font-semibold text-slate-600">PC</th>
+                                    <th class="text-left px-6 py-4 font-semibold text-slate-600">Fecha</th>
+                                    <th class="text-left px-6 py-4 font-semibold text-slate-600">Inicio</th>
+                                    <th class="text-left px-6 py-4 font-semibold text-slate-600">Fin</th>
+                                    <th class="text-left px-6 py-4 font-semibold text-slate-600">Duración</th>
+                                    <th class="text-left px-6 py-4 font-semibold text-slate-600">Tamaño</th>
+                                    <th class="text-left px-6 py-4 font-semibold text-slate-600">Estado</th>
+                                    <th class="text-left px-6 py-4 font-semibold text-slate-600">Conservar</th>
+
+                                </tr>
+
+                            </thead>
+
+                            <tbody
+                                id="recordings-table"
+                                class="divide-y divide-slate-100"
+                            >
+                            </tbody>
+
+                        </table>
 
                     </div>
 

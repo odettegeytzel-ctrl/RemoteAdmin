@@ -557,6 +557,194 @@ loadInstalledSoftware(
 
 updateActionButtons();
 
+refreshRecordingStatus();
+
+}
+
+/* ==============================
+GRABACION DEL DISPOSITIVO
+============================== */
+
+function setRecordingUI(recording) {
+
+const startButton =
+    document.getElementById("start-recording-button");
+
+const stopButton =
+    document.getElementById("stop-recording-button");
+
+const indicator =
+    document.getElementById("recording-indicator");
+
+if (!startButton || !stopButton || !indicator) {
+    return;
+}
+
+startButton.classList.toggle("hidden", recording);
+stopButton.classList.toggle("hidden", !recording);
+indicator.classList.toggle("hidden", !recording);
+
+}
+
+async function refreshRecordingStatus() {
+
+if (!selectedDevice) {
+    return;
+}
+
+// Por defecto asumimos "no grabando" hasta confirmar
+setRecordingUI(false);
+
+try {
+
+    const response =
+        await fetch(
+            `/api/devices/${selectedDevice.device_id}/recording/status`
+        );
+
+    if (!response.ok) {
+        return;
+    }
+
+    const data =
+        await response.json();
+
+    setRecordingUI(Boolean(data.recording));
+
+} catch (error) {
+
+    // Si falla la consulta, se deja el estado por defecto
+}
+
+}
+
+async function startRecording() {
+
+if (!selectedDevice) {
+    return;
+}
+
+const deviceId =
+    selectedDevice.device_id;
+
+const statusElement =
+    document.getElementById("action-status");
+
+statusElement.classList.remove("hidden");
+
+statusElement.textContent =
+    "Iniciando grabación...";
+
+statusElement.className =
+    "px-4 py-3 rounded-lg text-sm bg-slate-100 text-slate-600";
+
+try {
+
+    const response =
+        await fetch(
+            `/api/devices/${deviceId}/recording/start`,
+            { method: "POST" }
+        );
+
+    const result =
+        await response.json();
+
+    if (result.status === "sent") {
+
+        statusElement.textContent =
+            `Grabación iniciada en ${selectedDevice.hostname}`;
+
+        statusElement.className =
+            "px-4 py-3 rounded-lg text-sm bg-emerald-50 text-emerald-700";
+
+        setRecordingUI(true);
+
+        // Confirma el estado real reportado por el Agent
+        setTimeout(refreshRecordingStatus, 1500);
+
+    } else {
+
+        statusElement.textContent =
+            result.message ||
+            "No fue posible iniciar la grabación";
+
+        statusElement.className =
+            "px-4 py-3 rounded-lg text-sm bg-red-50 text-red-700";
+    }
+
+} catch (error) {
+
+    statusElement.textContent =
+        "Error al comunicarse con el servidor";
+
+    statusElement.className =
+        "px-4 py-3 rounded-lg text-sm bg-red-50 text-red-700";
+}
+
+}
+
+async function stopRecording() {
+
+if (!selectedDevice) {
+    return;
+}
+
+const deviceId =
+    selectedDevice.device_id;
+
+const statusElement =
+    document.getElementById("action-status");
+
+statusElement.classList.remove("hidden");
+
+statusElement.textContent =
+    "Deteniendo grabación...";
+
+statusElement.className =
+    "px-4 py-3 rounded-lg text-sm bg-slate-100 text-slate-600";
+
+try {
+
+    const response =
+        await fetch(
+            `/api/devices/${deviceId}/recording/stop`,
+            { method: "POST" }
+        );
+
+    const result =
+        await response.json();
+
+    if (result.status === "sent") {
+
+        statusElement.textContent =
+            "Grabación detenida";
+
+        statusElement.className =
+            "px-4 py-3 rounded-lg text-sm bg-emerald-50 text-emerald-700";
+
+        setRecordingUI(false);
+
+        setTimeout(refreshRecordingStatus, 1500);
+
+    } else {
+
+        statusElement.textContent =
+            result.message ||
+            "No fue posible detener la grabación";
+
+        statusElement.className =
+            "px-4 py-3 rounded-lg text-sm bg-red-50 text-red-700";
+    }
+
+} catch (error) {
+
+    statusElement.textContent =
+        "Error al comunicarse con el servidor";
+
+    statusElement.className =
+        "px-4 py-3 rounded-lg text-sm bg-red-50 text-red-700";
+}
+
 }
 
 /* ==============================
@@ -2636,6 +2824,11 @@ devices: [
     "Equipos registrados en RemoteAdmin"
 ],
 
+recordings: [
+    "Grabaciones",
+    "Grabaciones de pantalla almacenadas"
+],
+
 alerts: [
     "Alertas",
     "Conexiones y desconexiones de los equipos"
@@ -2670,10 +2863,16 @@ const settings =
         "settings-section"
     );
 
+const recordings =
+    document.getElementById(
+        "recordings-section"
+    );
+
 stats.classList.add("hidden");
 devices.classList.add("hidden");
 alerts.classList.add("hidden");
 settings.classList.add("hidden");
+recordings.classList.add("hidden");
 
 if (view === "dashboard") {
 
@@ -2698,6 +2897,14 @@ if (view === "dashboard") {
     );
 
     loadAlerts();
+
+} else if (view === "recordings") {
+
+    recordings.classList.remove(
+        "hidden"
+    );
+
+    loadRecordings();
 
 } else if (view === "settings") {
 
@@ -2744,6 +2951,117 @@ document.getElementById(
     "view-subtitle"
 ).textContent =
     titles[1];
+
+}
+
+/* ==============================
+GRABACIONES
+============================== */
+
+function recordingsMessageRow(text) {
+    return `
+        <tr>
+            <td colspan="8" class="px-6 py-10 text-center text-slate-500">
+                ${text}
+            </td>
+        </tr>
+    `;
+}
+
+function formatDuration(seconds) {
+
+const total = Math.max(0, Math.round(seconds || 0));
+const m = Math.floor(total / 60);
+const s = total % 60;
+
+if (m === 0) {
+    return `${s}s`;
+}
+
+return `${m}m ${String(s).padStart(2, "0")}s`;
+
+}
+
+function formatRecordingDate(iso) {
+
+if (!iso) {
+    return { date: "-", time: "-" };
+}
+
+const d = new Date(iso);
+
+if (isNaN(d.getTime())) {
+    return { date: iso, time: "" };
+}
+
+return {
+    date: d.toLocaleDateString(),
+    time: d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+};
+
+}
+
+async function loadRecordings() {
+
+const table =
+    document.getElementById("recordings-table");
+
+if (!table) {
+    return;
+}
+
+table.innerHTML = recordingsMessageRow("Cargando...");
+
+try {
+
+    const response =
+        await fetch("/api/recordings");
+
+    if (!response.ok) {
+        table.innerHTML = recordingsMessageRow("Error al cargar las grabaciones");
+        return;
+    }
+
+    const data =
+        await response.json();
+
+    const recordings =
+        data.recordings || [];
+
+    if (recordings.length === 0) {
+        table.innerHTML = recordingsMessageRow("No hay grabaciones");
+        return;
+    }
+
+    table.innerHTML = recordings.map(rec => {
+
+        const start = formatRecordingDate(rec.started_at);
+        const end = formatRecordingDate(rec.ended_at);
+        const pc = rec.hostname || rec.device_id || "-";
+
+        return `
+            <tr class="hover:bg-slate-50 transition">
+                <td class="px-6 py-4 font-medium text-slate-900">${pc}</td>
+                <td class="px-6 py-4 text-slate-600">${start.date}</td>
+                <td class="px-6 py-4 text-slate-600">${start.time}</td>
+                <td class="px-6 py-4 text-slate-600">${end.time || "-"}</td>
+                <td class="px-6 py-4 text-slate-600">${formatDuration(rec.duration_sec)}</td>
+                <td class="px-6 py-4 text-slate-600">${formatFileSize(rec.size_bytes)}</td>
+                <td class="px-6 py-4">
+                    <span class="px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 text-xs">
+                        ${rec.status || "-"}
+                    </span>
+                </td>
+                <td class="px-6 py-4 text-slate-600">${rec.keep ? "Sí" : "No"}</td>
+            </tr>
+        `;
+
+    }).join("");
+
+} catch (error) {
+
+    table.innerHTML = recordingsMessageRow("Error al cargar las grabaciones");
+}
 
 }
 
@@ -3133,6 +3451,24 @@ startRemoteDesktop
 
 document
 .getElementById(
+"start-recording-button"
+)
+.addEventListener(
+"click",
+startRecording
+);
+
+document
+.getElementById(
+"stop-recording-button"
+)
+.addEventListener(
+"click",
+stopRecording
+);
+
+document
+.getElementById(
 "close-remote-button"
 )
 .addEventListener(
@@ -3175,6 +3511,15 @@ document
 .addEventListener(
 "click",
 downloadRemoteFile
+);
+
+document
+.getElementById(
+"recordings-refresh-button"
+)
+.addEventListener(
+"click",
+loadRecordings
 );
 
 document
