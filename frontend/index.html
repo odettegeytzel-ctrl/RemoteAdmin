@@ -1205,6 +1205,32 @@
 
                     </div>
 
+                    <div
+                        id="recordings-timeline"
+                        class="hidden px-6 py-5 border-b border-slate-200"
+                    >
+
+                        <div class="flex items-center justify-between mb-3">
+                            <h4 class="font-semibold text-slate-900">Línea de tiempo</h4>
+                            <span id="timeline-range-label" class="text-sm text-slate-500"></span>
+                        </div>
+
+                        <div
+                            id="timeline-empty"
+                            class="hidden text-sm text-slate-500 py-6 text-center"
+                        >
+                            No hay grabaciones en este intervalo.
+                        </div>
+
+                        <div id="timeline-body"></div>
+
+                        <div
+                            id="timeline-detail"
+                            class="hidden mt-5 bg-slate-50 border border-slate-200 rounded-xl p-5"
+                        ></div>
+
+                    </div>
+
                     <div class="overflow-x-auto">
 
                         <table class="w-full text-sm">

@@ -2968,6 +2968,363 @@ function recordingsMessageRow(text) {
     `;
 }
 
+/* ---------- Línea de tiempo del historial ---------- */
+
+let recordingsById = {};
+
+function timelineTime(date) {
+    return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function computeTimelineAxis(recordings) {
+
+const date =
+    document.getElementById("recordings-date").value;
+
+const startTime =
+    document.getElementById("recordings-start").value;
+
+const endTime =
+    document.getElementById("recordings-end").value;
+
+let axisStart;
+let axisEnd;
+
+if (date) {
+
+    axisStart = new Date(`${date}T${startTime || "00:00"}:00`);
+    axisEnd = new Date(`${date}T${endTime || "23:59"}:00`);
+
+} else if (recordings.length) {
+
+    const starts = recordings.map(r => new Date(r.started_at).getTime());
+    const ends = recordings.map(r => new Date(r.ended_at || r.started_at).getTime());
+    axisStart = new Date(Math.min(...starts));
+    axisEnd = new Date(Math.max(...ends));
+
+} else {
+    return null;
+}
+
+if (isNaN(axisStart.getTime()) || isNaN(axisEnd.getTime())) {
+    return null;
+}
+
+if (axisEnd <= axisStart) {
+    axisEnd = new Date(axisStart.getTime() + 3600000);
+}
+
+return { axisStart, axisEnd };
+
+}
+
+let selectedTimelineId = null;
+let lastTimelineRecordings = [];
+
+// Marcas del eje calculadas dinámicamente según duración y ancho disponible,
+// evitando que las etiquetas se encimen o se salgan del contenedor.
+function buildTimelineTicks(axisStart, axisEnd, widthPx) {
+
+const startMs = axisStart.getTime();
+const endMs = axisEnd.getTime();
+const span = endMs - startMs;
+const spanMin = span / 60000;
+
+// Cada etiqueta ("09:57 a.m.") ocupa ~92px; el ancho manda cuántas caben
+const labelPx = 92;
+const maxTicks = Math.max(2, Math.min(12, Math.floor((widthPx || 800) / labelPx)));
+
+const positions = [];
+
+const addTick = (t) => {
+    const pct = ((t - startMs) / span) * 100;
+    if (pct < -0.5 || pct > 100.5) {
+        return;
+    }
+    const align = pct < 6 ? "left" : pct > 94 ? "right" : "center";
+    positions.push({ t, pct: Math.max(0, Math.min(100, pct)), align });
+};
+
+if (spanMin <= 20) {
+
+    // Rangos muy cortos: inicio / mitad / fin (o solo inicio y fin si es muy angosto)
+    addTick(startMs);
+    if (maxTicks >= 3) {
+        addTick(startMs + span / 2);
+    }
+    addTick(endMs);
+
+} else {
+
+    // Escalón "redondo" según la duración; se agranda si no caben las etiquetas
+    let step;
+    if (spanMin <= 90) {
+        step = 15 * 60000;
+    } else if (spanMin <= 240) {
+        step = 30 * 60000;
+    } else if (spanMin <= 480) {
+        step = 60 * 60000;
+    } else if (spanMin <= 1440) {
+        step = 120 * 60000;
+    } else {
+        step = 180 * 60000;
+    }
+
+    // Garantiza que el número de marcas no supere lo que cabe por ancho
+    while (span / step > maxTicks - 1) {
+        step *= 2;
+    }
+
+    // Marcas alineadas a horas "redondas" dentro del rango
+    const first = Math.ceil(startMs / step) * step;
+    for (let t = first; t <= endMs + 1; t += step) {
+        addTick(t);
+    }
+
+    // Si por el redondeo quedó muy vacío en los extremos, añade inicio/fin
+    if (positions.length === 0) {
+        addTick(startMs);
+        addTick(endMs);
+    }
+}
+
+return positions.map(p => {
+
+    const translate =
+        p.align === "left" ? "translateX(0)"
+        : p.align === "right" ? "translateX(-100%)"
+        : "translateX(-50%)";
+
+    return `<span class="absolute text-xs text-slate-500 whitespace-nowrap"
+                style="left:${p.pct}%; transform:${translate}">${timelineTime(new Date(p.t))}</span>`;
+
+}).join("");
+
+}
+
+function renderTimeline(recordings) {
+
+lastTimelineRecordings = recordings;
+
+const container =
+    document.getElementById("recordings-timeline");
+
+const body =
+    document.getElementById("timeline-body");
+
+const empty =
+    document.getElementById("timeline-empty");
+
+const detail =
+    document.getElementById("timeline-detail");
+
+const rangeLabel =
+    document.getElementById("timeline-range-label");
+
+if (!container || !body) {
+    return;
+}
+
+container.classList.remove("hidden");
+detail.classList.add("hidden");
+
+if (!recordings.length) {
+    body.innerHTML = "";
+    rangeLabel.textContent = "";
+    empty.classList.remove("hidden");
+    return;
+}
+
+empty.classList.add("hidden");
+
+const axis =
+    computeTimelineAxis(recordings);
+
+if (!axis) {
+    body.innerHTML = "";
+    return;
+}
+
+const total =
+    axis.axisEnd.getTime() - axis.axisStart.getTime();
+
+rangeLabel.textContent =
+    `${timelineTime(axis.axisStart)} – ${timelineTime(axis.axisEnd)}`;
+
+// Marcas horarias dinámicas (según duración y ancho disponible)
+const bodyWidth =
+    body.clientWidth || body.offsetWidth || 800;
+
+const ticksHtml =
+    buildTimelineTicks(axis.axisStart, axis.axisEnd, bodyWidth);
+
+// Agrupar por dispositivo (una pista por equipo)
+const groups = {};
+recordings.forEach(r => {
+    const key = r.device_id;
+    if (!groups[key]) {
+        groups[key] = { hostname: r.hostname || r.device_id, items: [] };
+    }
+    groups[key].items.push(r);
+});
+
+const lanes = Object.keys(groups).map(deviceId => {
+
+    const group = groups[deviceId];
+
+    const blocks = group.items.map(r => {
+
+        const s = new Date(r.started_at).getTime();
+        const e = new Date(r.ended_at || r.started_at).getTime();
+
+        // Recorta al rango visible (caso de rango parcial)
+        const vs = Math.max(s, axis.axisStart.getTime());
+        const ve = Math.min(e, axis.axisEnd.getTime());
+
+        if (ve <= vs) {
+            return "";
+        }
+
+        const left = ((vs - axis.axisStart.getTime()) / total) * 100;
+        const width = Math.max(0.6, ((ve - vs) / total) * 100);
+
+        const kept = r.keep ? "ring-2 ring-amber-400" : "";
+
+        return `
+            <button
+                type="button"
+                data-timeline-id="${r.id}"
+                onclick="selectTimelineSegment(${r.id})"
+                title="${timelineTime(new Date(r.started_at))} - ${timelineTime(new Date(r.ended_at || r.started_at))}"
+                class="timeline-block absolute top-0 h-8 rounded bg-emerald-500 hover:bg-emerald-400 ${kept}"
+                style="left:${left}%; width:${width}%"
+            ></button>
+        `;
+
+    }).join("");
+
+    return `
+        <div class="mb-4">
+            <p class="text-xs font-medium text-slate-600 mb-1">${group.hostname}</p>
+            <div class="relative h-8 bg-slate-100 rounded">
+                ${blocks}
+            </div>
+        </div>
+    `;
+
+}).join("");
+
+body.innerHTML = `
+    <div class="relative h-5 mb-2">${ticksHtml}</div>
+    ${lanes}
+    <p class="text-xs text-slate-400 mt-2">
+        Los bloques son segmentos grabados; los espacios en gris indican intervalos sin grabación.
+    </p>
+`;
+
+// Reaplica la selección tras redibujar (p. ej. al cambiar el tamaño de ventana)
+if (selectedTimelineId !== null && recordingsById[selectedTimelineId]) {
+    showTimelineDetail(selectedTimelineId);
+} else {
+    detail.classList.add("hidden");
+}
+
+}
+
+function highlightTimelineBlock(id) {
+
+document.querySelectorAll(".timeline-block").forEach(b => {
+    const active = id !== null && b.dataset.timelineId === String(id);
+    b.classList.toggle("ring-2", active);
+    b.classList.toggle("ring-slate-900", active);
+});
+
+}
+
+function closeTimelineDetail() {
+
+selectedTimelineId = null;
+
+const detail =
+    document.getElementById("timeline-detail");
+
+if (detail) {
+    detail.classList.add("hidden");
+    detail.innerHTML = "";
+}
+
+highlightTimelineBlock(null);
+
+}
+
+function showTimelineDetail(id) {
+
+const rec =
+    recordingsById[id];
+
+const detail =
+    document.getElementById("timeline-detail");
+
+if (!rec || !detail) {
+    return;
+}
+
+selectedTimelineId = id;
+
+highlightTimelineBlock(id);
+
+const start = formatRecordingDate(rec.started_at);
+const end = formatRecordingDate(rec.ended_at);
+const pc = rec.hostname || rec.device_id || "-";
+
+detail.innerHTML = `
+    <div class="flex items-start justify-between gap-4 mb-3">
+        <h5 class="font-semibold text-slate-900 text-sm">Segmento seleccionado</h5>
+        <button onclick="closeTimelineDetail()"
+            aria-label="Cerrar"
+            class="w-7 h-7 flex items-center justify-center rounded-lg bg-slate-200 text-slate-600 hover:bg-slate-300 transition">
+            ✕
+        </button>
+    </div>
+    <div class="flex flex-wrap items-start justify-between gap-4">
+        <div class="grid grid-cols-2 sm:grid-cols-3 gap-4 text-sm">
+            <div><p class="text-xs text-slate-500">Dispositivo</p><strong>${pc}</strong></div>
+            <div><p class="text-xs text-slate-500">Fecha</p><strong>${start.date}</strong></div>
+            <div><p class="text-xs text-slate-500">Estado</p><strong>${rec.status || "-"}</strong></div>
+            <div><p class="text-xs text-slate-500">Hora inicio</p><strong>${start.time}</strong></div>
+            <div><p class="text-xs text-slate-500">Hora fin</p><strong>${end.time || "-"}</strong></div>
+            <div><p class="text-xs text-slate-500">Duración</p><strong>${formatDuration(rec.duration_sec)}</strong></div>
+            <div><p class="text-xs text-slate-500">Conservada</p><strong>${rec.keep ? "⭐ Sí" : "No"}</strong></div>
+        </div>
+        <div class="flex flex-col gap-2">
+            <button onclick="playRecording(${rec.id})"
+                class="px-3 py-1.5 rounded-lg bg-slate-900 text-white text-xs hover:bg-slate-700 transition">
+                Ver grabación
+            </button>
+            <a href="/api/recordings/${rec.id}/download"
+                class="text-center px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs hover:bg-blue-500 transition">
+                Descargar
+            </a>
+        </div>
+    </div>
+`;
+
+detail.classList.remove("hidden");
+
+}
+
+function selectTimelineSegment(id) {
+
+// Clic sobre el mismo segmento ya seleccionado -> se contrae
+if (selectedTimelineId === id) {
+    closeTimelineDetail();
+    return;
+}
+
+showTimelineDetail(id);
+
+}
+
 async function toggleKeep(id, currentKeep) {
 
 const nextKeep = currentKeep ? 0 : 1;
@@ -3196,6 +3553,9 @@ if (!table) {
     return;
 }
 
+// Nueva búsqueda: se limpia la selección previa de la línea de tiempo
+selectedTimelineId = null;
+
 populateRecordingsDeviceFilter();
 
 table.innerHTML = recordingsMessageRow("Cargando...");
@@ -3221,8 +3581,13 @@ try {
     const recordings =
         data.recordings || [];
 
+    // Índice por id para la línea de tiempo
+    recordingsById = {};
+    recordings.forEach(r => { recordingsById[r.id] = r; });
+
     if (recordings.length === 0) {
         table.innerHTML = recordingsMessageRow("No hay grabaciones");
+        renderTimeline([]);
         return;
     }
 
@@ -3278,6 +3643,8 @@ try {
         `;
 
     }).join("");
+
+    renderTimeline(recordings);
 
 } catch (error) {
 
@@ -3760,6 +4127,20 @@ document
 "click",
 loadRecordings
 );
+
+// Eje responsive: redibuja la línea de tiempo al cambiar el tamaño de ventana
+let _timelineResizeRAF = null;
+window.addEventListener("resize", () => {
+    if (_timelineResizeRAF) {
+        cancelAnimationFrame(_timelineResizeRAF);
+    }
+    _timelineResizeRAF = requestAnimationFrame(() => {
+        const container = document.getElementById("recordings-timeline");
+        if (container && !container.classList.contains("hidden") && lastTimelineRecordings.length) {
+            renderTimeline(lastTimelineRecordings);
+        }
+    });
+});
 
 document
 .getElementById(
