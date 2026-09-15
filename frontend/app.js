@@ -3152,13 +3152,19 @@ try {
                     </span>
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap">${keepCell}</td>
-                <td class="px-6 py-4">
+                <td class="px-6 py-4 whitespace-nowrap">
                     <button
                         onclick="playRecording(${rec.id})"
                         class="px-3 py-1.5 rounded-lg bg-slate-900 text-white text-xs hover:bg-slate-700 transition"
                     >
                         Ver grabación
                     </button>
+                    <a
+                        href="/api/recordings/${rec.id}/download"
+                        class="ml-2 inline-block px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs hover:bg-blue-500 transition"
+                    >
+                        Descargar
+                    </a>
                 </td>
             </tr>
         `;

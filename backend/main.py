@@ -1423,6 +1423,41 @@ def recording_video(recording_id: int):
     )
 
 
+@app.get("/api/recordings/{recording_id}/download")
+def recording_download(recording_id: int):
+
+    # Protegido por sesión. Descarga el MP4 por streaming, sin borrar ni modificar
+    # el original. Se resuelve por recording_id, nunca por una ruta del frontend.
+    recording = get_recording(recording_id)
+
+    if not recording:
+        return file_transfer_error(404, "Grabación no encontrada")
+
+    rel_path = recording.get("path") or ""
+
+    base = _os.path.realpath(str(get_recordings_dir()))
+    target = _os.path.realpath(_os.path.join(base, rel_path))
+
+    # Defensa contra path traversal: el archivo debe quedar dentro de la carpeta
+    if target != base and not target.startswith(base + _os.sep):
+        return file_transfer_error(403, "Ruta de grabación no permitida")
+
+    if not _os.path.isfile(target):
+        return file_transfer_error(404, "El archivo de la grabación no existe")
+
+    # Nombre de descarga legible: incluye id y hostname si está disponible
+    host = recording.get("hostname") or recording.get("device_id") or "grabacion"
+    download_name = f"{host}_{recording_id}.mp4"
+
+    # FileResponse transmite el archivo por bloques (soporta archivos grandes)
+    return FileResponse(
+        target,
+        media_type="video/mp4",
+        filename=download_name,
+        content_disposition_type="attachment"
+    )
+
+
 @app.get("/api/devices/{device_id}/recording/status")
 def recording_status(device_id: str):
 
