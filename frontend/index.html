@@ -289,10 +289,14 @@
             <main class="p-6">
 
 
-                <section id="stats-section" class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-5 mb-8">
+                <section id="stats-section" class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-5 mb-8">
 
 
-                    <div class="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
+                    <div
+                        id="card-total"
+                        class="summary-card bg-white border border-slate-200 rounded-xl p-6 shadow-sm"
+                        title="Ver todos los equipos"
+                    >
 
                         <div class="flex items-center justify-between">
 
@@ -322,7 +326,11 @@
 
 
 
-                    <div class="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
+                    <div
+                        id="card-online"
+                        class="summary-card bg-white border border-slate-200 rounded-xl p-6 shadow-sm"
+                        title="Filtrar: solo equipos online"
+                    >
 
                         <div class="flex items-center justify-between">
 
@@ -354,7 +362,11 @@
 
 
 
-                    <div class="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
+                    <div
+                        id="card-offline"
+                        class="summary-card bg-white border border-slate-200 rounded-xl p-6 shadow-sm"
+                        title="Filtrar: solo equipos offline"
+                    >
 
                         <div class="flex items-center justify-between">
 
@@ -386,25 +398,72 @@
 
 
 
-                    <div class="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
+                    <div
+                        id="card-alerts"
+                        class="summary-card bg-white border border-slate-200 rounded-xl p-6 shadow-sm"
+                        title="Ver las alertas"
+                    >
 
                         <div class="flex items-center justify-between">
 
                             <div>
 
                                 <p class="text-sm text-slate-500">
-                                    Servidor
+                                    Alertas pendientes
                                 </p>
 
-                                <strong class="block text-lg font-semibold text-emerald-600 mt-3">
-                                    Operativo
+                                <strong
+                                    id="pending-alerts"
+                                    class="block text-3xl font-semibold mt-3"
+                                >
+                                    0
                                 </strong>
 
                             </div>
 
 
-                            <div class="w-11 h-11 rounded-lg bg-blue-50 flex items-center justify-center text-xl">
-                                ⚡
+                            <div class="w-11 h-11 rounded-lg bg-amber-50 flex items-center justify-center text-xl">
+                                🔔
+                            </div>
+
+                        </div>
+
+                    </div>
+
+
+                    <div
+                        id="card-warnings"
+                        class="summary-card bg-white border border-slate-200 rounded-xl p-6 shadow-sm"
+                        title="Ver los equipos con uso alto de RAM o disco"
+                    >
+
+                        <div class="flex items-center justify-between">
+
+                            <div>
+
+                                <p class="text-sm text-slate-500">
+                                    Equipos con avisos
+                                </p>
+
+                                <strong
+                                    id="warning-devices"
+                                    class="block text-3xl font-semibold mt-3"
+                                >
+                                    0
+                                </strong>
+
+                                <!-- Informativo: equipos sin inventario de RAM/disco.
+                                     No cuenta como aviso. -->
+                                <span
+                                    id="nodata-devices"
+                                    class="hidden block text-xs text-slate-400 mt-1"
+                                ></span>
+
+                            </div>
+
+
+                            <div class="w-11 h-11 rounded-lg bg-orange-50 flex items-center justify-center text-xl">
+                                ⚠️
                             </div>
 
                         </div>
@@ -412,6 +471,226 @@
                     </div>
 
                 </section>
+
+
+                <div class="flex items-center justify-end gap-3 -mt-4 mb-6 text-xs text-slate-500">
+
+                    <span id="last-refresh">Actualizando...</span>
+
+                    <button
+                        id="refresh-now-button"
+                        class="px-3 py-1 rounded-lg bg-slate-100 text-slate-700 hover:bg-slate-200 transition"
+                    >
+                        Actualizar ahora
+                    </button>
+
+                </div>
+
+
+                <!-- ==============================
+                     PANELES DEL DASHBOARD
+                     Solo visibles en la vista Dashboard. La tabla de equipos
+                     vive exclusivamente en la sección Dispositivos.
+                     ============================== -->
+                <div id="dashboard-panels" class="hidden flex flex-col gap-6">
+
+
+                    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+
+                        <!-- A) ESTADO GENERAL -->
+                        <section class="dash-panel bg-white border border-slate-200 rounded-xl shadow-sm p-6">
+
+                            <h3 class="text-sm font-semibold text-slate-700 mb-4">
+                                Estado general
+                            </h3>
+
+                            <div class="flex items-center gap-6">
+
+                                <div class="relative shrink-0">
+
+                                    <svg width="132" height="132" viewBox="0 0 132 132" class="-rotate-90">
+
+                                        <circle cx="66" cy="66" r="56" fill="none"
+                                            stroke="#e2e8f0" stroke-width="14"></circle>
+
+                                        <circle id="overview-ring" cx="66" cy="66" r="56" fill="none"
+                                            stroke="#10b981" stroke-width="14" stroke-linecap="round"
+                                            stroke-dasharray="0 352" class="overview-ring"></circle>
+
+                                    </svg>
+
+                                    <div class="absolute inset-0 flex flex-col items-center justify-center">
+
+                                        <strong id="overview-total" class="text-3xl font-semibold leading-none">0</strong>
+
+                                        <span class="text-xs text-slate-500 mt-1">equipos</span>
+
+                                    </div>
+
+                                </div>
+
+
+                                <div class="flex-1 min-w-0 flex flex-col gap-3">
+
+                                    <div class="flex items-center gap-2">
+
+                                        <span class="status-dot status-dot-online shrink-0"></span>
+
+                                        <span class="text-sm text-slate-600 flex-1">Online</span>
+
+                                        <strong id="overview-online" class="text-sm font-semibold text-emerald-600">0</strong>
+
+                                    </div>
+
+                                    <div class="flex items-center gap-2">
+
+                                        <span class="w-2.5 h-2.5 rounded-full bg-red-500 shrink-0"></span>
+
+                                        <span class="text-sm text-slate-600 flex-1">Offline</span>
+
+                                        <strong id="overview-offline" class="text-sm font-semibold text-red-600">0</strong>
+
+                                    </div>
+
+                                    <div class="h-2 rounded-full bg-slate-200 overflow-hidden mt-1">
+
+                                        <div id="overview-bar"
+                                            class="h-full bg-emerald-500 rounded-full transition-all duration-700"
+                                            style="width: 0%"></div>
+
+                                    </div>
+
+                                    <p id="overview-summary" class="text-xs text-slate-500"></p>
+
+                                </div>
+
+                            </div>
+
+                        </section>
+
+
+                        <!-- B) SALUD DEL SISTEMA -->
+                        <section class="dash-panel lg:col-span-2 bg-white border border-slate-200 rounded-xl shadow-sm p-6">
+
+                            <div class="flex items-start justify-between gap-4 mb-4">
+
+                                <h3 class="text-sm font-semibold text-slate-700">
+                                    Salud del sistema
+                                </h3>
+
+                                <span class="text-xs text-slate-400 text-right">
+                                    Último inventario reportado
+                                </span>
+
+                            </div>
+
+                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-5">
+
+                                <div>
+                                    <p class="text-xs font-medium text-slate-500 mb-2">Memoria RAM</p>
+                                    <div id="health-ram" class="flex flex-col gap-2"></div>
+                                </div>
+
+                                <div>
+                                    <p class="text-xs font-medium text-slate-500 mb-2">Disco</p>
+                                    <div id="health-disk" class="flex flex-col gap-2"></div>
+                                </div>
+
+                            </div>
+
+                            <p id="health-note" class="text-xs text-slate-500 mt-4 pt-4 border-t border-slate-100"></p>
+
+                        </section>
+
+                    </div>
+
+
+                    <!-- C) EQUIPOS QUE REQUIEREN ATENCIÓN -->
+                    <section class="dash-panel bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+
+                        <div class="px-6 py-4 border-b border-slate-200 flex items-center justify-between gap-3">
+
+                            <h3 class="text-sm font-semibold text-slate-700">
+                                Equipos que requieren atención
+                            </h3>
+
+                            <span id="attention-count" class="text-xs text-slate-500"></span>
+
+                        </div>
+
+                        <div id="attention-list" class="divide-y divide-slate-100 max-h-72 overflow-y-auto"></div>
+
+                    </section>
+
+
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+
+                        <!-- D) ALERTAS -->
+                        <section class="dash-panel bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+
+                            <div class="px-6 py-4 border-b border-slate-200 flex items-center justify-between gap-3">
+
+                                <h3 class="text-sm font-semibold text-slate-700">Alertas</h3>
+
+                                <span id="dash-alerts-summary" class="text-xs text-slate-500"></span>
+
+                            </div>
+
+                            <div id="dash-alerts-types" class="px-6 py-3 flex flex-wrap gap-2 border-b border-slate-100"></div>
+
+                            <div id="dash-alerts-recent" class="divide-y divide-slate-100 max-h-64 overflow-y-auto"></div>
+
+                        </section>
+
+
+                        <!-- E) GRABACIONES -->
+                        <section class="dash-panel bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+
+                            <div class="px-6 py-4 border-b border-slate-200 flex items-center justify-between gap-3">
+
+                                <h3 class="text-sm font-semibold text-slate-700">Grabaciones</h3>
+
+                                <span id="dash-rec-active" class="text-xs"></span>
+
+                            </div>
+
+                            <div class="px-6 py-4 grid grid-cols-2 gap-4 border-b border-slate-100">
+
+                                <div>
+                                    <p class="text-xs text-slate-500">Total</p>
+                                    <strong id="dash-rec-total" class="block text-2xl font-semibold mt-1">0</strong>
+                                </div>
+
+                                <div>
+                                    <p class="text-xs text-slate-500">Espacio ocupado</p>
+                                    <strong id="dash-rec-size" class="block text-2xl font-semibold mt-1">—</strong>
+                                </div>
+
+                            </div>
+
+                            <div id="dash-rec-recent" class="divide-y divide-slate-100 max-h-56 overflow-y-auto"></div>
+
+                        </section>
+
+                    </div>
+
+
+                    <!-- F) ACTIVIDAD RECIENTE -->
+                    <section class="dash-panel bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+
+                        <div class="px-6 py-4 border-b border-slate-200">
+
+                            <h3 class="text-sm font-semibold text-slate-700">Actividad reciente</h3>
+
+                        </div>
+
+                        <div id="dash-activity" class="px-6 py-4"></div>
+
+                    </section>
+
+                </div>
 
 
 
@@ -433,13 +712,51 @@
                         </div>
 
 
-                        <button
-                            onclick="loadDevices()"
-                            class="px-4 py-2 rounded-lg bg-slate-100 text-slate-700 text-sm hover:bg-slate-200 transition"
-                        >
-                            Actualizar lista
-                        </button>
+                        <div class="flex flex-col sm:flex-row sm:items-center gap-3">
 
+                            <input
+                                id="devices-search"
+                                type="search"
+                                placeholder="Buscar equipo, IP o usuario..."
+                                class="px-3 py-2 border border-slate-300 rounded-lg text-sm w-full sm:w-64"
+                            >
+
+                            <select
+                                id="devices-status-filter"
+                                class="px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white"
+                            >
+                                <option value="all">Todos los estados</option>
+                                <option value="online">Solo online</option>
+                                <option value="offline">Solo offline</option>
+                            </select>
+
+                            <button
+                                onclick="loadDevices()"
+                                class="px-4 py-2 rounded-lg bg-slate-100 text-slate-700 text-sm hover:bg-slate-200 transition whitespace-nowrap"
+                            >
+                                Actualizar lista
+                            </button>
+
+                        </div>
+
+                    </div>
+
+
+                    <div
+                        id="devices-result-info"
+                        class="hidden px-6 py-2 bg-slate-50 border-b border-slate-200 text-xs text-slate-500"
+                    >
+                    </div>
+
+
+                    <!-- Aviso discreto: el ultimo refresco fallo, pero la
+                         tabla sigue mostrando los ultimos datos validos -->
+                    <div
+                        id="devices-stale-warning"
+                        class="hidden px-6 py-2 bg-amber-50 border-b border-amber-200 text-xs text-amber-800 flex items-center gap-2"
+                    >
+                        <span>⚠️</span>
+                        <span id="devices-stale-text"></span>
                     </div>
 
 
@@ -453,23 +770,35 @@
 
                                 <tr>
 
-                                    <th class="text-left px-6 py-4 font-semibold text-slate-600">
+                                    <th class="sortable-header text-left px-6 py-4 font-semibold text-slate-600" data-sort="hostname">
                                         Equipo
                                     </th>
 
-                                    <th class="text-left px-6 py-4 font-semibold text-slate-600">
+                                    <th class="sortable-header text-left px-6 py-4 font-semibold text-slate-600" data-sort="username">
+                                        Usuario
+                                    </th>
+
+                                    <th class="sortable-header text-left px-6 py-4 font-semibold text-slate-600" data-sort="operating_system">
                                         Sistema
                                     </th>
 
-                                    <th class="text-left px-6 py-4 font-semibold text-slate-600">
+                                    <th class="sortable-header text-left px-6 py-4 font-semibold text-slate-600" data-sort="ip_address">
                                         IP
                                     </th>
 
-                                    <th class="text-left px-6 py-4 font-semibold text-slate-600">
+                                    <th class="sortable-header text-left px-6 py-4 font-semibold text-slate-600" data-sort="ram_percent">
+                                        RAM
+                                    </th>
+
+                                    <th class="sortable-header text-left px-6 py-4 font-semibold text-slate-600" data-sort="storage_percent">
+                                        Disco
+                                    </th>
+
+                                    <th class="sortable-header text-left px-6 py-4 font-semibold text-slate-600" data-sort="status">
                                         Estado
                                     </th>
 
-                                    <th class="text-left px-6 py-4 font-semibold text-slate-600">
+                                    <th class="sortable-header text-left px-6 py-4 font-semibold text-slate-600" data-sort="last_seen">
                                         Último contacto
                                     </th>
 
@@ -564,6 +893,7 @@
 
 
                                 <button
+                                    type="button"
                                     id="start-recording-button"
                                     class="px-4 py-2 rounded-lg bg-red-600 text-white text-sm hover:bg-red-500 transition"
                                 >
@@ -572,6 +902,7 @@
 
 
                                 <button
+                                    type="button"
                                     id="stop-recording-button"
                                     class="hidden px-4 py-2 rounded-lg bg-slate-700 text-white text-sm hover:bg-slate-600 transition"
                                 >
@@ -586,6 +917,39 @@
                                     <span class="w-2.5 h-2.5 rounded-full bg-red-500"></span>
                                     Grabando
                                 </span>
+                            </div>
+
+                            <div class="bg-slate-50 border border-slate-200 rounded-xl p-4 flex flex-wrap items-center gap-4">
+
+                                <div class="flex-1 min-w-[14rem]">
+                                    <p class="text-sm font-medium text-slate-900">
+                                        Grabación continua:
+                                        <span id="continuous-state" class="font-semibold">—</span>
+                                    </p>
+                                    <p class="text-xs text-slate-500 mt-1">
+                                        Estado: <span id="continuous-status">—</span>
+                                        · Último segmento: <span id="continuous-last-segment">—</span>
+                                        · Última subida: <span id="continuous-last-upload">—</span>
+                                        · Pendientes: <span id="continuous-pending">—</span>
+                                    </p>
+                                </div>
+
+                                <button
+                                    type="button"
+                                    id="continuous-enable-button"
+                                    class="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm hover:bg-emerald-500 transition"
+                                >
+                                    Activar grabación continua
+                                </button>
+
+                                <button
+                                    type="button"
+                                    id="continuous-disable-button"
+                                    class="hidden px-4 py-2 rounded-lg bg-slate-700 text-white text-sm hover:bg-slate-600 transition"
+                                >
+                                    Desactivar grabación continua
+                                </button>
+
                             </div>
 
                             <div
@@ -1068,6 +1432,133 @@
                             </div>
 
 
+                            <!-- Inventario en vivo: SOLO LECTURA.
+                                 Deliberadamente separado de cualquier
+                                 accion que modifique el equipo. -->
+                            <div
+                                id="inventory-panel"
+                                class="bg-white border border-slate-200 rounded-xl overflow-hidden"
+                            >
+
+                                <div class="px-5 py-4 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3">
+
+                                    <div>
+
+                                        <h4 class="font-semibold text-slate-900">
+                                            Inventario del equipo
+                                        </h4>
+
+                                        <p class="text-sm text-slate-500 mt-1">
+                                            Consulta en vivo, solo lectura. No modifica nada en el equipo.
+                                        </p>
+
+                                    </div>
+
+                                    <div class="flex items-center gap-2">
+
+                                        <button
+                                            id="processes-button"
+                                            class="px-4 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-medium"
+                                        >
+                                            Consultar procesos
+                                        </button>
+
+                                        <button
+                                            id="services-button"
+                                            class="px-4 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-medium"
+                                        >
+                                            Consultar servicios
+                                        </button>
+
+                                    </div>
+
+                                </div>
+
+
+                                <div
+                                    id="inventory-status"
+                                    class="px-5 py-3 text-sm text-slate-500 border-b border-slate-200"
+                                >
+                                    Sin consultar
+                                </div>
+
+
+                                <div class="overflow-x-auto max-h-96 overflow-y-auto">
+
+                                    <table class="w-full text-sm">
+
+                                        <thead
+                                            id="inventory-head"
+                                            class="bg-slate-50 border-b border-slate-200 sticky top-0"
+                                        ></thead>
+
+                                        <tbody
+                                            id="inventory-table"
+                                            class="divide-y divide-slate-100"
+                                        ></tbody>
+
+                                    </table>
+
+                                </div>
+
+                            </div>
+
+
+                            <!-- Alertas y grabaciones de ESTE equipo -->
+                            <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+
+
+                                <div class="border border-slate-200 rounded-xl overflow-hidden">
+
+                                    <div class="px-5 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+
+                                        <h4 class="text-sm font-semibold text-slate-700">
+                                            Alertas del equipo
+                                        </h4>
+
+                                        <span
+                                            id="device-alerts-count"
+                                            class="text-xs text-slate-500"
+                                        ></span>
+
+                                    </div>
+
+                                    <div
+                                        id="device-alerts-list"
+                                        class="divide-y divide-slate-100 max-h-72 overflow-y-auto"
+                                    >
+                                    </div>
+
+                                </div>
+
+
+                                <div class="border border-slate-200 rounded-xl overflow-hidden">
+
+                                    <div class="px-5 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+
+                                        <h4 class="text-sm font-semibold text-slate-700">
+                                            Grabaciones del equipo
+                                        </h4>
+
+                                        <span
+                                            id="device-recordings-count"
+                                            class="text-xs text-slate-500"
+                                        ></span>
+
+                                    </div>
+
+                                    <div
+                                        id="device-recordings-list"
+                                        class="divide-y divide-slate-100 max-h-72 overflow-y-auto"
+                                    >
+                                    </div>
+
+                                </div>
+
+
+                            </div>
+
+
                         </div>
 
 
@@ -1372,6 +1863,90 @@
                             <label class="text-sm text-slate-700">
                                 Mostrar alertas de conexión
                             </label>
+
+                        </div>
+
+
+                        <!-- Umbrales de salud: generan alertas de recursos -->
+                        <div class="border-t border-slate-200 pt-5">
+
+                            <h4 class="text-sm font-semibold text-slate-700">
+                                Umbrales de salud
+                            </h4>
+
+                            <p class="text-xs text-slate-500 mt-1 mb-4">
+                                Porcentaje de uso a partir del cual un equipo
+                                genera alerta. El valor de aviso debe ser menor
+                                que el crítico.
+                            </p>
+
+                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+
+                                <div>
+
+                                    <label class="block text-sm font-medium text-slate-700 mb-1">
+                                        RAM — aviso (%)
+                                    </label>
+
+                                    <input
+                                        id="setting-ram-warning"
+                                        type="number"
+                                        min="0"
+                                        max="100"
+                                        class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm"
+                                    >
+
+                                </div>
+
+                                <div>
+
+                                    <label class="block text-sm font-medium text-slate-700 mb-1">
+                                        RAM — crítico (%)
+                                    </label>
+
+                                    <input
+                                        id="setting-ram-critical"
+                                        type="number"
+                                        min="0"
+                                        max="100"
+                                        class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm"
+                                    >
+
+                                </div>
+
+                                <div>
+
+                                    <label class="block text-sm font-medium text-slate-700 mb-1">
+                                        Disco — aviso (%)
+                                    </label>
+
+                                    <input
+                                        id="setting-disk-warning"
+                                        type="number"
+                                        min="0"
+                                        max="100"
+                                        class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm"
+                                    >
+
+                                </div>
+
+                                <div>
+
+                                    <label class="block text-sm font-medium text-slate-700 mb-1">
+                                        Disco — crítico (%)
+                                    </label>
+
+                                    <input
+                                        id="setting-disk-critical"
+                                        type="number"
+                                        min="0"
+                                        max="100"
+                                        class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm"
+                                    >
+
+                                </div>
+
+                            </div>
 
                         </div>
 

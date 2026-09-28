@@ -9,6 +9,9 @@ import os
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
+import sqlite3
+import uuid
+
 from backend.database import get_connection
 
 
@@ -25,33 +28,72 @@ def get_recordings_dir():
     return RECORDINGS_DIR
 
 
+class RecordingAlreadyExists(Exception):
+    """
+    La grabación ya estaba registrada (índice único (device_id, path)).
+
+    Ocurre cuando dos subidas del mismo segmento llegan a la vez: la primera
+    inserta y la segunda choca con el índice. No es un error del cliente, así
+    que el endpoint la trata como duplicado, no como fallo.
+    """
+
+    def __init__(self, recording_id):
+        super().__init__(f"La grabación ya existe (id={recording_id})")
+        self.recording_id = recording_id
+
+
 def add_recording(device_id, path, started_at, ended_at, duration_sec, size_bytes):
 
     connection = get_connection()
 
-    cursor = connection.execute(
-        """
-        INSERT INTO recordings (
-            device_id, started_at, ended_at,
-            duration_sec, size_bytes, path, status
-        )
-        VALUES (?, ?, ?, ?, ?, ?, 'stored')
-        """,
-        (
-            device_id,
-            started_at,
-            ended_at,
-            duration_sec,
-            size_bytes,
-            path
-        )
-    )
+    try:
 
-    connection.commit()
-    recording_id = cursor.lastrowid
+        cursor = connection.execute(
+            """
+            INSERT INTO recordings (
+                device_id, started_at, ended_at,
+                duration_sec, size_bytes, path, status
+            )
+            VALUES (?, ?, ?, ?, ?, ?, 'stored')
+            """,
+            (
+                device_id,
+                started_at,
+                ended_at,
+                duration_sec,
+                size_bytes,
+                path
+            )
+        )
+
+        connection.commit()
+
+        return cursor.lastrowid
+
+    except sqlite3.IntegrityError:
+
+        # Otra subida del mismo segmento ganó la carrera: se devuelve su id
+        # en lugar de crear una segunda fila para el mismo archivo.
+        fila = connection.execute(
+            "SELECT id FROM recordings WHERE device_id = ? AND path = ?",
+            (device_id, path)
+        ).fetchone()
+
+        raise RecordingAlreadyExists(fila["id"] if fila else None)
+
+    finally:
+        connection.close()
+
+
+def find_recording_by_path(device_id, rel_path):
+    # Evita filas duplicadas cuando el Agent reintenta subir un segmento
+    connection = get_connection()
+    row = connection.execute(
+        "SELECT id FROM recordings WHERE device_id = ? AND path = ?",
+        (device_id, rel_path)
+    ).fetchone()
     connection.close()
-
-    return recording_id
+    return row["id"] if row else None
 
 
 def set_keep(recording_id, keep):
@@ -258,16 +300,218 @@ def list_recordings(device_id=None):
         LEFT JOIN devices d ON d.device_id = r.device_id
     """
 
+    # Las grabaciones en cuarentena (status='invalid') no se mezclan con las
+    # buenas: siguen en la base y en disco, pero no aparecen en el listado.
     if device_id:
         rows = connection.execute(
-            base_query + " WHERE r.device_id = ? ORDER BY r.started_at DESC",
+            base_query + " WHERE r.status = 'stored' AND r.device_id = ?"
+                         " ORDER BY r.started_at DESC",
             (device_id,)
         ).fetchall()
     else:
         rows = connection.execute(
-            base_query + " ORDER BY r.started_at DESC"
+            base_query + " WHERE r.status = 'stored' ORDER BY r.started_at DESC"
         ).fetchall()
 
     connection.close()
 
     return [dict(row) for row in rows]
+
+
+# ==============================
+# LIMPIEZA DE SUBIDAS INTERRUMPIDAS
+# ==============================
+
+# Extensión del archivo temporal mientras se recibe una subida.
+# Un .part nunca es una grabación: es una subida a medias.
+PART_SUFFIX = ".part"
+
+# Antigüedad a partir de la cual un .part se considera abandonado.
+# Una subida normal tarda segundos; el propio Agent corta a los 120 s de
+# tiempo de espera. 6 horas deja un margen enorme antes de tocar nada.
+PART_MAX_AGE_SECONDS = 6 * 3600
+
+
+def cleanup_orphan_parts(max_age_seconds=PART_MAX_AGE_SECONDS):
+    """
+    Borra los .part abandonados por un reinicio o una caída del backend.
+
+    Se ejecuta UNA vez al arrancar, no en cada petición.
+
+    Deliberadamente conservador:
+      - solo archivos que terminan en .part;
+      - solo dentro de la carpeta de grabaciones;
+      - solo si son más antiguos que max_age_seconds, para no pisar una
+        subida que esté ocurriendo ahora mismo;
+      - los .mp4 NO se tocan jamás, ni siquiera los huérfanos: eso sería un
+        barrido de grabaciones y no es lo que hace esta función.
+
+    Devuelve un resumen de lo borrado y lo conservado.
+    """
+
+    base = str(get_recordings_dir())
+
+    ahora = datetime.now(timezone.utc).timestamp()
+
+    resultado = {"deleted": 0, "kept_recent": 0, "errors": 0}
+
+    for raiz, _, archivos in os.walk(base):
+
+        for nombre in archivos:
+
+            if not nombre.endswith(PART_SUFFIX):
+                continue
+
+            ruta = os.path.join(raiz, nombre)
+
+            try:
+                antiguedad = ahora - os.path.getmtime(ruta)
+
+            except OSError:
+                resultado["errors"] += 1
+                continue
+
+            if antiguedad < max_age_seconds:
+                # Podría ser una subida en curso: no se toca
+                resultado["kept_recent"] += 1
+                continue
+
+            try:
+                os.remove(ruta)
+                resultado["deleted"] += 1
+
+            except OSError as error:
+                print(f"[grabaciones] No se pudo borrar {ruta}: {error}")
+                resultado["errors"] += 1
+
+    if resultado["deleted"]:
+        print(
+            f"[grabaciones] Limpieza de subidas interrumpidas: "
+            f"{resultado['deleted']} archivo(s) .part eliminado(s)"
+        )
+
+    return resultado
+
+
+# ==============================
+# CUARENTENA DE GRABACIONES INVÁLIDAS
+# ==============================
+
+# Carpeta donde se guardan las grabaciones que no superan la validación.
+# No se borran: son la evidencia de que algo falló en el equipo de origen.
+INVALID_DIR_NAME = "_invalid"
+
+
+def get_invalid_dir():
+
+    carpeta = os.path.join(str(get_recordings_dir()), INVALID_DIR_NAME)
+    os.makedirs(carpeta, exist_ok=True)
+
+    return carpeta
+
+
+def quarantine_recording(source_path, device_id, filename):
+    """
+    Mueve una grabación inválida a la carpeta de cuarentena.
+
+    El nombre lleva el device_id y un sufijo único, de modo que dos archivos
+    con el mismo nombre de segmento procedentes de equipos distintos —o del
+    mismo equipo en momentos distintos— nunca se pisan.
+
+    Devuelve la ruta relativa dentro de la carpeta de grabaciones, o None si
+    no se pudo mover.
+    """
+
+    destino_dir = get_invalid_dir()
+
+    seguro = os.path.basename(filename or "grabacion.mp4")
+
+    base, extension = os.path.splitext(seguro)
+
+    unico = f"{device_id}_{base}_{uuid.uuid4().hex[:8]}{extension}"
+
+    destino = os.path.join(destino_dir, unico)
+
+    try:
+        os.replace(source_path, destino)
+
+    except OSError as error:
+        print(f"[grabaciones] No se pudo poner en cuarentena {source_path}: {error}")
+        return None
+
+    return os.path.join(INVALID_DIR_NAME, unico).replace(os.sep, "/")
+
+
+def add_invalid_recording(device_id, path, started_at, ended_at,
+                          duration_sec, size_bytes, reason):
+    """
+    Registra una grabación que no superó la validación.
+
+    Se guarda con status='invalid' para que quede constancia de que el
+    equipo subió algo inservible, pero fuera del listado normal.
+    """
+
+    connection = get_connection()
+
+    try:
+
+        cursor = connection.execute(
+            """
+            INSERT INTO recordings (
+                device_id, started_at, ended_at,
+                duration_sec, size_bytes, path, status, invalid_reason
+            )
+            VALUES (?, ?, ?, ?, ?, ?, 'invalid', ?)
+            """,
+            (
+                device_id,
+                started_at,
+                ended_at,
+                duration_sec,
+                size_bytes,
+                path,
+                reason
+            )
+        )
+
+        connection.commit()
+
+        return cursor.lastrowid
+
+    except sqlite3.IntegrityError:
+
+        fila = connection.execute(
+            "SELECT id FROM recordings WHERE device_id = ? AND path = ?",
+            (device_id, path)
+        ).fetchone()
+
+        raise RecordingAlreadyExists(fila["id"] if fila else None)
+
+    finally:
+        connection.close()
+
+
+def list_invalid_recordings(device_id=None):
+    """Grabaciones en cuarentena. No se usa en el panel todavía."""
+
+    connection = get_connection()
+
+    consulta = """
+        SELECT id, device_id, started_at, duration_sec, size_bytes,
+               path, invalid_reason, created_at
+        FROM recordings
+        WHERE status = 'invalid'
+    """
+
+    if device_id:
+        filas = connection.execute(
+            consulta + " AND device_id = ? ORDER BY id DESC", (device_id,)
+        ).fetchall()
+    else:
+        filas = connection.execute(
+            consulta + " ORDER BY id DESC"
+        ).fetchall()
+
+    connection.close()
+
+    return [dict(f) for f in filas]

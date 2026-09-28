@@ -11,3 +11,12 @@ dist/
 build/
 *.spec
 server_recordings/
+
+# Certificados TLS y claves privadas: nunca se suben al repositorio.
+# El script certs/generate-dev-cert.sh sí se versiona.
+*.pem
+*.key
+*.crt
+*.cer
+*.pfx
+*.p12

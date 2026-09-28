@@ -1,7 +1,16 @@
+import hmac
+import sqlite3
+
 from datetime import datetime, timezone, timedelta
 
 from backend.database import get_connection
 from backend.models import DeviceRegister, DeviceHeartbeat
+from backend.auth import (
+    generate_device_id,
+    generate_agent_token,
+    hash_agent_token,
+    agent_token_matches
+)
 
 
 OFFLINE_AFTER_SECONDS = 30
@@ -82,6 +91,37 @@ def update_heartbeat(data: DeviceHeartbeat):
         "status": "heartbeat_received",
         "device_id": data.device_id
     }
+
+
+def set_continuous_recording(device_id, enabled):
+    connection = get_connection()
+
+    cursor = connection.execute(
+        "UPDATE devices SET continuous_recording = ? WHERE device_id = ?",
+        (1 if enabled else 0, device_id)
+    )
+
+    connection.commit()
+    changed = cursor.rowcount
+    connection.close()
+
+    return changed > 0
+
+
+def get_continuous_recording(device_id):
+    connection = get_connection()
+
+    row = connection.execute(
+        "SELECT continuous_recording FROM devices WHERE device_id = ?",
+        (device_id,)
+    ).fetchone()
+
+    connection.close()
+
+    if row is None:
+        return None
+
+    return bool(row["continuous_recording"])
 
 
 def update_system_info(device_id, system_info):
@@ -279,3 +319,226 @@ def get_devices():
         result.append(device)
 
     return result
+
+# ==============================
+# CREDENCIALES INDIVIDUALES POR DISPOSITIVO
+# ==============================
+#
+# Cada Agent tiene su propio token. En la base se guarda SOLO su SHA-256:
+# el valor en claro se entrega una única vez al Agent y no se conserva.
+#
+# Esta etapa solo añade el modelo y las funciones. Los endpoints de registro,
+# heartbeat, WebSocket y subidas siguen usando el AGENT_TOKEN compartido.
+
+
+def issue_agent_token(device_id):
+    """
+    Genera un token individual para un dispositivo YA existente y guarda su
+    hash, marcándolo como activo.
+
+    Devuelve el token en claro (única vez que existe fuera del Agent) o None
+    si el device_id no existe.
+    """
+
+    token = generate_agent_token()
+    now = datetime.now(timezone.utc).isoformat()
+
+    connection = get_connection()
+
+    cursor = connection.execute(
+        """
+        UPDATE devices
+        SET
+            agent_token_hash = ?,
+            agent_token_issued_at = ?,
+            agent_token_active = 1
+        WHERE device_id = ?
+        """,
+        (
+            hash_agent_token(token),
+            now,
+            device_id
+        )
+    )
+
+    connection.commit()
+    connection.close()
+
+    if cursor.rowcount == 0:
+        return None
+
+    return token
+
+
+def get_device_id_for_token(token):
+    """
+    Devuelve el device_id al que pertenece un token individual, o None si el
+    token no es válido o el dispositivo está revocado.
+
+    La comparación se hace en tiempo constante sobre el hash. Se busca por
+    hash en lugar de recorrer todas las filas: el hash es determinista, así
+    que una sola consulta indexable basta.
+    """
+
+    if not token:
+        return None
+
+    connection = get_connection()
+
+    row = connection.execute(
+        """
+        SELECT device_id, agent_token_hash, agent_token_active
+        FROM devices
+        WHERE agent_token_hash = ?
+        """,
+        (hash_agent_token(token),)
+    ).fetchone()
+
+    connection.close()
+
+    if row is None:
+        return None
+
+    # Revocado (0) o sin token individual asignado (NULL)
+    if not row["agent_token_active"]:
+        return None
+
+    # Confirmación en tiempo constante: la consulta ya filtró por hash, pero
+    # así la comparación final nunca depende del contenido del token.
+    if not agent_token_matches(token, row["agent_token_hash"]):
+        return None
+
+    return row["device_id"]
+
+
+def verify_device_token(token, device_id):
+    """
+    Comprueba que un token individual pertenece exactamente a ese device_id.
+    Útil para endpoints que reciben el device_id en la ruta.
+    """
+
+    resolved = get_device_id_for_token(token)
+
+    if resolved is None:
+        return False
+
+    return hmac.compare_digest(resolved, device_id or "")
+
+
+def revoke_agent_token(device_id):
+    """
+    Desactiva la credencial de un dispositivo sin borrar sus datos.
+    Devuelve True si se revocó, False si el device_id no existe.
+    """
+
+    connection = get_connection()
+
+    cursor = connection.execute(
+        "UPDATE devices SET agent_token_active = 0 WHERE device_id = ?",
+        (device_id,)
+    )
+
+    connection.commit()
+    connection.close()
+
+    return cursor.rowcount > 0
+
+
+def device_exists(device_id):
+    """True si el equipo esta dado de alta."""
+
+    connection = get_connection()
+
+    row = connection.execute(
+        "SELECT 1 FROM devices WHERE device_id = ?",
+        (device_id,)
+    ).fetchone()
+
+    connection.close()
+
+    return row is not None
+
+
+def device_has_agent_token(device_id):
+    """True si el dispositivo ya tiene una credencial individual asignada."""
+
+    connection = get_connection()
+
+    row = connection.execute(
+        "SELECT agent_token_hash FROM devices WHERE device_id = ?",
+        (device_id,)
+    ).fetchone()
+
+    connection.close()
+
+    return bool(row and row["agent_token_hash"])
+
+
+def enroll_device(hostname, operating_system, ip_address):
+    """
+    Alta de un Agent NUEVO.
+
+    El servidor genera el device_id y el token individual: el cliente no
+    elige su identidad, así que no puede reclamar la de otro equipo. Siempre
+    INSERT, nunca UPDATE, de modo que un alta no puede tocar una fila
+    existente.
+
+    Devuelve (device_id, token). El token va en claro SOLO en esta respuesta;
+    en la base queda únicamente su SHA-256.
+    """
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    connection = get_connection()
+
+    try:
+
+        # Reintentos por si un device_id aleatorio colisionara (improbable:
+        # 64 bits), para no fallar un alta legítima por azar.
+        for _ in range(5):
+
+            device_id = generate_device_id()
+            token = generate_agent_token()
+
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO devices (
+                        device_id,
+                        hostname,
+                        operating_system,
+                        ip_address,
+                        status,
+                        last_seen,
+                        agent_token_hash,
+                        agent_token_issued_at,
+                        agent_token_active
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+                    """,
+                    (
+                        device_id,
+                        hostname,
+                        operating_system,
+                        ip_address,
+                        "online",
+                        now,
+                        hash_agent_token(token),
+                        now
+                    )
+                )
+
+            except sqlite3.IntegrityError:
+                # device_id ya en uso: se prueba con otro
+                continue
+
+            connection.commit()
+
+            return device_id, token
+
+        raise RuntimeError(
+            "No se pudo generar un device_id libre para el alta"
+        )
+
+    finally:
+        connection.close()

@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import platform
 import socket
+import ssl
 import getpass
 import os
 import json
@@ -10,6 +11,9 @@ import base64
 import io
 import re
 import urllib.parse
+import threading
+import time
+from datetime import datetime, timezone
 
 import psutil
 import requests
@@ -52,6 +56,64 @@ if SERVER_URL.startswith("https://"):
 else:
     WEBSOCKET_URL = "ws://" + SERVER_URL[len("http://"):] + "/ws/agent"
 
+# CA propia para validar el certificado del servidor (desarrollo con TLS local).
+# Opcional: vacío = se usan las autoridades estándar del sistema.
+#
+# Hace falta porque requests valida con el paquete certifi y NO consulta el
+# almacén de certificados de Windows, así que no reconoce una CA local aunque
+# esté instalada en el sistema. Indicar la CA NO desactiva la verificación:
+# solo añade en quién confiar; el certificado se sigue validando.
+_ca_cert_setting = os.getenv("REMOTEADMIN_CA_CERT", "").strip()
+
+if _ca_cert_setting:
+    # Relativa a la raíz del proyecto: el Agent corre como tarea programada y
+    # el directorio de trabajo no es fiable (mismo motivo que ENV_PATH).
+    CA_CERT = os.path.normpath(
+        os.path.join(
+            os.path.dirname(ENV_PATH),
+            _ca_cert_setting
+        )
+    )
+else:
+    CA_CERT = ""
+
+if CA_CERT and not os.path.isfile(CA_CERT):
+
+    message = (
+        f"ERROR: REMOTEADMIN_CA_CERT apunta a un archivo que no existe:\n  {CA_CERT}\n"
+        "Genera los certificados con: bash certs/generate-dev-cert.sh"
+    )
+
+    if SERVER_URL.startswith("https://"):
+        # Con HTTPS la CA es imprescindible: fallar aquí evita un error TLS opaco
+        raise SystemExit(message)
+
+    print(message)
+    print("El servidor es HTTP, se continúa sin usar la CA.")
+
+    # Se descarta: dejarla apuntando a un archivo inexistente rompería requests
+    CA_CERT = ""
+
+# verify de requests: ruta de la CA si está configurada, o True (validación
+# estándar). Nunca False: eso desactivaría la verificación.
+REQUESTS_VERIFY = CA_CERT or True
+
+
+def build_ssl_context():
+    """
+    Contexto TLS para el WebSocket (wss://).
+
+    Devuelve None si no hay CA propia configurada, para que websockets use su
+    contexto seguro por defecto. Con CA configurada se mantiene la verificación
+    completa de certificado y nombre de host.
+    """
+
+    if not CA_CERT:
+        return None
+
+    return ssl.create_default_context(cafile=CA_CERT)
+
+
 HEARTBEAT_INTERVAL = 10
 
 # Token de este Agent: se configura en el .env, nunca en el código.
@@ -63,18 +125,185 @@ if not AGENT_TOKEN:
         "El servidor rechazará este Agent."
     )
 
-# Grabación de pantalla. El grabador queda inactivo hasta que se llame a
-# start_screen_recording(); no interfiere con nada. Al cerrar cada segmento
-# se sube al backend (autenticado con AGENT_TOKEN) y queda registrado en SQLite.
+# Grabación de pantalla tipo "cámara de seguridad".
+# - El grabador (Fase 1) corre en su propio hilo: no depende del WebSocket, así
+#   que si se cae la conexión la grabación LOCAL continúa.
+# - Cada segmento cerrado se encola y se sube; si el servidor está caído queda
+#   pendiente y se reintenta. El MP4 local NUNCA se borra hasta confirmarse.
 from recorder import ScreenRecorder
+from paths import get_data_dir, get_config_dir
+import storage
+import inventory
+
+# ---- Estado del Agent (leído por el bucle asíncrono, escrito por hilos) ----
+_state_lock = threading.Lock()
+continuous_enabled = False
+agent_state = "idle"          # idle | recording | uploading | offline | error
+last_segment_at = None        # ISO del último segmento cerrado
+last_upload_at = None         # ISO de la última subida confirmada
+
+# ---- Cola de subidas pendientes (persistente en ProgramData) ----
+_pending_lock = threading.Lock()
+PENDING_DIR = os.path.join(get_data_dir(), "data")
+os.makedirs(PENDING_DIR, exist_ok=True)
+PENDING_FILE = os.path.join(PENDING_DIR, "pending_uploads.json")
 
 
-def upload_recording_segment(segment):
+def _load_pending():
+    try:
+        with open(PENDING_FILE, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def _save_pending(items):
+    try:
+        with open(PENDING_FILE, "w", encoding="utf-8") as handle:
+            json.dump(items, handle)
+    except OSError:
+        pass
+
+
+def _pending_count():
+    with _pending_lock:
+        return len(_load_pending())
+
+
+def enqueue_pending(segment):
+    with _pending_lock:
+        items = _load_pending()
+        if not any(it.get("path") == segment.get("path") for it in items):
+            items.append({
+                "path": segment.get("path"),
+                "started_at": segment.get("started_at", ""),
+                "ended_at": segment.get("ended_at", ""),
+                "duration_sec": segment.get("duration_sec", 0)
+            })
+            _save_pending(items)
+
+
+def _remove_pending(path):
+    with _pending_lock:
+        items = [it for it in _load_pending() if it.get("path") != path]
+        _save_pending(items)
+
+
+def _is_recording_protected(path):
+    """
+    True si un MP4 NO debe borrarse todavía.
+
+    Solo protege el segmento que el grabador está escribiendo ahora mismo.
+
+    NO se comprueba la cola de pendientes: el borrado ocurre justo después de
+    que el backend confirme ESE archivo y antes de retirarlo de la cola, así
+    que estar en la cola es lo esperado en ese momento. Comprobarlo aquí
+    impediría todo borrado.
+
+    La garantía de que no se borra algo sin subir viene del único punto de
+    llamada: _process_pending() solo llama al borrado cuando _upload_one()
+    devolvió True para ese archivo.
+    """
+
+    en_curso = screen_recorder.current_segment_path()
+
+    if en_curso and os.path.normcase(os.path.abspath(en_curso)) == \
+            os.path.normcase(os.path.abspath(path)):
+        return True
+
+    return False
+
+
+def _delete_uploaded_recording(path):
+    """
+    Borra el MP4 local de un segmento ya confirmado por el backend.
+
+    El borrado solo ocurre DESPUÉS de que el servidor haya respondido
+    correctamente y solo sobre archivos gestionados por RemoteAdmin: la
+    comprobación vive en storage.py y no admite rutas de fuera de la carpeta
+    de grabaciones.
+    """
+
+    if not path:
+        return False
+
+    return storage.delete_recording_file(
+        path,
+        is_protected=_is_recording_protected
+    )
+
+
+# Códigos HTTP que merecen otro intento con exactamente la misma petición.
+# El resto de errores 4xx son permanentes: repetir no los resuelve.
+RETRYABLE_STATUS = {
+    408,   # tiempo de espera agotado en el servidor
+    425,   # demasiado pronto
+    429,   # demasiadas peticiones
+    500, 502, 503, 504, 507, 509
+}
+
+
+# Rutas cuya subida falló de forma permanente. Se dejan de reintentar, pero
+# el archivo local NO se borra y la entrada sigue en la cola: la grabación no
+# se pierde, simplemente espera a que alguien mire el log.
+#
+# En memoria a propósito: persistirlo cambiaría el formato de
+# pending_uploads.json, que es terreno de F5. Tras reiniciar el Agent se
+# reintenta una vez más y, si vuelve a fallar igual, se marca de nuevo.
+_permanent_failures = set()
+_permanent_lock = threading.Lock()
+
+
+def mark_permanent_failure(path):
+
+    with _permanent_lock:
+        nuevo = path not in _permanent_failures
+        _permanent_failures.add(path)
+
+    return nuevo
+
+
+def is_permanently_failed(path):
+
+    with _permanent_lock:
+        return path in _permanent_failures
+
+
+def clear_permanent_failure(path):
+
+    with _permanent_lock:
+        _permanent_failures.discard(path)
+
+
+def is_retryable_status(status_code):
+    """
+    True si conviene reintentar esta subida tal cual.
+
+    Reintentables: fallos de red (no llegan aquí, se ven como excepción),
+    408, 425, 429 y los 5xx: el servidor no pudo, pero podrá.
+
+    NO reintentables: 401/403 (token inválido o ajeno), 400 (petición mal
+    formada), 404 (dispositivo inexistente), 413 (archivo demasiado grande).
+    Reintentar eso es gastar red y disco sin ninguna posibilidad de éxito.
+    """
+
+    if status_code in RETRYABLE_STATUS:
+        return True
+
+    # Cualquier otro 5xx desconocido también se reintenta
+    return 500 <= status_code < 600
+
+
+def _upload_one(segment):
+    """Sube un segmento. Devuelve True si el servidor lo recibió (o ya lo tenía)."""
 
     path = segment.get("path")
 
     if not path or not os.path.exists(path):
-        return
+        # El archivo local ya no está: se descarta de la cola
+        return True
+
+    nombre = os.path.basename(path)
 
     params = {
         "filename": os.path.basename(path),
@@ -84,51 +313,348 @@ def upload_recording_segment(segment):
     }
 
     try:
+        headers = device_auth_headers()
+
+    except RuntimeError as error:
+        # Sin identidad no se sube nada: el segmento queda pendiente y se
+        # reintenta cuando el Agent esté enrolado.
+        print(f"[subida] {error}")
+        return False
+
+    headers["Content-Type"] = "application/octet-stream"
+
+    try:
         with open(path, "rb") as handle:
             response = requests.post(
                 f"{SERVER_URL}/api/devices/{get_device_id()}/recordings/upload",
                 params=params,
                 data=handle,
-                headers={
-                    "X-Agent-Token": AGENT_TOKEN,
-                    "Content-Type": "application/octet-stream"
-                },
-                timeout=120
+                headers=headers,
+                timeout=120,
+                verify=REQUESTS_VERIFY
             )
-        response.raise_for_status()
-        print(f"[agent] Grabación subida: {os.path.basename(path)}")
 
     except requests.RequestException as error:
-        # Local-first: el MP4 ya está en disco; se puede reintentar luego
-        print(f"[agent] No se pudo subir la grabación ({error})")
+        # Red caída, DNS, TLS, timeout: siempre reintentable
+        print(f"[subida] Error de red al subir {nombre}: {type(error).__name__}")
+        return False
+
+    if response.ok:
+
+        # El servidor puede aceptar la subida y a la vez rechazar el
+        # contenido: la grabación llegó entera pero no es un vídeo utilizable
+        # (F4). Para la cola es una resolución definitiva igual que un éxito
+        # —no hay nada que reintentar—, pero conviene que se vea en el log en
+        # lugar de anunciarlo como una subida correcta.
+        try:
+            resultado = response.json()
+
+        except ValueError:
+            resultado = {}
+
+        if resultado.get("status") == "invalid":
+            print(
+                f"[subida] {nombre}: el servidor la marcó como INVÁLIDA "
+                f"({resultado.get('reason')}). Queda en cuarentena en el "
+                "servidor; no se reintenta."
+            )
+
+        return True
+
+    if is_retryable_status(response.status_code):
+        print(
+            f"[subida] {nombre}: el servidor respondió {response.status_code}, "
+            "se reintentará"
+        )
+        return False
+
+    # Error permanente: repetir la MISMA subida no lo va a arreglar, así que
+    # se deja de reintentar.
+    #
+    # El archivo local NO se borra y la entrada sigue en la cola: perder la
+    # grabación sería peor que ocupar disco. Simplemente deja de consumir red
+    # cada 30 segundos y queda registrada para intervención manual.
+    if mark_permanent_failure(path):
+        print(
+            f"[subida] ERROR PERMANENTE al subir {nombre}: "
+            f"el servidor respondió {response.status_code}. "
+            "Se deja de reintentar. El archivo local se conserva y sigue en "
+            "la cola; requiere intervención manual."
+        )
+
+    return False
+
+
+def _process_pending():
+    """Reintenta todas las subidas pendientes. Actualiza el estado."""
+
+    global last_upload_at, agent_state
+
+    with _pending_lock:
+        items = list(_load_pending())
+
+    if not items:
+        return
+
+    with _state_lock:
+        if agent_state == "recording":
+            agent_state = "uploading"
+
+    any_ok = False
+
+    for segment in items:
+
+        # Los fallos permanentes no se vuelven a intentar: el archivo sigue
+        # en disco y en la cola, esperando intervención manual, pero no
+        # gasta red ni llena el log cada 30 segundos.
+        if is_permanently_failed(segment.get("path")):
+            continue
+
+        if _upload_one(segment):
+            # Se borra el archivo ANTES de sacarlo de la cola. Si el borrado
+            # falla (permisos, antivirus, archivo bloqueado), la entrada sigue
+            # pendiente y el hilo de reintentos volverá a intentarlo: no hay
+            # ningún barrido que recoja huérfanos, así que la cola es la única
+            # garantía de que el archivo acabe eliminándose.
+            #
+            # El caso inverso también es seguro: si el borrado funciona pero el
+            # proceso muere antes de limpiar la cola, en el siguiente arranque
+            # _upload_one() ve que el archivo ya no existe y devuelve True, con
+            # lo que la entrada se limpia sola.
+            if _delete_uploaded_recording(segment.get("path")):
+                _remove_pending(segment.get("path"))
+            any_ok = True
+            with _state_lock:
+                last_upload_at = datetime.now(timezone.utc).isoformat()
+            print(f"[agent] Grabación subida: {os.path.basename(segment.get('path',''))}")
+        else:
+            # Servidor no disponible: se deja pendiente y se marca offline
+            with _state_lock:
+                agent_state = "offline"
+            break
+
+    with _state_lock:
+        if _pending_count() == 0 and screen_recorder.is_recording():
+            agent_state = "recording"
+
+    return any_ok
+
+
+def on_segment_complete(segment):
+    """Llamado por el hilo del grabador al cerrar cada segmento."""
+
+    global last_segment_at
+
+    with _state_lock:
+        last_segment_at = datetime.now(timezone.utc).isoformat()
+
+    enqueue_pending(segment)
+
+    # Intento inmediato; si falla, el hilo de reintentos lo tomará luego
+    _process_pending()
+
+    report_status_threadsafe()
+
+
+def _retry_loop():
+    while True:
+        try:
+            _process_pending()
+        except Exception as error:
+            print(f"[agent] Error en reintento de subida: {error}")
+        time.sleep(30)
 
 
 screen_recorder = ScreenRecorder(
-    on_segment_complete=upload_recording_segment
+    on_segment_complete=on_segment_complete
 )
 
 
 def start_screen_recording():
-    return screen_recorder.start()
+    global agent_state
+    result = screen_recorder.start()
+    with _state_lock:
+        agent_state = "recording"
+    return result
 
 
 def stop_screen_recording():
-    return screen_recorder.stop()
+    global agent_state
+    result = screen_recorder.stop()
+    with _state_lock:
+        if not screen_recorder.is_recording():
+            agent_state = "idle"
+    return result
 
-# Cabecera que autentica register y heartbeat
+
+def apply_continuous(enabled):
+    """Aplica la configuración de grabación continua recibida del servidor."""
+
+    global continuous_enabled
+
+    with _state_lock:
+        continuous_enabled = bool(enabled)
+
+    if enabled:
+        if not screen_recorder.is_recording():
+            print("[agent] Grabación continua ACTIVADA: iniciando grabación")
+            start_screen_recording()
+    else:
+        if screen_recorder.is_recording():
+            print("[agent] Grabación continua DESACTIVADA: deteniendo grabación")
+            stop_screen_recording()
+
+
+def build_recording_status():
+    with _state_lock:
+        recording = screen_recorder.is_recording()
+        state = agent_state
+        return {
+            "continuous_recording_enabled": continuous_enabled,
+            "recording": recording,
+            "state": state,
+            "last_segment": last_segment_at,
+            "last_upload": last_upload_at,
+            "pending_uploads": _pending_count()
+        }
+
+
+# Referencia al WebSocket/loop para que los hilos reporten el estado en vivo
+_event_loop = None
+_ws = None
+
+
+def report_status_threadsafe():
+    if _event_loop is None or _ws is None:
+        return
+    try:
+        payload = "recording_status:" + json.dumps(build_recording_status())
+        asyncio.run_coroutine_threadsafe(_ws.send(payload), _event_loop)
+    except Exception:
+        pass
+
+# Cabecera de ALTA: el AGENT_TOKEN compartido solo sirve para enrolarse.
+# Una vez que el Agent tiene identidad propia, no vuelve a usarse.
 AGENT_HEADERS = {
     "X-Agent-Token": AGENT_TOKEN
 }
 
+
+def device_auth_headers():
+    """
+    Cabecera de autenticación para las operaciones normales (heartbeat,
+    subidas): siempre el token INDIVIDUAL de este dispositivo.
+
+    Si no hay identidad, falla de forma explícita en vez de recurrir al token
+    compartido: usarlo aquí sería volver a la credencial que estamos retirando.
+    """
+
+    token = get_agent_device_token()
+
+    if not token:
+        raise RuntimeError(
+            "El Agent no tiene token individual (falta identity.json). "
+            "Debe enrolarse antes de operar."
+        )
+
+    return {"X-Agent-Token": token}
+
 screen_stream_task = None
 
 
-def get_device_id():
-    hostname = socket.gethostname()
+# ==============================
+# IDENTIDAD PERSISTENTE DEL AGENT
+# ==============================
+#
+# El device_id y el token individual los asigna el SERVIDOR en el alta y se
+# guardan aquí, en la carpeta de datos que sobrevive a actualizaciones del
+# Agent (ver agent/paths.py). Mientras el archivo exista, el Agent conserva su
+# identidad entre reinicios.
+#
+# Si el archivo se pierde, el Agent se da de alta como dispositivo NUEVO: no
+# hay recuperación automática, y el hostname nunca sirve para reclamar la
+# identidad de un equipo ya registrado.
 
-    return hashlib.sha256(
-        hostname.encode("utf-8")
-    ).hexdigest()[:16]
+IDENTITY_FILE = os.path.join(
+    get_config_dir(),
+    "identity.json"
+)
+
+# Identidad en memoria; se rellena al cargar el archivo o al darse de alta
+_identity = None
+
+
+def load_identity():
+    """Lee la identidad guardada. Devuelve None si el Agent aún no tiene."""
+
+    global _identity
+
+    if _identity is not None:
+        return _identity
+
+    try:
+        with open(IDENTITY_FILE, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+
+    except (OSError, ValueError):
+        return None
+
+    if not data.get("device_id") or not data.get("agent_token"):
+        return None
+
+    _identity = data
+
+    return _identity
+
+
+def save_identity(device_id, agent_token):
+    """
+    Guarda la identidad recibida en el alta.
+
+    Escritura atómica (temporal + reemplazo) para que un corte de luz no deje
+    un archivo a medias que obligaría a darse de alta otra vez.
+    """
+
+    global _identity
+
+    data = {
+        "device_id": device_id,
+        "agent_token": agent_token
+    }
+
+    temporary = IDENTITY_FILE + ".tmp"
+
+    with open(temporary, "w", encoding="utf-8") as handle:
+        json.dump(data, handle)
+
+    os.replace(temporary, IDENTITY_FILE)
+
+    _identity = data
+
+    return data
+
+
+def get_device_id():
+    """
+    device_id asignado por el servidor. None si el Agent todavía no se ha
+    dado de alta (solo ocurre antes del primer registro correcto).
+    """
+
+    identity = load_identity()
+
+    return identity["device_id"] if identity else None
+
+
+def get_agent_device_token():
+    """
+    Token individual de este Agent. Autentica todas sus operaciones normales:
+    heartbeat, WebSocket y subidas. El AGENT_TOKEN compartido solo se usa para
+    el alta inicial.
+    """
+
+    identity = load_identity()
+
+    return identity["agent_token"] if identity else None
 
 
 def get_local_ip():
@@ -153,35 +679,64 @@ def get_local_ip():
 
 
 def register_device():
+    """
+    Da de alta el Agent o actualiza sus datos si ya tiene identidad.
+
+    Sin identidad local: no se envía device_id y el servidor asigna uno, junto
+    con el token individual, que se guardan para los reinicios siguientes.
+    Con identidad: se envía el device_id guardado y solo se actualizan los
+    datos del equipo.
+    """
+
     device_id = get_device_id()
-    hostname = socket.gethostname()
-    operating_system = platform.platform()
-    ip_address = get_local_ip()
 
     data = {
-        "device_id": device_id,
-        "hostname": hostname,
-        "operating_system": operating_system,
-        "ip_address": ip_address
+        "hostname": socket.gethostname(),
+        "operating_system": platform.platform(),
+        "ip_address": get_local_ip()
     }
+
+    # Con identidad: token individual. Sin identidad: AGENT_TOKEN, que es su
+    # único uso legítimo (enrolamiento).
+    if device_id:
+        data["device_id"] = device_id
+        headers = device_auth_headers()
+    else:
+        headers = AGENT_HEADERS
 
     response = requests.post(
         f"{SERVER_URL}/api/devices/register",
         json=data,
-        headers=AGENT_HEADERS,
-        timeout=10
+        headers=headers,
+        timeout=10,
+        verify=REQUESTS_VERIFY
     )
 
     response.raise_for_status()
 
-    print("Device registered:")
-    print(response.json())
+    result = response.json()
+
+    if not device_id:
+
+        # Alta: el token individual solo llega en esta respuesta
+        save_identity(
+            result["device_id"],
+            result["agent_token"]
+        )
+
+        print(f"Agent dado de alta con device_id: {result['device_id']}")
+        print(f"Identidad guardada en: {IDENTITY_FILE}")
+
+    else:
+        print(f"Device registered: {device_id}")
 
 
 def send_heartbeat():
     device_id = get_device_id()
     ip_address = get_local_ip()
 
+    # El device_id sigue en el cuerpo por compatibilidad, pero el servidor
+    # deriva la identidad del token, no de este campo.
     data = {
         "device_id": device_id,
         "ip_address": ip_address
@@ -190,8 +745,9 @@ def send_heartbeat():
     response = requests.post(
         f"{SERVER_URL}/api/devices/heartbeat",
         json=data,
-        headers=AGENT_HEADERS,
-        timeout=10
+        headers=device_auth_headers(),
+        timeout=10,
+        verify=REQUESTS_VERIFY
     )
 
     response.raise_for_status()
@@ -1045,7 +1601,7 @@ async def handle_file_download_message(websocket, message):
 
 async def websocket_connection():
 
-    global screen_stream_task
+    global screen_stream_task, _event_loop, _ws
 
     while True:
 
@@ -1055,13 +1611,17 @@ async def websocket_connection():
                 "Connecting to WebSocket..."
             )
 
-            # El token viaja como query param y se valida antes del handshake
-            websocket_url = (
-                f"{WEBSOCKET_URL}?token={urllib.parse.quote(AGENT_TOKEN)}"
-            )
-
+            # El token individual va en una CABECERA del handshake, no en la
+            # URL: una query string acaba en logs de servidor, proxies e
+            # historiales, y ahí el token quedaría expuesto.
+            # ssl=None con ws:// y para wss:// sin CA propia: websockets aplica
+            # su contexto seguro por defecto. Con CA configurada se usa esa.
             async with websockets.connect(
-                websocket_url
+                WEBSOCKET_URL,
+                additional_headers={
+                    "X-Agent-Token": get_agent_device_token() or ""
+                },
+                ssl=build_ssl_context()
             ) as websocket:
 
                 print(
@@ -1070,6 +1630,16 @@ async def websocket_connection():
 
                 await websocket.send(
                     f"Agent connected: {get_device_id()}"
+                )
+
+                # Referencia para que los hilos (grabador/reintentos) reporten estado
+                _event_loop = asyncio.get_running_loop()
+                _ws = websocket
+
+                # Al reconectar, se reintentan las subidas pendientes y se informa el estado
+                _process_pending()
+                await websocket.send(
+                    "recording_status:" + json.dumps(build_recording_status())
                 )
 
                 screen_stream_task = None
@@ -1104,25 +1674,37 @@ async def websocket_connection():
 
                     elif message == "start_recording":
 
-                        result = start_screen_recording()
+                        # Fuera del event loop: no bloquea el WebSocket
+                        await asyncio.to_thread(start_screen_recording)
 
                         await websocket.send(
-                            "recording_status:" + json.dumps({
-                                "recording": screen_recorder.is_recording(),
-                                **result
-                            })
+                            "recording_status:" + json.dumps(build_recording_status())
                         )
 
                     elif message == "stop_recording":
 
-                        result = stop_screen_recording()
+                        # stop() hace join del hilo del grabador; se ejecuta en un
+                        # hilo aparte para no congelar el event loop del Agent
+                        await asyncio.to_thread(stop_screen_recording)
 
                         await websocket.send(
-                            "recording_status:" + json.dumps({
-                                "recording": screen_recorder.is_recording(),
-                                "status": result.get("status"),
-                                "segments": len(result.get("segments", []))
-                            })
+                            "recording_status:" + json.dumps(build_recording_status())
+                        )
+
+                    elif message.startswith("set_continuous:"):
+
+                        try:
+                            data = json.loads(message.split(":", 1)[1])
+                        except json.JSONDecodeError:
+                            data = {}
+
+                        await asyncio.to_thread(
+                            apply_continuous,
+                            bool(data.get("enabled"))
+                        )
+
+                        await websocket.send(
+                            "recording_status:" + json.dumps(build_recording_status())
                         )
 
                     elif message == "get_system_info":
@@ -1292,6 +1874,50 @@ async def websocket_connection():
                                 f"Keyboard error: {error}"
                             )
 
+                    elif message.startswith((
+                        "get_processes:", "get_services:"
+                    )):
+
+                        # Consultas de solo lectura (G2 y G3). El servidor
+                        # manda un nombre de comando fijo y un
+                        # identificador; nada de lo que llega se ejecuta ni
+                        # se interpreta como orden del sistema.
+                        comando, cuerpo = message.split(":", 1)
+
+                        try:
+                            peticion = json.loads(cuerpo)
+                        except json.JSONDecodeError:
+                            peticion = {}
+
+                        query_id = peticion.get("query_id")
+
+                        if comando == "get_processes":
+                            consultar = inventory.list_processes
+                            respuesta_prefijo = "processes_info:"
+                        else:
+                            consultar = inventory.list_services
+                            respuesta_prefijo = "services_info:"
+
+                        print(f"Consultando {comando}...")
+
+                        try:
+
+                            # En hilo aparte: recorrer cientos de procesos
+                            # bloquea, y el WebSocket debe seguir atendiendo
+                            # pantalla, teclado y grabacion mientras tanto.
+                            resultado = await asyncio.to_thread(consultar)
+
+                        except Exception as error:
+                            resultado = {"error": f"Error al consultar: {error}"}
+
+                        resultado["query_id"] = query_id
+
+                        await websocket.send(
+                            respuesta_prefijo + json.dumps(resultado)
+                        )
+
+                        print(f"Respuesta de {comando} enviada")
+
                     elif message == "get_installed_software":
 
                         print(
@@ -1327,6 +1953,9 @@ async def websocket_connection():
             release_all_keys()
 
             abort_file_transfer()
+
+            # Se pierde la referencia al WebSocket; la grabación LOCAL continúa
+            _ws = None
 
             print(
                 f"WebSocket error: {error}"
@@ -1369,6 +1998,13 @@ async def main():
     print(
         "------------------"
     )
+
+    # Hilo de reintentos de subida (independiente del WebSocket)
+    threading.Thread(
+        target=_retry_loop,
+        name="UploadRetry",
+        daemon=True
+    ).start()
 
     while True:
 

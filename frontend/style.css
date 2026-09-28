@@ -223,3 +223,251 @@ tbody tr:hover {
     }
 
 }
+
+/* ==============================
+   TABLA DE PCs: orden y barras de uso
+   ============================== */
+
+.sortable-header {
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+}
+
+
+.sortable-header:hover {
+    background: #eef2f7;
+}
+
+
+/* Flecha del criterio de orden activo */
+.sortable-header[data-direction]::after {
+    margin-left: 6px;
+    font-size: 11px;
+    color: #64748b;
+}
+
+
+.sortable-header[data-direction="asc"]::after {
+    content: "\25B2";
+}
+
+
+.sortable-header[data-direction="desc"]::after {
+    content: "\25BC";
+}
+
+
+/* Barra de uso de RAM y disco */
+.usage-bar {
+    width: 72px;
+    height: 6px;
+    border-radius: 3px;
+    background: #e2e8f0;
+    overflow: hidden;
+}
+
+
+.usage-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.3s;
+}
+
+
+/* Verde hasta 75%, ámbar hasta 90%, rojo por encima */
+.usage-ok {
+    background: #10b981;
+}
+
+
+.usage-warn {
+    background: #f59e0b;
+}
+
+
+.usage-critical {
+    background: #ef4444;
+}
+
+
+/* Punto rojo parpadeante: grabación en curso */
+.recording-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #ef4444;
+    animation: recording-pulse 1.4s ease-in-out infinite;
+}
+
+
+@keyframes recording-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.25; }
+}
+
+
+@media (prefers-reduced-motion: reduce) {
+
+    .recording-dot {
+        animation: none;
+    }
+
+}
+
+
+/* Acción no disponible porque el equipo está offline.
+   No cambia el color base del botón: solo lo atenúa, así las funciones que
+   gestionan sus clases (grabación, continua) siguen funcionando igual. */
+.action-disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+    filter: grayscale(0.6);
+}
+
+
+/* ==============================
+   TARJETAS DE RESUMEN (clicables)
+   ============================== */
+
+.summary-card {
+    cursor: pointer;
+    transition: box-shadow 0.15s, border-color 0.15s;
+}
+
+
+.summary-card:hover {
+    border-color: #94a3b8;
+    box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
+}
+
+
+/* Tarjeta cuyo filtro está aplicado ahora mismo */
+.summary-card-active {
+    border-color: #f97316;
+    box-shadow: 0 0 0 2px rgba(249, 115, 22, 0.25);
+}
+
+
+/* ==============================
+   DASHBOARD: paneles y animaciones
+   ==============================
+   Todo con CSS y SVG: ninguna librería externa. Las animaciones son de
+   entrada y de transición de datos, nunca decorativas en bucle. */
+
+.dash-panel {
+    animation: dash-enter 0.45s ease both;
+}
+
+
+/* Entrada escalonada: cada panel entra un poco después que el anterior */
+.dash-panel:nth-child(1) { animation-delay: 0.02s; }
+.dash-panel:nth-child(2) { animation-delay: 0.08s; }
+.dash-panel:nth-child(3) { animation-delay: 0.14s; }
+.dash-panel:nth-child(4) { animation-delay: 0.20s; }
+
+
+@keyframes dash-enter {
+    from { opacity: 0; transform: translateY(10px); }
+    to   { opacity: 1; transform: none; }
+}
+
+
+/* Anillo de distribución online/offline */
+.overview-ring {
+    transition: stroke-dasharray 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+
+/* Punto de estado con latido muy sutil: indica "vivo", no llama la atención */
+.status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+    position: relative;
+}
+
+
+.status-dot-online {
+    background: #10b981;
+}
+
+
+.status-dot-online::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    background: #10b981;
+    animation: status-pulse 2.4s ease-out infinite;
+}
+
+
+@keyframes status-pulse {
+    0%   { transform: scale(1);   opacity: 0.6; }
+    70%  { transform: scale(2.2); opacity: 0; }
+    100% { transform: scale(2.2); opacity: 0; }
+}
+
+
+/* Barras de salud: la anchura se anima al cambiar el reparto */
+.health-bar {
+    height: 8px;
+    border-radius: 4px;
+    background: #e2e8f0;
+    overflow: hidden;
+    display: flex;
+}
+
+
+.health-bar span {
+    height: 100%;
+    transition: width 0.7s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+
+/* Filas que aparecen (alertas nuevas, equipos con aviso) */
+.dash-row-new {
+    animation: dash-row-in 0.4s ease both;
+}
+
+
+@keyframes dash-row-in {
+    from { opacity: 0; transform: translateX(-6px); }
+    to   { opacity: 1; transform: none; }
+}
+
+
+/* Marcador de carga mientras llega el primer dato */
+.dash-skeleton {
+    background: linear-gradient(90deg, #f1f5f9 25%, #e2e8f0 37%, #f1f5f9 63%);
+    background-size: 400% 100%;
+    animation: dash-shimmer 1.4s ease infinite;
+    border-radius: 6px;
+}
+
+
+@keyframes dash-shimmer {
+    from { background-position: 100% 50%; }
+    to   { background-position: 0 50%; }
+}
+
+
+/* Nadie debería marearse por un panel de monitoreo */
+@media (prefers-reduced-motion: reduce) {
+
+    .dash-panel,
+    .dash-row-new,
+    .dash-skeleton,
+    .status-dot-online::after {
+        animation: none;
+    }
+
+    .overview-ring,
+    .health-bar span {
+        transition: none;
+    }
+
+}

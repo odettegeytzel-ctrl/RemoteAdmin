@@ -22,11 +22,38 @@ import mss
 import imageio_ffmpeg
 
 from paths import get_recordings_dir
+import storage
 
 
 # Parámetros por defecto (configurables al crear el grabador)
 DEFAULT_FPS = 15
 DEFAULT_SEGMENT_SECONDS = 15 * 60  # 15 minutos
+
+# Cada cuánto se vuelve a comprobar el disco mientras la grabación está en
+# pausa por falta de espacio. Sin esta espera, el bucle reabriría ffmpeg
+# cientos de veces por segundo contra un disco lleno.
+STORAGE_RECHECK_SECONDS = 30
+
+
+def _no_window_kwargs():
+    """
+    Opciones para lanzar ffmpeg SIN ventana de consola en Windows.
+    En otros sistemas devuelve un dict vacío.
+    """
+    if os.name != "nt":
+        return {}
+
+    # CREATE_NO_WINDOW evita que ffmpeg.exe abra una consola negra
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
+
+    return {
+        "creationflags": creationflags,
+        "startupinfo": startupinfo
+    }
 
 
 class ScreenRecorder:
@@ -48,6 +75,9 @@ class ScreenRecorder:
         self._current_path = None
         self._segment_started = None
         self._segments = []
+
+        # Motivo de la pausa por falta de espacio (None = grabando con normalidad)
+        self._paused_reason = None
 
     # ---------- Control ----------
 
@@ -103,6 +133,66 @@ class ScreenRecorder:
 
     # ---------- Interno ----------
 
+    def _wait_for_storage(self):
+        """
+        Espera a que haya espacio antes de abrir un segmento.
+
+        Devuelve True cuando se puede grabar y False si se pidió parar
+        mientras esperaba. El motivo se registra UNA vez al entrar en pausa y
+        otra al salir, no en cada comprobación: con reintentos cada 30 s, un
+        log por intento llenaría el registro sin aportar nada.
+        """
+
+        motivo = storage.storage_blocked_reason()
+
+        if motivo is None:
+            return True
+
+        print(f"[recorder] Grabación en pausa: {motivo}")
+
+        with self._lock:
+            self._paused_reason = motivo
+
+        try:
+
+            while not self._stop_event.is_set():
+
+                # wait() devuelve en cuanto se pide parar, así que la pausa no
+                # retrasa el apagado del Agent
+                if self._stop_event.wait(STORAGE_RECHECK_SECONDS):
+                    return False
+
+                if storage.can_start_new_segment():
+                    print("[recorder] Espacio disponible, se reanuda la grabación")
+                    return True
+
+            return False
+
+        finally:
+
+            with self._lock:
+                self._paused_reason = None
+
+    def is_paused(self):
+        """Motivo de la pausa por almacenamiento, o None si está grabando."""
+
+        with self._lock:
+            return self._paused_reason
+
+    def current_segment_path(self):
+        """
+        Ruta del segmento que se está grabando ahora mismo, o None.
+
+        La usa la limpieza para no borrar jamás un archivo en curso.
+        """
+
+        with self._lock:
+
+            if not self._running:
+                return None
+
+            return self._current_path
+
     def _segment_path(self):
 
         now = datetime.now()
@@ -146,7 +236,8 @@ class ScreenRecorder:
             command,
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE
+            stderr=subprocess.PIPE,
+            **_no_window_kwargs()
         )
 
     def _record_loop(self):
@@ -162,6 +253,11 @@ class ScreenRecorder:
                 height = monitor["height"]
 
                 while not self._stop_event.is_set():
+
+                    # Antes de abrir nada: ¿hay sitio? Si no, se pausa en vez
+                    # de dejar que ffmpeg falle en bucle.
+                    if not self._wait_for_storage():
+                        break
 
                     # Abre un segmento nuevo
                     self._current_path = self._segment_path()

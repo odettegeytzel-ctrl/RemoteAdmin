@@ -5,7 +5,16 @@ from backend.database import get_connection
 DEFAULT_SETTINGS = {
     "server_name": "RemoteAdmin",
     "offline_after_seconds": "30",
-    "alerts_enabled": "true"
+    "alerts_enabled": "true",
+
+    # Umbrales de salud (porcentaje de uso). Se guardan como texto, igual que
+    # el resto de settings; quien los consuma es responsable de convertirlos.
+    # RAM y disco van por separado: un 85% de RAM es normal en Windows,
+    # mientras que un 85% de disco sí merece atención.
+    "ram_warning_percent": "75",
+    "ram_critical_percent": "90",
+    "disk_warning_percent": "75",
+    "disk_critical_percent": "90"
 }
 
 
