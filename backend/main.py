@@ -71,6 +71,7 @@ from backend.media import validate_recording
 from backend import mailer
 from backend import recovery
 from backend import schedule as recording_schedule
+from backend import power
 from backend.queries import (
     create_query,
     discard_query,
@@ -81,6 +82,7 @@ from backend.queries import (
     RESPONSE_PREFIXES,
     KIND_PROCESSES,
     KIND_SERVICES,
+    KIND_POWER,
     QUERY_TIMEOUT_SECONDS
 )
 from backend.audit import (
@@ -2763,6 +2765,199 @@ async def list_device_services(device_id: str, request: Request):
         device_id, request, KIND_SERVICES,
         "get_services", "device.services", normalize_services
     )
+
+
+# ==============================
+# ACCIONES SOBRE EL EQUIPO (bloquear, cerrar sesion, reiniciar, apagar)
+# ==============================
+
+@app.post("/api/devices/{device_id}/power/{action}")
+async def device_power_action(device_id: str, action: str, request: Request):
+    """
+    Pide al equipo que se bloquee, cierre sesion, se reinicie o se apague.
+
+    La accion viaja en la RUTA y se busca en una lista cerrada. No se lee
+    nada del cuerpo: no existe ningun parametro por el que pueda colarse
+    un comando, un script ni un argumento.
+
+    El orden importa: primero se comprueba que la accion existe, luego el
+    permiso del usuario autenticado, luego que el equipo exista y este
+    conectado, y solo entonces se envia nada. Un usuario sin permiso no
+    llega a provocar ni un mensaje al Agent.
+    """
+
+    # 1. Accion conocida
+    try:
+        definicion = power.get_action(action)
+
+    except power.PowerError as problema:
+        return JSONResponse(
+            status_code=404,
+            content={"status": "error", "message": str(problema)}
+        )
+
+    # El nombre ya se valido tal cual contra la lista cerrada
+    nombre = action
+    accion_auditada = definicion["audit"]
+
+    # 2. Permiso real del usuario de la sesion. El permiso es propio de
+    #    cada accion: poder bloquear no da derecho a apagar.
+    usuario, error = require_permission(request, definicion["permission"])
+
+    if error:
+
+        # Un intento sin permiso se registra: es justo lo que interesa
+        # ver en el historial.
+        log_audit(
+            accion_auditada, request=request, device_id=device_id,
+            status=STATUS_ERROR,
+            details="Rechazada: el usuario no tiene permiso"
+        )
+
+        return error
+
+    def auditar(estado, detalle):
+        log_audit(accion_auditada, request=request, device_id=device_id,
+                  status=estado, details=detalle)
+
+    # 3. El equipo debe existir
+    if not device_exists(device_id):
+        auditar(STATUS_ERROR, "Dispositivo no encontrado")
+        return JSONResponse(
+            status_code=404,
+            content={"status": "error",
+                     "message": "Dispositivo no encontrado"}
+        )
+
+    # 4. Proteccion contra la repeticion accidental. Va ANTES de enviar
+    #    nada: el doble clic no debe llegar al equipo.
+    espera = power.seconds_until_repeat_allowed(device_id, nombre)
+
+    if espera:
+
+        auditar(STATUS_ERROR,
+                "Repeticion ignorada: la misma accion se pidio hace un "
+                "momento")
+
+        return JSONResponse(
+            status_code=409,
+            headers={"Retry-After": str(espera)},
+            content={
+                "status": "error",
+                "message": (
+                    f"Esa accion ya se envio hace unos segundos. "
+                    f"Espera {espera} segundos si de verdad quieres "
+                    "repetirla."
+                )
+            }
+        )
+
+    # 5. El equipo debe estar conectado. El WebSocket se busca por el
+    #    device_id, y esa tabla la llena el propio Agent con la identidad
+    #    derivada de su token: no hay forma de que la orden acabe en otro
+    #    equipo.
+    websocket = connected_agents.get(device_id)
+
+    if not websocket:
+        auditar(STATUS_ERROR, "El equipo no esta conectado")
+        return JSONResponse(
+            status_code=409,
+            content={"status": "error",
+                     "message": "El equipo no esta conectado"}
+        )
+
+    # A partir de aqui la orden se considera lanzada
+    power.register_action(device_id, nombre)
+
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    query_id = create_query(device_id, KIND_POWER, future)
+
+    try:
+
+        await websocket.send_text(
+            "power_action:" + json.dumps({
+                "query_id": query_id,
+                "action": nombre
+            })
+        )
+
+        respuesta = await asyncio.wait_for(
+            future, power.ACK_TIMEOUT_SECONDS
+        )
+
+    except asyncio.TimeoutError:
+
+        discard_query(query_id)
+
+        # Para reiniciar y apagar NO se olvida la anotacion: el equipo
+        # puede haber recibido la orden y estar apagandose justo ahora.
+        # Reintentar a ciegas es exactamente lo que no se debe hacer.
+        if not definicion["destructive"]:
+            power.forget_action(device_id, nombre)
+
+        auditar(
+            STATUS_ERROR,
+            "Sin confirmacion del equipo: no se sabe si llego a ejecutarse"
+        )
+
+        return JSONResponse(
+            status_code=504,
+            content={
+                "status": "error",
+                "message": (
+                    "El equipo no confirmo la accion. No se puede saber si "
+                    "llego a ejecutarse; no se reintenta por si acaso."
+                )
+            }
+        )
+
+    except Exception as error:
+
+        discard_query(query_id)
+        power.forget_action(device_id, nombre)
+
+        auditar(STATUS_ERROR, f"No se pudo enviar la orden: {error}")
+
+        return JSONResponse(
+            status_code=502,
+            content={"status": "error",
+                     "message": f"No se pudo enviar la orden: {error}"}
+        )
+
+    finally:
+        discard_query(query_id)
+
+    resultado = power.normalize_result(respuesta, nombre)
+
+    if resultado.get("error"):
+
+        # El equipo contesto que no pudo: la accion no ocurrio, asi que
+        # se permite volver a intentarlo.
+        power.forget_action(device_id, nombre)
+
+        auditar(STATUS_ERROR, resultado["error"])
+
+        return JSONResponse(
+            status_code=502,
+            content={"status": "error", "message": resultado["error"]}
+        )
+
+    descripcion = power.describe_outcome(resultado, nombre)
+
+    auditar(STATUS_SUCCESS, descripcion)
+
+    return {
+        "status": "ok",
+        "device_id": device_id,
+        "action": nombre,
+        # 'executed' es lo comprobado; 'pending' es lo aceptado pero aun
+        # por ocurrir. El panel necesita distinguirlos para no decirle al
+        # operador que un equipo esta apagado cuando solo lo prometio.
+        "executed": resultado.get("executed", False),
+        "pending": resultado.get("pending", False),
+        "message": descripcion
+    }
 
 
 # ==============================

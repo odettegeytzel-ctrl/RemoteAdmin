@@ -136,6 +136,7 @@ import storage
 import inventory
 
 from scheduler import RecordingScheduler
+import power
 
 # ---- Estado del Agent (leído por el bucle asíncrono, escrito por hilos) ----
 _state_lock = threading.Lock()
@@ -1847,6 +1848,39 @@ async def websocket_connection():
                         await websocket.send(
                             "recording_status:" + json.dumps(build_recording_status())
                         )
+
+                    elif message.startswith("power_action:"):
+
+                        # Bloquear, cerrar sesion, reiniciar o apagar.
+                        # Del mensaje solo se lee el NOMBRE de la accion y
+                        # se busca en una lista cerrada: no hay ningun
+                        # comando que ejecutar ni argumento que pasar.
+                        try:
+                            peticion = json.loads(message.split(":", 1)[1])
+                        except json.JSONDecodeError:
+                            peticion = {}
+
+                        accion = str(peticion.get("action") or "")
+
+                        print(f"[energia] Accion recibida: {accion}")
+
+                        # En un hilo aparte: habilitar privilegios y
+                        # llamar a Windows bloquea, y el WebSocket debe
+                        # seguir atendiendo lo demas.
+                        resultado = await asyncio.to_thread(
+                            power.execute, accion
+                        )
+
+                        resultado["query_id"] = peticion.get("query_id")
+
+                        # La confirmacion sale ANTES de que el equipo
+                        # empiece a apagarse: power.execute() deja un
+                        # margen justamente para esto.
+                        await websocket.send(
+                            "power_result:" + json.dumps(resultado)
+                        )
+
+                        print(f"[energia] Respuesta enviada: {accion}")
 
                     elif message.startswith("set_retention:"):
 

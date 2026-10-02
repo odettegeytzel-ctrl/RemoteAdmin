@@ -133,22 +133,56 @@ def test_acciones_de_usuarios():
 
 
 def test_los_permisos_se_pintan_desde_el_backend():
-    """La lista no esta escrita a mano en el frontend."""
+    """
+    El CATALOGO de permisos viene del servidor.
+
+    La regla protege que anadir un permiso nuevo no obligue a tocar el
+    panel: las casillas de la administracion de usuarios se generan con
+    la lista que manda el servidor.
+
+    No prohibe que un control concreto nombre el permiso que exige. Los
+    botones de acciones del equipo lo hacen por necesidad: un boton de
+    "Apagar" solo puede existir atado a device.shutdown, y un permiso
+    nuevo no puede hacer aparecer un boton que nadie ha escrito.
+    """
 
     import backend.users as users
 
-    escritos = [
+    # Permisos que un control concreto puede nombrar, con el control que
+    # los justifica.
+    ATADOS_A_UN_BOTON = {
+        "device.lock", "device.logoff",
+        "device.restart", "device.shutdown"
+    }
+
+    escritos = {
         permiso for permiso in users.PERMISSIONS
         if f'"{permiso}"' in JS
-    ]
+    }
+
+    de_mas = escritos - ATADOS_A_UN_BOTON
 
     comprobar(
-        "El frontend no lleva la lista de permisos escrita a mano",
-        not escritos, str(escritos)
+        "El frontend no lleva escrita a mano la lista de permisos",
+        not de_mas, str(sorted(de_mas))
     )
 
-    comprobar("La recibe del servidor",
+    comprobar("El catalogo lo recibe del servidor",
               "catalogoDePermisos" in JS and "data.permissions" in JS)
+
+    comprobar(
+        "Las casillas de usuarios se generan con ese catalogo",
+        "catalogoDePermisos.forEach" in JS
+    )
+
+    # Y cada permiso nombrado corresponde a un boton de verdad
+    sin_boton = [
+        permiso for permiso in escritos
+        if f'permiso: "{permiso}"' not in JS
+    ]
+
+    comprobar("Cada permiso nombrado pertenece a un boton concreto",
+              not sin_boton, str(sin_boton))
 
 
 def test_el_rol_no_se_envia_al_crear():

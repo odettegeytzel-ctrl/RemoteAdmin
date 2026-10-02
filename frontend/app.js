@@ -2299,7 +2299,8 @@ loadInstalledSoftware(
     device.device_id
 );
 
-// Horario de grabacion de ESTE equipo
+// Acciones y horario de ESTE equipo
+pintarAccionesDeEquipo();
 cargarProgramacion();
 
 // Alertas y grabaciones de ESTE equipo
@@ -4337,6 +4338,186 @@ async function crearUsuario() {
             "No se pudo contactar con el servidor",
             "error"
         );
+    }
+}
+
+
+// ==============================
+// ACCIONES DEL EQUIPO
+// ==============================
+
+// Las cuatro, con el permiso que exige cada una. El panel usa esta tabla
+// para decidir que botones ensena; el servidor vuelve a comprobar el
+// permiso en cada peticion, asi que esconder un boton es comodidad, no
+// seguridad.
+const ACCIONES_DE_EQUIPO = [
+    {
+        accion: "lock",
+        permiso: "device.lock",
+        etiqueta: "\u{1F512} Bloquear",
+        // Reversible: quien este delante desbloquea y sigue.
+        confirmacion: null,
+        tono: "normal"
+    },
+    {
+        accion: "logoff",
+        permiso: "device.logoff",
+        etiqueta: "\u{1F6AA} Cerrar sesión",
+        confirmacion:
+            "Se cerrará la sesión en el equipo y podría"
+            + " perderse el trabajo sin guardar.",
+        tono: "peligro"
+    },
+    {
+        accion: "restart",
+        permiso: "device.restart",
+        etiqueta: "\u{1F504} Reiniciar",
+        confirmacion:
+            "El equipo se reiniciará y quedará fuera de línea"
+            + " unos minutos.",
+        tono: "peligro"
+    },
+    {
+        accion: "shutdown",
+        permiso: "device.shutdown",
+        etiqueta: "⏻ Apagar",
+        confirmacion:
+            "El equipo se apagará. Habrá que encenderlo a mano"
+            + " para volver a usarlo.",
+        tono: "peligro"
+    }
+];
+
+
+// Acciones en vuelo. Mientras una orden siga sin respuesta, un segundo
+// clic no manda otra igual. Es solo la primera barrera: la de verdad
+// esta en el servidor, que rechaza la repeticion aunque llegue desde
+// otro navegador.
+const accionesEnCurso = new Set();
+
+
+function pintarAccionesDeEquipo() {
+
+    const panel = document.getElementById("power-panel");
+    const contenedor = document.getElementById("power-buttons");
+
+    if (!panel || !contenedor) {
+        return;
+    }
+
+    contenedor.innerHTML = "";
+
+    const permitidas = ACCIONES_DE_EQUIPO.filter(a => puede(a.permiso));
+
+    // Sin ninguna accion permitida, el bloque entero sobra
+    panel.classList.toggle("hidden", permitidas.length === 0);
+
+    permitidas.forEach(definicion => {
+
+        const boton = document.createElement("button");
+
+        boton.textContent = definicion.etiqueta;
+        boton.dataset.accion = definicion.accion;
+
+        boton.className =
+            "px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-50 "
+            + (definicion.tono === "peligro"
+                ? "bg-red-50 text-red-700 hover:bg-red-100"
+                : "bg-slate-100 text-slate-700 hover:bg-slate-200");
+
+        boton.addEventListener(
+            "click", () => ejecutarAccionDeEquipo(definicion)
+        );
+
+        contenedor.appendChild(boton);
+    });
+}
+
+
+function deshabilitarAcciones(deshabilitar) {
+
+    document.querySelectorAll("#power-buttons button")
+        .forEach(boton => {
+            boton.disabled = deshabilitar;
+        });
+}
+
+
+async function ejecutarAccionDeEquipo(definicion) {
+
+    if (!selectedDevice) {
+        return;
+    }
+
+    const deviceId = selectedDevice.device_id;
+    const clave = deviceId + ":" + definicion.accion;
+
+    if (accionesEnCurso.has(clave)) {
+        return;
+    }
+
+    if (definicion.confirmacion) {
+
+        const equipo = selectedDevice.hostname || deviceId;
+
+        if (!confirm(definicion.confirmacion + "\n\nEquipo: " + equipo)) {
+            return;
+        }
+    }
+
+    accionesEnCurso.add(clave);
+    deshabilitarAcciones(true);
+
+    mostrarEstado("power-status", "Enviando la orden al equipo...");
+
+    try {
+
+        const response =
+            await fetch(
+                `/api/devices/${deviceId}/power/${definicion.accion}`,
+                { method: "POST" }
+            );
+
+        const data = await response.json().catch(() => ({}));
+
+        if (!response.ok) {
+
+            mostrarEstado(
+                "power-status",
+                data.message || "No se pudo completar la acción",
+                "error"
+            );
+
+            return;
+        }
+
+        // El mensaje lo redacta el servidor y distingue lo realizado de
+        // lo solamente aceptado: el panel no promete por su cuenta.
+        mostrarEstado("power-status", data.message, "ok");
+
+        // Si el equipo se va a reiniciar o apagar, dejara de estar
+        // conectado. Se refresca la lista para que el estado deje de
+        // decir que esta en linea.
+        if (data.pending) {
+            setTimeout(() => {
+                if (typeof loadDevices === "function") {
+                    loadDevices();
+                }
+            }, 8000);
+        }
+
+    } catch (error) {
+
+        mostrarEstado(
+            "power-status",
+            "No se pudo contactar con el servidor",
+            "error"
+        );
+
+    } finally {
+
+        accionesEnCurso.delete(clave);
+        deshabilitarAcciones(false);
     }
 }
 

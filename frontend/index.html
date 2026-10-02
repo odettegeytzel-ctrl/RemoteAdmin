@@ -1080,6 +1080,38 @@
                             </div>
 
 
+                            <!-- Acciones sobre el equipo. Los botones los
+                                 crea el panel segun los permisos de quien
+                                 entra; el servidor vuelve a comprobarlos. -->
+                            <div
+                                id="power-panel"
+                                class="hidden mt-4 p-5 bg-white border border-slate-200 rounded-xl"
+                            >
+
+                                <div class="flex flex-wrap items-center justify-between gap-3">
+
+                                    <div>
+
+                                        <h4 class="font-semibold text-slate-900">
+                                            Acciones del equipo
+                                        </h4>
+
+                                        <p class="text-sm text-slate-500 mt-1">
+                                            Afectan al equipo remoto de
+                                            inmediato.
+                                        </p>
+
+                                    </div>
+
+                                    <div id="power-buttons" class="flex flex-wrap gap-2"></div>
+
+                                </div>
+
+                                <p id="power-status" class="hidden text-sm mt-3"></p>
+
+                            </div>
+
+
                             <!-- Programacion horaria. La cumple el Agent con
                                  su propio reloj, tambien con el navegador
                                  cerrado. -->

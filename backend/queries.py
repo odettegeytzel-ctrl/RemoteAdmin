@@ -35,10 +35,16 @@ MAX_TEXT_LENGTH = 200
 KIND_PROCESSES = "processes"
 KIND_SERVICES = "services"
 
+# Acciones de energia y sesion (G5). Reutilizan esta misma centralita en
+# vez de abrir otro canal: el emparejamiento pregunta-respuesta y la
+# comprobacion de identidad ya estan resueltos aqui.
+KIND_POWER = "power"
+
 # Prefijo del mensaje que envía el Agent con la respuesta
 RESPONSE_PREFIXES = {
     "processes_info:": KIND_PROCESSES,
-    "services_info:": KIND_SERVICES
+    "services_info:": KIND_SERVICES,
+    "power_result:": KIND_POWER
 }
 
 
