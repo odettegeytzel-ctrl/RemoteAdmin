@@ -38,6 +38,15 @@ WINDOW_SECONDS = 300
 ENROLL_MAX_FAILURES = 5
 ENROLL_WINDOW_SECONDS = 600
 
+# --- scope "password" ---
+# Cambiar la contrasena exige volver a teclear la actual, asi que un fallo
+# aqui es un intento de adivinarla con una sesion ya abierta (por ejemplo,
+# con una cookie robada). Se cuenta APARTE del login: bloquear el cambio de
+# contrasena no debe bloquear el acceso al panel, ni al reves.
+PASSWORD_MAX_FAILURES = 3
+PASSWORD_WINDOW_SECONDS = 900
+
+
 # (scope, IP) -> lista de marcas de tiempo de los fallos recientes
 _failures = {}
 
@@ -50,6 +59,9 @@ def _limits(scope):
 
     if scope == "enroll":
         return ENROLL_MAX_FAILURES, ENROLL_WINDOW_SECONDS
+
+    if scope == "password":
+        return PASSWORD_MAX_FAILURES, PASSWORD_WINDOW_SECONDS
 
     return MAX_FAILURES, WINDOW_SECONDS
 

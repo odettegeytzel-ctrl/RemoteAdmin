@@ -3494,6 +3494,148 @@ async function loadInventory(tipo) {
 }
 
 
+// ==============================
+// CAMBIO DE CONTRASENA DEL PANEL
+// ==============================
+
+// Mismo minimo que aplica el backend (backend/auth.py). Se valida aqui para
+// avisar antes de enviar, pero la comprobacion que cuenta es la del
+// servidor: esta se puede saltar con cualquier cliente.
+const PASSWORD_MIN_LENGTH = 12;
+
+
+function setPasswordStatus(mensaje, tono) {
+
+    const elemento =
+        document.getElementById(
+            "password-status"
+        );
+
+    if (!elemento) {
+        return;
+    }
+
+    elemento.textContent = mensaje;
+
+    elemento.className =
+        "text-sm "
+        + (tono === "error"
+            ? "text-red-600"
+            : tono === "ok"
+                ? "text-emerald-600"
+                : "text-slate-500");
+}
+
+
+function limpiarCamposContrasena() {
+
+    ["password-current", "password-new", "password-repeat"].forEach(id => {
+
+        const campo = document.getElementById(id);
+
+        if (campo) {
+            campo.value = "";
+        }
+    });
+}
+
+
+async function changePassword() {
+
+    const actual =
+        document.getElementById("password-current").value;
+
+    const nueva =
+        document.getElementById("password-new").value;
+
+    const repetida =
+        document.getElementById("password-repeat").value;
+
+    if (!actual || !nueva) {
+        setPasswordStatus(
+            "Rellena la contrase\u00f1a actual y la nueva",
+            "error"
+        );
+        return;
+    }
+
+    if (nueva !== repetida) {
+        setPasswordStatus(
+            "La nueva contrase\u00f1a y su repetici\u00f3n no coinciden",
+            "error"
+        );
+        return;
+    }
+
+    if (nueva.length < PASSWORD_MIN_LENGTH) {
+        setPasswordStatus(
+            `La contrase\u00f1a debe tener al menos ${PASSWORD_MIN_LENGTH} caracteres`,
+            "error"
+        );
+        return;
+    }
+
+    if (nueva === actual) {
+        setPasswordStatus(
+            "La nueva contrase\u00f1a debe ser distinta de la actual",
+            "error"
+        );
+        return;
+    }
+
+    setPasswordStatus("Cambiando contrase\u00f1a...");
+
+    try {
+
+        const response =
+            await fetch(
+                "/api/auth/password",
+                {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify({
+                        current_password: actual,
+                        new_password: nueva
+                    })
+                }
+            );
+
+        const data = await response.json();
+
+        if (!response.ok || data.status !== "ok") {
+
+            setPasswordStatus(
+                data.message || "No se pudo cambiar la contrase\u00f1a",
+                "error"
+            );
+
+            return;
+        }
+
+        // El backend reemite la cookie de ESTA sesion, asi que se sigue
+        // dentro. Las demas quedan cerradas.
+        limpiarCamposContrasena();
+
+        setPasswordStatus(
+            data.message
+                || "Contrase\u00f1a actualizada. Las dem\u00e1s sesiones se han cerrado.",
+            "ok"
+        );
+
+    } catch (error) {
+
+        console.error("Error cambiando la contrase\u00f1a:", error);
+
+        setPasswordStatus(
+            "No se pudo contactar con el servidor",
+            "error"
+        );
+    }
+}
+
+
 function updateActionButtons() {
 
 const pingButton =
@@ -6722,6 +6864,15 @@ document
 .addEventListener(
 "click",
 requestInstalledSoftware
+);
+
+document
+.getElementById(
+"password-save-button"
+)
+.addEventListener(
+"click",
+changePassword
 );
 
 document

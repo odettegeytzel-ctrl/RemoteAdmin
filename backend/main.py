@@ -27,10 +27,16 @@ from backend.alerts import (
 )
 from backend.settings import (
     get_settings,
-    save_settings
+    save_settings,
+    UnknownSettingError
 )
 from backend.auth import (
     authenticate,
+    change_password,
+    create_token,
+    CHANGE_OK,
+    CHANGE_CURRENT_INVALID,
+    CHANGE_POLICY,
     verify_token,
     revoke_session_token,
     token_from_header,
@@ -153,9 +159,13 @@ latest_recording_status = {}
 
 @app.on_event("startup")
 def startup():
+    # init_db PRIMERO: desde G4a la comprobacion de la contrasena por defecto
+    # mira el hash vigente en auth_state, que no existe hasta crear las
+    # tablas. Si la configuracion es invalida, el arranque falla igual un
+    # momento despues; crear tablas vacias no cambia nada.
+    init_db()
     # Exige AUTH_SECRET_KEY y AGENT_TOKEN en el .env; si faltan, el arranque falla
     require_security_config()
-    init_db()
     # Subidas interrumpidas por un reinicio o una caída anterior
     cleanup_orphan_parts()
     # Marca visible en la consola para confirmar que ESTE código está corriendo
@@ -338,7 +348,21 @@ def settings():
 
 @app.post("/api/settings")
 def update_settings(data: dict):
-    return save_settings(data)
+    """
+    Guarda ajustes. Solo las claves de la lista blanca de settings.py.
+
+    Una clave desconocida devuelve 400 y NO escribe nada: este endpoint no
+    puede usarse para colar estado de autenticacion en la base.
+    """
+
+    try:
+        return save_settings(data)
+
+    except UnknownSettingError as error:
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "message": str(error)}
+        )
 
 
 # ==============================
@@ -435,6 +459,115 @@ def auth_login(data: dict, request: Request):
     )
 
     return response
+
+
+@app.post("/api/auth/password")
+def auth_change_password(data: dict, request: Request):
+    """
+    Cambia la contrasena del panel.
+
+    Exige sesion valida (lo garantiza el middleware) Y volver a teclear la
+    contrasena actual: con solo una cookie robada no se puede tomar la
+    cuenta.
+
+    Al cambiarla se cierran TODAS las sesiones y se reemite solo la de quien
+    hizo el cambio, para que no se eche a si mismo.
+    """
+
+    # Usuario e IP del contexto real de la peticion, nunca del cuerpo. Se
+    # leen ANTES del cambio: despues, el token actual ya no sera valido y no
+    # habria forma de saber quien lo hizo.
+    token_actual = (
+        token_from_header(request.headers.get("Authorization"))
+        or request.cookies.get(AUTH_COOKIE_NAME)
+    )
+
+    usuario = verify_token(token_actual)
+    ip_origen = request.client.host if request.client else "desconocido"
+
+    def auditar(estado, detalle):
+        log_audit("auth.password_change", status=estado,
+                  username=usuario, source_ip=ip_origen, details=detalle)
+
+    bloqueado = seconds_until_unblocked(ip_origen, scope="password")
+
+    if bloqueado:
+
+        auditar(STATUS_ERROR, "Bloqueado por demasiados intentos fallidos")
+
+        return JSONResponse(
+            status_code=429,
+            headers={"Retry-After": str(bloqueado)},
+            content={
+                "status": "error",
+                "message": (
+                    "Demasiados intentos fallidos. "
+                    f"Intentalo de nuevo en {bloqueado} segundos."
+                )
+            }
+        )
+
+    resultado, detalle = change_password(
+        data.get("current_password", ""),
+        data.get("new_password", "")
+    )
+
+    if resultado == CHANGE_CURRENT_INVALID:
+
+        # Cuenta como intento fallido: es un intento de adivinar la
+        # contrasena, aunque venga de una sesion abierta.
+        register_failure(ip_origen, scope="password")
+
+        auditar(STATUS_ERROR, "Contrasena actual incorrecta")
+
+        return JSONResponse(
+            status_code=403,
+            content={"status": "error",
+                     "message": "La contrasena actual no es correcta"}
+        )
+
+    if resultado == CHANGE_POLICY:
+
+        # No cuenta como intento fallido: quien llega aqui ya demostro
+        # conocer la contrasena actual. El motivo describe la regla
+        # incumplida, nunca la contrasena.
+        auditar(STATUS_ERROR, f"Contrasena nueva rechazada: {detalle}")
+
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "message": detalle}
+        )
+
+    # Cambio correcto. 'detalle' es la fecha de corte de sesiones.
+    corte = detalle
+
+    reset_failures(ip_origen, scope="password")
+
+    auditar(
+        STATUS_SUCCESS,
+        "Contrasena cambiada; se cerraron las demas sesiones"
+    )
+
+    respuesta = JSONResponse(
+        content={
+            "status": "ok",
+            "message": "Contrasena actualizada. Las demas sesiones se han cerrado."
+        }
+    )
+
+    # La sesion propia se reemite: el corte acaba de matar la anterior, y
+    # create_token() nace ya por encima de esa fecha.
+    respuesta.set_cookie(
+        key=AUTH_COOKIE_NAME,
+        value=create_token(usuario, issued_at=corte),
+        max_age=TOKEN_HOURS * 3600,
+        path="/",
+        httponly=True,
+        secure=True,
+        samesite="strict"
+    )
+
+    return respuesta
 
 
 @app.get("/api/auth/me")

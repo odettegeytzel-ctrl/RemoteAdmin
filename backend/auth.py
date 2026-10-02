@@ -79,6 +79,156 @@ def verify_password(password, stored_hash):
 
 
 # ==============================
+# ALMACEN DE LA CREDENCIAL (tabla auth_state)
+# ==============================
+#
+# La fuente de verdad de la contrasena es la base de datos, no el .env.
+# AUTH_PASSWORD_HASH queda como SEMILLA: la primera vez que se consulta el
+# almacen y esta vacio, se copia de ahi. A partir de ese momento manda la
+# tabla, y editar el .env ya no cambia nada.
+#
+# Se lee en cada intento, no al importar: asi un cambio de contrasena tiene
+# efecto de inmediato, sin reiniciar el servidor.
+
+
+def _utc_now_iso():
+    """Momento actual en UTC, en texto ISO-8601."""
+
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat()
+
+
+def get_auth_state():
+    """
+    Devuelve la fila de auth_state, sembrandola desde el .env si hace falta.
+
+    None si no hay credencial configurada por ninguna via; en ese caso el
+    login sigue negando el acceso, igual que antes.
+    """
+
+    from backend.database import get_connection
+
+    connection = get_connection()
+
+    try:
+
+        fila = connection.execute(
+            "SELECT password_hash, password_changed_at, sessions_valid_from "
+            "FROM auth_state WHERE id = 1"
+        ).fetchone()
+
+        if fila is None and AUTH_PASSWORD_HASH:
+
+            # Siembra unica. INSERT OR IGNORE por si dos peticiones llegan a
+            # la vez: la segunda no debe pisar a la primera.
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO auth_state (
+                    id, password_hash, password_changed_at, sessions_valid_from
+                )
+                VALUES (1, ?, NULL, 0)
+                """,
+                (AUTH_PASSWORD_HASH,)
+            )
+
+            connection.commit()
+
+            fila = connection.execute(
+                "SELECT password_hash, password_changed_at, "
+                "sessions_valid_from FROM auth_state WHERE id = 1"
+            ).fetchone()
+
+    finally:
+        connection.close()
+
+    if fila is None:
+        return None
+
+    return {
+        "password_hash": fila["password_hash"],
+        "password_changed_at": fila["password_changed_at"],
+        "sessions_valid_from": int(fila["sessions_valid_from"] or 0)
+    }
+
+
+def get_stored_password_hash():
+    """Hash vigente. Nunca se imprime ni se registra."""
+
+    estado = get_auth_state()
+
+    if estado and estado["password_hash"]:
+        return estado["password_hash"]
+
+    # Solo antes de la siembra (por ejemplo, si aun no existe la tabla)
+    return AUTH_PASSWORD_HASH
+
+
+def get_sessions_valid_from():
+    """Fecha de corte de sesiones en segundos epoch. 0 = sin corte."""
+
+    estado = get_auth_state()
+
+    return estado["sessions_valid_from"] if estado else 0
+
+
+def _nueva_fecha_de_corte():
+    """
+    Siguiente fecha de corte, siempre por delante de la vigente.
+
+    No basta con time.time() + 1: dos operaciones sobre la credencial
+    dentro del mismo segundo (cambiar la contrasena y acto seguido
+    restablecerla) calculaban el mismo corte, y la sesion reemitida por la
+    primera sobrevivia a la segunda. Una invalidacion que deja sesiones
+    vivas no invalida nada, asi que cada corte supera al anterior.
+    """
+
+    estado = get_auth_state()
+
+    actual = estado["sessions_valid_from"] if estado else 0
+
+    return max(int(time.time()) + 1, actual + 1)
+
+
+def invalidate_all_sessions(moment=None):
+    """
+    Cierra TODAS las sesiones abiertas moviendo la fecha de corte.
+
+    No hace falta tocar ningun token: los que se emitieron antes dejan de
+    superar la comprobacion de verify_token().
+
+    La fecha de corte tiene precision de un segundo, asi que por defecto se
+    toma el segundo SIGUIENTE: de lo contrario un token emitido en el mismo
+    segundo del corte sobreviviria, y una invalidacion que deja sesiones
+    vivas no sirve de nada. Como efecto, tambien muere la sesion de quien
+    provoca el corte: quien llame a esto debe reemitir la suya despues.
+
+    Devuelve la fecha de corte aplicada.
+    """
+
+    from backend.database import get_connection
+
+    corte = int(moment) if moment is not None else _nueva_fecha_de_corte()
+
+    # Asegura que la fila existe antes de actualizarla
+    get_auth_state()
+
+    connection = get_connection()
+
+    try:
+        connection.execute(
+            "UPDATE auth_state SET sessions_valid_from = ? WHERE id = 1",
+            (corte,)
+        )
+        connection.commit()
+
+    finally:
+        connection.close()
+
+    return corte
+
+
+# ==============================
 # TOKENS DE SESION (firmados con HMAC, sin estado en el servidor)
 # ==============================
 
@@ -91,11 +241,41 @@ def _b64decode(text):
     return base64.urlsafe_b64decode(text + padding)
 
 
-def create_token(username):
+def create_token(username, issued_at=None):
+    """
+    Emite un token de sesion.
+
+    El iat nunca queda por debajo de la fecha de corte vigente. Sin ese
+    tope, iniciar sesion en el mismo segundo en que se cambio la contrasena
+    producia un token que no pasaba verify_token(): la sesion parecia
+    abierta y la siguiente peticion devolvia 401. Emitir un token exige
+    haberse autenticado, asi que una sesion nacida despues del corte es
+    legitima por definicion.
+
+    'issued_at' fuerza un momento concreto; se usa al reemitir la sesion
+    tras un cambio de contrasena.
+    """
+
+    if issued_at is not None:
+        emitido = int(issued_at)
+    else:
+        emitido = max(int(time.time()), get_sessions_valid_from())
 
     payload = {
         "sub": username,
-        "exp": int(time.time()) + TOKEN_HOURS * 3600
+
+        # 'iat' (issued at) permite cerrar todas las sesiones de golpe
+        # comparandolo con sessions_valid_from. Sin el, un token sin estado
+        # no se puede invalidar mas que uno a uno.
+        "iat": emitido,
+
+        # 'jti' hace unico cada token. Sin el, dos inicios de sesion dentro
+        # del mismo segundo producian payloads identicos y, por tanto, el
+        # MISMO token: cerrar sesion en un equipo cerraba tambien la del
+        # otro, porque la revocacion va por hash del token.
+        "jti": secrets.token_urlsafe(8),
+
+        "exp": emitido + TOKEN_HOURS * 3600
     }
 
     payload_b64 = _b64encode(
@@ -228,8 +408,12 @@ def verify_token(token):
     """
     Devuelve el usuario del token, o None si no es válido.
 
-    Además de firma y expiración, comprueba que la sesión no se haya cerrado:
-    tras un logout el token sigue estando bien firmado, pero ya no sirve.
+    Tres comprobaciones, ademas de firma y expiracion:
+      - logout individual: el token concreto esta en revoked_sessions;
+      - corte global: se emitio antes de sessions_valid_from;
+      - los tokens antiguos, sin 'iat', cuentan como anteriores a cualquier
+        corte, asi que caen con la primera invalidacion global. Mientras no
+        haya habido ninguna (corte = 0) siguen siendo validos.
     """
 
     payload = _decode_payload(token)
@@ -238,6 +422,14 @@ def verify_token(token):
         return None
 
     if is_session_revoked(token):
+        return None
+
+    try:
+        emitido = int(payload.get("iat", 0) or 0)
+    except (TypeError, ValueError):
+        emitido = 0
+
+    if emitido < get_sessions_valid_from():
         return None
 
     return payload.get("sub")
@@ -249,8 +441,12 @@ def verify_token(token):
 
 def authenticate(username, password):
 
-    if not AUTH_PASSWORD_HASH:
-        # Sin credenciales configuradas en .env no se permite el acceso
+    # Se lee en cada intento, no al importar: un cambio de contrasena debe
+    # valer de inmediato, sin reiniciar el servidor.
+    stored_hash = get_stored_password_hash()
+
+    if not stored_hash:
+        # Sin credencial configurada no se permite el acceso
         return None
 
     username_ok = hmac.compare_digest(
@@ -258,12 +454,153 @@ def authenticate(username, password):
         AUTH_USERNAME.encode("utf-8")
     )
 
-    password_ok = verify_password(password or "", AUTH_PASSWORD_HASH)
+    password_ok = verify_password(password or "", stored_hash)
 
     if username_ok and password_ok:
         return create_token(username)
 
     return None
+
+
+# ==============================
+# POLITICA DE CONTRASENA Y CAMBIO
+# ==============================
+
+# Minimo: 12 caracteres. Este panel controla equipos Windows con permisos
+# de administrador, asi que el listen minimo de "8 con complejidad" se queda
+# corto; una frase de 12 es facil de recordar y cara de romper.
+PASSWORD_MIN_LENGTH = 12
+
+# Maximo: PBKDF2 con 200.000 iteraciones sobre una entrada enorme es un
+# consumidor de CPU gratuito para quien la envie. 128 no estorba a nadie.
+PASSWORD_MAX_LENGTH = 128
+
+
+# Resultados posibles de un cambio de contrasena
+CHANGE_OK = "ok"
+CHANGE_CURRENT_INVALID = "current_invalid"
+CHANGE_POLICY = "policy"
+
+
+def validate_new_password(new_password, current_hash=None):
+    """
+    Comprueba la politica. Devuelve el motivo del rechazo, o None si vale.
+
+    El motivo se puede ensenar al usuario y guardar en auditoria: describe
+    la regla incumplida, nunca la contrasena.
+    """
+
+    if not isinstance(new_password, str) or not new_password:
+        return "La contrasena nueva no puede estar vacia"
+
+    if len(new_password) < PASSWORD_MIN_LENGTH:
+        return (
+            f"La contrasena debe tener al menos {PASSWORD_MIN_LENGTH} "
+            "caracteres"
+        )
+
+    if len(new_password) > PASSWORD_MAX_LENGTH:
+        return (
+            f"La contrasena no puede superar los {PASSWORD_MAX_LENGTH} "
+            "caracteres"
+        )
+
+    if new_password == DEFAULT_PASSWORD:
+        return "No se permite la contrasena por defecto"
+
+    if current_hash and verify_password(new_password, current_hash):
+        return "La contrasena nueva debe ser distinta de la actual"
+
+    return None
+
+
+def set_password(new_password, invalidate_sessions=True):
+    """
+    Guarda la contrasena nueva y, por defecto, cierra todas las sesiones.
+
+    Se guarda solo el hash PBKDF2-SHA256, en el mismo formato de siempre.
+    La contrasena en claro no se escribe en ninguna parte ni se devuelve.
+
+    Devuelve la fecha de corte aplicada (0 si no se invalido nada).
+    """
+
+    from backend.database import get_connection
+
+    nuevo_hash = generate_password_hash(new_password)
+    cambiado_en = _utc_now_iso()
+
+    corte = _nueva_fecha_de_corte() if invalidate_sessions else None
+
+    connection = get_connection()
+
+    try:
+
+        if corte is None:
+
+            connection.execute(
+                """
+                INSERT INTO auth_state (
+                    id, password_hash, password_changed_at, sessions_valid_from
+                )
+                VALUES (1, ?, ?, 0)
+                ON CONFLICT(id) DO UPDATE SET
+                    password_hash = excluded.password_hash,
+                    password_changed_at = excluded.password_changed_at
+                """,
+                (nuevo_hash, cambiado_en)
+            )
+
+        else:
+
+            connection.execute(
+                """
+                INSERT INTO auth_state (
+                    id, password_hash, password_changed_at, sessions_valid_from
+                )
+                VALUES (1, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    password_hash = excluded.password_hash,
+                    password_changed_at = excluded.password_changed_at,
+                    sessions_valid_from = excluded.sessions_valid_from
+                """,
+                (nuevo_hash, cambiado_en, corte)
+            )
+
+        connection.commit()
+
+    finally:
+        connection.close()
+
+    return corte or 0
+
+
+def change_password(current_password, new_password):
+    """
+    Cambia la contrasena verificando antes la actual.
+
+    Devuelve (resultado, detalle):
+      CHANGE_CURRENT_INVALID -> la contrasena actual no es correcta
+      CHANGE_POLICY          -> la nueva incumple la politica (detalle = motivo)
+      CHANGE_OK              -> cambiada (detalle = fecha de corte)
+
+    La actual se comprueba SIEMPRE, aunque quien llame ya tenga una sesion
+    valida: una cookie robada no debe bastar para apropiarse de la cuenta.
+    """
+
+    stored_hash = get_stored_password_hash()
+
+    if not stored_hash:
+        return CHANGE_CURRENT_INVALID, "No hay ninguna credencial configurada"
+
+    if not verify_password(current_password or "", stored_hash):
+        return CHANGE_CURRENT_INVALID, "La contrasena actual no es correcta"
+
+    problema = validate_new_password(new_password, stored_hash)
+
+    if problema:
+        return CHANGE_POLICY, problema
+
+    return CHANGE_OK, set_password(new_password)
 
 
 def require_security_config():
@@ -291,13 +628,18 @@ def require_security_config():
             "python -c \"import secrets; print(secrets.token_hex(32))\""
         )
 
-    # Impide arrancar si la contraseña configurada sigue siendo la de por defecto
-    if AUTH_PASSWORD_HASH and verify_password(DEFAULT_PASSWORD, AUTH_PASSWORD_HASH):
+    # Impide arrancar si la contrasena VIGENTE sigue siendo la de por defecto.
+    # Se comprueba la del almacen, no la del .env: desde G4a el .env es solo
+    # la semilla, y mirar ahi daria un veredicto equivocado.
+    vigente = get_stored_password_hash()
+
+    if vigente and verify_password(DEFAULT_PASSWORD, vigente):
         raise RuntimeError(
             "La contraseña del usuario '" + AUTH_USERNAME + "' sigue siendo la "
-            "contraseña por defecto ('" + DEFAULT_PASSWORD + "'). El backend no puede "
-            "arrancar así. Genera un hash nuevo con: python backend/auth.py "
-            "y reemplaza AUTH_PASSWORD_HASH en el archivo .env."
+            "contraseña por defecto ('" + DEFAULT_PASSWORD + "'). El backend "
+            "no puede arrancar asi. "
+            "Cambiala desde la consola del servidor con: "
+            "python reset_password.py"
         )
 
 
@@ -388,13 +730,3 @@ def token_from_header(authorization):
         return parts[1].strip()
 
     return None
-
-
-if __name__ == "__main__":
-
-    import getpass
-
-    pwd = getpass.getpass("Nueva contraseña: ")
-
-    print("\nAgrega esta línea a tu archivo .env:\n")
-    print(f"AUTH_PASSWORD_HASH={generate_password_hash(pwd)}")

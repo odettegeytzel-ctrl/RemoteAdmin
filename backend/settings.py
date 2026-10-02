@@ -18,6 +18,29 @@ DEFAULT_SETTINGS = {
 }
 
 
+# Unicas claves que se pueden escribir. Lista blanca explicita, no una
+# lista negra: una clave nueva desconocida se rechaza por defecto.
+#
+# Importa mas de lo que parece. Este endpoint aceptaba cualquier diccionario
+# y escribia lo que fuera en la tabla settings. Mientras solo hubiera
+# umbrales daba igual, pero el dia que un estado de autenticacion acabara
+# ahi, "guardar ajustes" seria "cambiar la credencial sin saber la actual".
+# La credencial vive en auth_state, que esta funcion no toca, y ademas
+# ninguna clave de fuera de esta lista llega a escribirse.
+ALLOWED_SETTINGS = frozenset(DEFAULT_SETTINGS)
+
+
+class UnknownSettingError(ValueError):
+    """Se intento guardar una clave que no esta permitida."""
+
+    def __init__(self, keys):
+        self.keys = sorted(keys)
+
+        super().__init__(
+            "Ajustes no reconocidos: " + ", ".join(self.keys)
+        )
+
+
 def get_settings():
     connection = get_connection()
 
@@ -36,6 +59,17 @@ def get_settings():
 
 
 def save_settings(values):
+
+    if not isinstance(values, dict):
+        raise UnknownSettingError(["(cuerpo no valido)"])
+
+    # Se rechaza la peticion ENTERA si hay una clave desconocida, en vez de
+    # ignorarla en silencio: guardar a medias sin avisar es peor que fallar.
+    desconocidas = set(values) - ALLOWED_SETTINGS
+
+    if desconocidas:
+        raise UnknownSettingError(desconocidas)
+
     connection = get_connection()
 
     for key, value in values.items():

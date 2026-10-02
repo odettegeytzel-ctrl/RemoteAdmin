@@ -74,6 +74,28 @@ def init_db():
         )
     """)
 
+    # Estado de la credencial del panel. Una sola fila logica (CHECK id = 1).
+    #
+    # Hasta ahora el hash vivia unicamente en el .env, leido al importar: para
+    # cambiar la contrasena habia que editar un archivo y reiniciar el
+    # servidor, cortando a todos los Agents. Aqui se puede cambiar en
+    # caliente.
+    #
+    # sessions_valid_from es la fecha de corte de sesiones, en segundos epoch.
+    # Los tokens emitidos antes dejan de valer. Es la unica forma de cerrar
+    # TODAS las sesiones de golpe: los tokens son sin estado y no se pueden
+    # enumerar, asi que no hay lista que recorrer. 0 = nunca se ha cortado.
+    #
+    # El hash nunca se imprime ni se registra en ninguna parte.
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS auth_state (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            password_hash TEXT NOT NULL,
+            password_changed_at TEXT,
+            sessions_valid_from INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+
     # Registro de auditoría: una fila por acción administrativa solicitada.
     #
     # Responde a "quién pidió qué, sobre qué equipo, desde dónde y cuándo".

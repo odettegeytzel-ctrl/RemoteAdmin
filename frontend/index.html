@@ -1966,6 +1966,99 @@
 
                         </div>
 
+
+                        <!-- Cambio de contrasena del panel -->
+                        <div class="mt-8 pt-8 border-t border-slate-200">
+
+                            <h3 class="font-semibold text-slate-900">
+                                Contrase&ntilde;a del panel
+                            </h3>
+
+                            <p class="text-sm text-slate-500 mt-1">
+                                Hay que teclear la contrase&ntilde;a actual: tener la
+                                sesi&oacute;n abierta no basta para cambiarla.
+                            </p>
+
+                            <div class="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-4 max-w-3xl">
+
+                                <div>
+
+                                    <label
+                                        class="block text-sm text-slate-600 mb-1"
+                                        for="password-current"
+                                    >
+                                        Contrase&ntilde;a actual
+                                    </label>
+
+                                    <input
+                                        id="password-current"
+                                        type="password"
+                                        autocomplete="current-password"
+                                        class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm"
+                                    >
+
+                                </div>
+
+                                <div>
+
+                                    <label
+                                        class="block text-sm text-slate-600 mb-1"
+                                        for="password-new"
+                                    >
+                                        Nueva contrase&ntilde;a
+                                    </label>
+
+                                    <input
+                                        id="password-new"
+                                        type="password"
+                                        autocomplete="new-password"
+                                        class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm"
+                                    >
+
+                                </div>
+
+                                <div>
+
+                                    <label
+                                        class="block text-sm text-slate-600 mb-1"
+                                        for="password-repeat"
+                                    >
+                                        Repetir nueva contrase&ntilde;a
+                                    </label>
+
+                                    <input
+                                        id="password-repeat"
+                                        type="password"
+                                        autocomplete="new-password"
+                                        class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm"
+                                    >
+
+                                </div>
+
+                            </div>
+
+                            <p class="mt-4 px-4 py-3 rounded-lg bg-amber-50 border border-amber-200 text-sm text-amber-800">
+                                Al cambiar la contrase&ntilde;a se cerrar&aacute;n las dem&aacute;s sesiones.
+                            </p>
+
+                            <div class="mt-4 flex items-center gap-3">
+
+                                <button
+                                    id="password-save-button"
+                                    class="px-4 py-2 rounded-lg bg-slate-900 text-white text-sm hover:bg-slate-700 transition"
+                                >
+                                    Cambiar contrase&ntilde;a
+                                </button>
+
+                                <span
+                                    id="password-status"
+                                    class="hidden text-sm"
+                                ></span>
+
+                            </div>
+
+                        </div>
+
                     </div>
 
                 </section>
