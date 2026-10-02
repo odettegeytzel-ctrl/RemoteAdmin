@@ -2299,6 +2299,9 @@ loadInstalledSoftware(
     device.device_id
 );
 
+// Horario de grabacion de ESTE equipo
+cargarProgramacion();
+
 // Alertas y grabaciones de ESTE equipo
 loadDeviceAlerts(
     device.device_id
@@ -3629,6 +3632,860 @@ async function changePassword() {
         console.error("Error cambiando la contrase\u00f1a:", error);
 
         setPasswordStatus(
+            "No se pudo contactar con el servidor",
+            "error"
+        );
+    }
+}
+
+
+// ==============================
+// RECUPERACION DE CONTRASENA (pantalla de acceso)
+// ==============================
+
+function mostrarPanelAcceso(cual) {
+
+    const paneles = {
+        login: document.querySelector("#login-screen form"),
+        forgot: document.getElementById("forgot-panel"),
+        reset: document.getElementById("reset-panel")
+    };
+
+    Object.entries(paneles).forEach(([nombre, elemento]) => {
+
+        if (!elemento) {
+            return;
+        }
+
+        elemento.classList.toggle("hidden", nombre !== cual);
+    });
+
+    const enlace = document.getElementById("forgot-link");
+
+    if (enlace) {
+        enlace.classList.toggle("hidden", cual !== "login");
+    }
+}
+
+
+function mostrarEstado(id, mensaje, tono) {
+
+    const elemento = document.getElementById(id);
+
+    if (!elemento) {
+        return;
+    }
+
+    elemento.textContent = mensaje;
+
+    elemento.classList.remove("hidden");
+
+    elemento.className =
+        "text-sm "
+        + (tono === "error"
+            ? "text-red-600"
+            : tono === "ok"
+                ? "text-emerald-600"
+                : "text-slate-500");
+}
+
+
+async function pedirEnlaceDeRecuperacion() {
+
+    const correo =
+        document.getElementById("forgot-email").value.trim();
+
+    if (!correo) {
+        mostrarEstado("forgot-status", "Escribe tu correo", "error");
+        return;
+    }
+
+    mostrarEstado("forgot-status", "Enviando...");
+
+    try {
+
+        const response =
+            await fetch("/api/auth/forgot", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ email: correo })
+            });
+
+        const data = await response.json();
+
+        // La respuesta es la misma exista o no la cuenta: aqui tampoco se
+        // distingue, porque el panel delataria lo que el servidor calla.
+        mostrarEstado(
+            "forgot-status",
+            data.message || "Si esa direccion tiene cuenta, recibiras un correo.",
+            response.ok ? "ok" : "error"
+        );
+
+    } catch (error) {
+        mostrarEstado(
+            "forgot-status",
+            "No se pudo contactar con el servidor",
+            "error"
+        );
+    }
+}
+
+
+function tokenDeRecuperacionEnLaUrl() {
+
+    const marca = window.location.hash || "";
+
+    if (!marca.startsWith("#reset=")) {
+        return null;
+    }
+
+    return marca.slice("#reset=".length);
+}
+
+
+async function comprobarEnlaceDeRecuperacion() {
+
+    const token = tokenDeRecuperacionEnLaUrl();
+
+    if (!token) {
+        return;
+    }
+
+    mostrarPanelAcceso("reset");
+
+    try {
+
+        const response =
+            await fetch("/api/auth/reset/check", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ token })
+            });
+
+        if (!response.ok) {
+
+            const data = await response.json();
+
+            mostrarEstado(
+                "reset-status",
+                data.message || "El enlace ya no sirve",
+                "error"
+            );
+        }
+
+    } catch (error) {
+        // Si no se puede comprobar, se deja intentarlo igualmente
+    }
+}
+
+
+async function guardarContrasenaRecuperada() {
+
+    const token = tokenDeRecuperacionEnLaUrl();
+
+    const nueva = document.getElementById("reset-new").value;
+    const repetida = document.getElementById("reset-repeat").value;
+
+    if (nueva !== repetida) {
+        mostrarEstado(
+            "reset-status",
+            "Las contrase\u00f1as no coinciden",
+            "error"
+        );
+        return;
+    }
+
+    if (nueva.length < PASSWORD_MIN_LENGTH) {
+        mostrarEstado(
+            "reset-status",
+            `La contrase\u00f1a debe tener al menos ${PASSWORD_MIN_LENGTH} caracteres`,
+            "error"
+        );
+        return;
+    }
+
+    mostrarEstado("reset-status", "Guardando...");
+
+    try {
+
+        const response =
+            await fetch("/api/auth/reset", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ token, new_password: nueva })
+            });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+            mostrarEstado(
+                "reset-status",
+                data.message || "No se pudo guardar",
+                "error"
+            );
+            return;
+        }
+
+        // El enlace ya esta gastado: se quita de la barra de direcciones
+        // para que no quede en el historial del navegador.
+        history.replaceState(null, "", window.location.pathname);
+
+        mostrarEstado("reset-status", data.message, "ok");
+
+        setTimeout(() => mostrarPanelAcceso("login"), 1500);
+
+    } catch (error) {
+        mostrarEstado(
+            "reset-status",
+            "No se pudo contactar con el servidor",
+            "error"
+        );
+    }
+}
+
+
+// ==============================
+// MI CUENTA Y USUARIOS
+// ==============================
+
+// Lo que puede hacer quien ha iniciado sesion. Sirve para no ensenar
+// botones inutiles; la autorizacion de verdad la hace el servidor en cada
+// peticion, asi que esconder algo aqui no protege nada.
+let sesionActual = { permissions: [], is_owner: false };
+
+let catalogoDePermisos = [];
+
+
+// Como se nombra cada rol en la interfaz. En un solo sitio, para que la
+// tabla de usuarios y la ficha de la cuenta no acaben diciendo cosas
+// distintas del mismo rol.
+const ETIQUETA_DE_ROL = {
+    owner: "Owner",
+    subadmin: "Subadministrador"
+};
+
+
+function etiquetaDeRol(rol) {
+
+    return ETIQUETA_DE_ROL[rol] || rol || "-";
+}
+
+
+function puede(permiso) {
+
+    return sesionActual.is_owner
+        || (sesionActual.permissions || []).includes(permiso);
+}
+
+
+async function cargarSesionActual() {
+
+    try {
+
+        const response = await fetch("/api/users/me");
+
+        if (!response.ok) {
+            return;
+        }
+
+        sesionActual = await response.json();
+
+        const nombre = document.getElementById("account-username");
+        const rol = document.getElementById("account-role");
+        const envoltorioRol =
+            document.getElementById("account-role-wrapper");
+        const correo = document.getElementById("account-email");
+
+        if (nombre) {
+            nombre.textContent = sesionActual.username || "-";
+        }
+
+        // El rol solo se ensena al Owner. A un subadministrador la ficha le
+        // dice quien es, nada mas: su rol no le aporta nada ahi y la
+        // jerarquia del panel no tiene por que estar a la vista de todos.
+        //
+        // La condicion es el rol REAL que manda el servidor, no el nombre
+        // del usuario ni el texto de la etiqueta.
+        if (envoltorioRol) {
+            envoltorioRol.classList.toggle("hidden", !sesionActual.is_owner);
+        }
+
+        if (rol && sesionActual.is_owner) {
+            rol.textContent = etiquetaDeRol(sesionActual.role);
+        }
+
+        if (correo) {
+            correo.value = sesionActual.email || "";
+        }
+
+        const seccion = document.getElementById("users-section");
+
+        if (seccion) {
+            seccion.classList.toggle("hidden", !sesionActual.is_owner);
+        }
+
+        if (sesionActual.is_owner) {
+            await cargarUsuarios();
+        }
+
+    } catch (error) {
+        console.error("No se pudo cargar la sesion:", error);
+    }
+}
+
+
+async function guardarCorreoDeLaCuenta() {
+
+    const correo = document.getElementById("account-email").value.trim();
+
+    mostrarEstado("account-email-status", "Guardando...");
+
+    try {
+
+        const response =
+            await fetch(
+                `/api/users/${encodeURIComponent(sesionActual.username)}/email`,
+                {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ email: correo })
+                }
+            );
+
+        const data = await response.json();
+
+        mostrarEstado(
+            "account-email-status",
+            response.ok ? "Correo guardado" : (data.message || "No se pudo guardar"),
+            response.ok ? "ok" : "error"
+        );
+
+    } catch (error) {
+        mostrarEstado(
+            "account-email-status",
+            "No se pudo contactar con el servidor",
+            "error"
+        );
+    }
+}
+
+
+function casillaDePermiso(permiso, marcado, prefijo) {
+
+    const etiqueta = document.createElement("label");
+
+    etiqueta.className = "flex items-center gap-2 text-sm text-slate-700";
+
+    const casilla = document.createElement("input");
+
+    casilla.type = "checkbox";
+    casilla.value = permiso;
+    casilla.checked = !!marcado;
+    casilla.dataset.permiso = permiso;
+    casilla.className = `${prefijo}-permiso`;
+
+    etiqueta.appendChild(casilla);
+    etiqueta.appendChild(document.createTextNode(permiso));
+
+    return etiqueta;
+}
+
+
+function pintarCatalogoDePermisos() {
+
+    const contenedor = document.getElementById("new-user-permissions");
+
+    if (!contenedor) {
+        return;
+    }
+
+    contenedor.innerHTML = "";
+
+    catalogoDePermisos.forEach(permiso => {
+        contenedor.appendChild(casillaDePermiso(permiso, false, "nuevo"));
+    });
+}
+
+
+function celda(texto, clases) {
+
+    const td = document.createElement("td");
+
+    td.className = clases || "px-4 py-3 text-slate-700";
+
+    // textContent, nunca innerHTML: el nombre de usuario y el correo los
+    // escribe una persona y no deben poder inyectar nada en la pagina.
+    td.textContent = texto;
+
+    return td;
+}
+
+
+function botonPequeno(texto, tono, alPulsar) {
+
+    const boton = document.createElement("button");
+
+    boton.textContent = texto;
+
+    boton.className =
+        "px-3 py-1 rounded-lg text-xs font-medium "
+        + (tono === "peligro"
+            ? "bg-red-50 text-red-700 hover:bg-red-100"
+            : "bg-slate-100 text-slate-700 hover:bg-slate-200");
+
+    boton.addEventListener("click", alPulsar);
+
+    return boton;
+}
+
+
+async function cargarUsuarios() {
+
+    const cuerpo = document.getElementById("users-table");
+
+    if (!cuerpo) {
+        return;
+    }
+
+    try {
+
+        const response = await fetch("/api/users");
+
+        if (!response.ok) {
+            return;
+        }
+
+        const data = await response.json();
+
+        catalogoDePermisos = data.permissions || [];
+
+        pintarCatalogoDePermisos();
+
+        cuerpo.innerHTML = "";
+
+        (data.users || []).forEach(usuario => {
+
+            const fila = document.createElement("tr");
+
+            fila.appendChild(celda(usuario.username,
+                "px-4 py-3 font-medium text-slate-900"));
+
+            // El rol, destacado para el Owner: de un vistazo se ve quien
+            // tiene control total y quien no.
+            const rolCelda = document.createElement("td");
+            rolCelda.className = "px-4 py-3";
+
+            const insignia = document.createElement("span");
+
+            insignia.textContent = etiquetaDeRol(usuario.role);
+
+            insignia.className =
+                "px-2 py-1 rounded-full text-xs font-medium "
+                + (usuario.role === "owner"
+                    ? "bg-amber-100 text-amber-800"
+                    : "bg-slate-100 text-slate-700");
+
+            rolCelda.appendChild(insignia);
+            fila.appendChild(rolCelda);
+
+            fila.appendChild(celda(usuario.email || "-"));
+
+            fila.appendChild(celda(usuario.active ? "activo" : "desactivado"));
+
+            // Permisos editables, salvo los del Owner: los tiene
+            // todos por su rol y no hay lista que cambiar.
+            const permisos = document.createElement("td");
+            permisos.className = "px-4 py-3";
+
+            if (usuario.role === "owner") {
+
+                permisos.textContent = "todos";
+
+            } else {
+
+                const caja = document.createElement("div");
+                caja.className = "grid grid-cols-1 gap-1 max-h-28 overflow-y-auto";
+
+                catalogoDePermisos.forEach(permiso => {
+                    caja.appendChild(casillaDePermiso(
+                        permiso,
+                        (usuario.permissions || []).includes(permiso),
+                        `u-${usuario.username}`
+                    ));
+                });
+
+                const guardar = botonPequeno("Guardar permisos", "normal",
+                    () => guardarPermisos(usuario.username, caja));
+
+                guardar.classList.add("mt-2");
+
+                permisos.appendChild(caja);
+                permisos.appendChild(guardar);
+            }
+
+            fila.appendChild(permisos);
+
+            // Acciones
+            const acciones = document.createElement("td");
+            acciones.className = "px-4 py-3";
+
+            const grupo = document.createElement("div");
+            grupo.className = "flex flex-wrap gap-2";
+
+            grupo.appendChild(botonPequeno(
+                usuario.active ? "Desactivar" : "Activar",
+                usuario.active ? "peligro" : "normal",
+                () => cambiarEstadoUsuario(usuario.username, !usuario.active)
+            ));
+
+            if (usuario.role !== "owner") {
+
+                grupo.appendChild(botonPequeno(
+                    "Restablecer contrase\u00f1a", "normal",
+                    () => restablecerContrasenaDe(usuario.username)
+                ));
+
+                grupo.appendChild(botonPequeno(
+                    "Eliminar", "peligro",
+                    () => eliminarUsuario(usuario.username)
+                ));
+            }
+
+            acciones.appendChild(grupo);
+            fila.appendChild(acciones);
+
+            cuerpo.appendChild(fila);
+        });
+
+    } catch (error) {
+        console.error("No se pudieron cargar los usuarios:", error);
+    }
+}
+
+
+async function operacionDeUsuarios(peticion, mensajeOk) {
+
+    try {
+
+        const response = await peticion();
+
+        const data = await response.json().catch(() => ({}));
+
+        mostrarEstado(
+            "users-status",
+            response.ok ? mensajeOk : (data.message || "No se pudo completar"),
+            response.ok ? "ok" : "error"
+        );
+
+        if (response.ok) {
+            await cargarUsuarios();
+        }
+
+    } catch (error) {
+        mostrarEstado(
+            "users-status",
+            "No se pudo contactar con el servidor",
+            "error"
+        );
+    }
+}
+
+
+function permisosMarcados(caja) {
+
+    return Array.from(caja.querySelectorAll("input[type=checkbox]"))
+        .filter(c => c.checked)
+        .map(c => c.dataset.permiso);
+}
+
+
+function guardarPermisos(username, caja) {
+
+    return operacionDeUsuarios(
+        () => fetch(
+            `/api/users/${encodeURIComponent(username)}/permissions`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ permissions: permisosMarcados(caja) })
+            }
+        ),
+        "Permisos actualizados"
+    );
+}
+
+
+function cambiarEstadoUsuario(username, activo) {
+
+    if (!activo && !confirm(
+        `Al desactivar a ${username} se cerrara su sesion inmediatamente.`
+        + " \u00bfContinuar?"
+    )) {
+        return;
+    }
+
+    return operacionDeUsuarios(
+        () => fetch(
+            `/api/users/${encodeURIComponent(username)}/active`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ active: activo })
+            }
+        ),
+        activo ? "Usuario activado" : "Usuario desactivado"
+    );
+}
+
+
+function eliminarUsuario(username) {
+
+    if (!confirm(
+        `Se eliminara el usuario ${username}. Esta accion no se puede`
+        + " deshacer. \u00bfContinuar?"
+    )) {
+        return;
+    }
+
+    return operacionDeUsuarios(
+        () => fetch(`/api/users/${encodeURIComponent(username)}`,
+                    { method: "DELETE" }),
+        "Usuario eliminado"
+    );
+}
+
+
+function restablecerContrasenaDe(username) {
+
+    const nueva = prompt(
+        `Nueva contrase\u00f1a para ${username}`
+        + ` (m\u00ednimo ${PASSWORD_MIN_LENGTH} caracteres).`
+        + " Se cerraran sus sesiones abiertas."
+    );
+
+    if (!nueva) {
+        return;
+    }
+
+    return operacionDeUsuarios(
+        () => fetch(
+            `/api/users/${encodeURIComponent(username)}/password`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ new_password: nueva })
+            }
+        ),
+        "Contrase\u00f1a restablecida"
+    );
+}
+
+
+async function crearUsuario() {
+
+    const nombre = document.getElementById("new-user-name").value.trim();
+    const correo = document.getElementById("new-user-email").value.trim();
+    const clave = document.getElementById("new-user-password").value;
+
+    if (!nombre || !clave) {
+        mostrarEstado(
+            "new-user-status",
+            "Hacen falta el nombre y la contrase\u00f1a",
+            "error"
+        );
+        return;
+    }
+
+    const contenedor = document.getElementById("new-user-permissions");
+
+    try {
+
+        const response =
+            await fetch("/api/users", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    username: nombre,
+                    email: correo || null,
+                    password: clave,
+                    permissions: permisosMarcados(contenedor)
+                })
+            });
+
+        const data = await response.json().catch(() => ({}));
+
+        if (!response.ok) {
+            mostrarEstado(
+                "new-user-status",
+                data.message || "No se pudo crear",
+                "error"
+            );
+            return;
+        }
+
+        document.getElementById("new-user-name").value = "";
+        document.getElementById("new-user-email").value = "";
+        document.getElementById("new-user-password").value = "";
+
+        mostrarEstado("new-user-status", "Usuario creado", "ok");
+
+        await cargarUsuarios();
+
+    } catch (error) {
+        mostrarEstado(
+            "new-user-status",
+            "No se pudo contactar con el servidor",
+            "error"
+        );
+    }
+}
+
+
+// ==============================
+// PROGRAMACION DE GRABACION
+// ==============================
+
+const NOMBRES_DIAS_CORTOS = ["L", "M", "X", "J", "V", "S", "D"];
+
+
+function pintarDiasDeLaSemana(seleccionados) {
+
+    const contenedor = document.getElementById("schedule-days");
+
+    if (!contenedor) {
+        return;
+    }
+
+    contenedor.innerHTML = "";
+
+    NOMBRES_DIAS_CORTOS.forEach((letra, indice) => {
+
+        const etiqueta = document.createElement("label");
+
+        etiqueta.className =
+            "flex items-center gap-1 text-sm text-slate-700";
+
+        const casilla = document.createElement("input");
+
+        casilla.type = "checkbox";
+        casilla.dataset.dia = String(indice);
+        casilla.checked = (seleccionados || []).includes(indice);
+        casilla.className = "schedule-day";
+
+        etiqueta.appendChild(casilla);
+        etiqueta.appendChild(document.createTextNode(letra));
+
+        contenedor.appendChild(etiqueta);
+    });
+}
+
+
+async function cargarProgramacion() {
+
+    if (!selectedDevice) {
+        return;
+    }
+
+    const panel = document.getElementById("schedule-panel");
+
+    if (!panel) {
+        return;
+    }
+
+    try {
+
+        const response =
+            await fetch(
+                `/api/devices/${selectedDevice.device_id}/recording/schedule`
+            );
+
+        if (!response.ok) {
+            panel.classList.add("hidden");
+            return;
+        }
+
+        panel.classList.remove("hidden");
+
+        const data = await response.json();
+        const horario = data.schedule || {};
+
+        document.getElementById("schedule-enabled").checked =
+            !!horario.enabled;
+
+        document.getElementById("schedule-start").value =
+            horario.start_time || "08:00";
+
+        document.getElementById("schedule-end").value =
+            horario.end_time || "17:00";
+
+        pintarDiasDeLaSemana(horario.days || []);
+
+        mostrarEstado("schedule-status", data.description || "");
+
+    } catch (error) {
+        console.error("No se pudo cargar la programacion:", error);
+    }
+}
+
+
+async function guardarProgramacion() {
+
+    if (!selectedDevice) {
+        return;
+    }
+
+    const dias = Array.from(
+        document.querySelectorAll(".schedule-day")
+    ).filter(c => c.checked).map(c => Number(c.dataset.dia));
+
+    mostrarEstado("schedule-status", "Guardando...");
+
+    try {
+
+        const response =
+            await fetch(
+                `/api/devices/${selectedDevice.device_id}/recording/schedule`,
+                {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        enabled:
+                            document.getElementById("schedule-enabled").checked,
+                        start_time:
+                            document.getElementById("schedule-start").value,
+                        end_time:
+                            document.getElementById("schedule-end").value,
+                        days: dias,
+                        // El Agent usa su propio reloj. Es lo correcto para
+                        // "grabar este equipo de 8 a 17": la hora que
+                        // importa es la de la maquina que se graba.
+                        timezone: "local"
+                    })
+                }
+            );
+
+        const data = await response.json().catch(() => ({}));
+
+        if (!response.ok) {
+            mostrarEstado(
+                "schedule-status",
+                data.message || "No se pudo guardar",
+                "error"
+            );
+            return;
+        }
+
+        mostrarEstado(
+            "schedule-status",
+            data.delivered
+                ? `${data.description}. Enviado al equipo.`
+                : `${data.description}. Se enviara cuando el equipo se conecte.`,
+            "ok"
+        );
+
+    } catch (error) {
+        mostrarEstado(
+            "schedule-status",
             "No se pudo contactar con el servidor",
             "error"
         );
@@ -5597,6 +6454,7 @@ if (view === "dashboard") {
     );
 
     loadSettings();
+    cargarSesionActual();
 }
 
 document
@@ -6607,6 +7465,12 @@ try {
     ).checked =
         settings.alerts_enabled === "true";
 
+    const retencion = document.getElementById("setting-retention");
+
+    if (retencion) {
+        retencion.value = settings.recording_retention_days || "90";
+    }
+
     // Umbrales de salud
     document.getElementById(
         "setting-ram-warning"
@@ -6775,6 +7639,9 @@ const values = {
             ? "true"
             : "false",
 
+    recording_retention_days:
+        (document.getElementById("setting-retention") || {}).value || "90",
+
     ...umbrales.values
 };
 
@@ -6865,6 +7732,27 @@ document
 "click",
 requestInstalledSoftware
 );
+
+[
+    ["forgot-link", () => mostrarPanelAcceso("forgot")],
+    ["forgot-back", () => mostrarPanelAcceso("login")],
+    ["forgot-send", pedirEnlaceDeRecuperacion],
+    ["reset-send", guardarContrasenaRecuperada],
+    ["account-email-save", guardarCorreoDeLaCuenta],
+    ["new-user-save", crearUsuario],
+    ["schedule-save", guardarProgramacion]
+].forEach(([id, accion]) => {
+
+    const elemento = document.getElementById(id);
+
+    if (elemento) {
+        elemento.addEventListener("click", accion);
+    }
+});
+
+// Si se llega con un enlace de recuperacion, se ensena directamente la
+// pantalla de contrasena nueva.
+comprobarEnlaceDeRecuperacion();
 
 document
 .getElementById(

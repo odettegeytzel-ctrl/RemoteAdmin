@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 import mss
 import imageio_ffmpeg
 
-from paths import get_recordings_dir
+from paths import get_recordings_dir, get_device_recordings_dir
 import storage
 
 
@@ -59,10 +59,14 @@ def _no_window_kwargs():
 class ScreenRecorder:
 
     def __init__(self, fps=DEFAULT_FPS, segment_seconds=DEFAULT_SEGMENT_SECONDS,
-                 on_segment_complete=None):
+                 on_segment_complete=None, device_id=None):
 
         self.fps = max(1, int(fps))
         self.segment_seconds = max(5, int(segment_seconds))
+
+        # Identificador del equipo: da nombre a su carpeta de grabaciones.
+        # Se filtra en paths.safe_device_folder, nunca se usa tal cual.
+        self.device_id = device_id
 
         # Callback opcional que recibe el dict del segmento al cerrarse
         self.on_segment_complete = on_segment_complete
@@ -197,8 +201,17 @@ class ScreenRecorder:
 
         now = datetime.now()
 
+        # Cada equipo en su carpeta, y dentro por fecha. Separarlos evita
+        # que dos grabaciones distintas compartan nombre y hace evidente de
+        # quien es cada archivo al mirar el disco.
+        base = (
+            get_device_recordings_dir(self.device_id)
+            if self.device_id
+            else get_recordings_dir()
+        )
+
         folder = os.path.join(
-            get_recordings_dir(),
+            base,
             now.strftime("%Y"),
             now.strftime("%m"),
             now.strftime("%d")

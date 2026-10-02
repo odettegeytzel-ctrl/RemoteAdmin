@@ -7,7 +7,7 @@ from fastapi import FastAPI, Header, Request, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
-from backend.database import init_db
+from backend.database import init_db, get_connection
 from backend.models import DeviceRegister, DeviceHeartbeat
 from backend.devices import (
     register_device,
@@ -27,12 +27,14 @@ from backend.alerts import (
 )
 from backend.settings import (
     get_settings,
+    get_retention_days,
     save_settings,
     UnknownSettingError
 )
 from backend.auth import (
     authenticate,
     change_password,
+    validate_new_password,
     create_token,
     CHANGE_OK,
     CHANGE_CURRENT_INVALID,
@@ -66,6 +68,9 @@ from backend.devices import (
     device_exists
 )
 from backend.media import validate_recording
+from backend import mailer
+from backend import recovery
+from backend import schedule as recording_schedule
 from backend.queries import (
     create_query,
     discard_query,
@@ -86,6 +91,25 @@ from backend.audit import (
     STATUS_REQUESTED,
     STATUS_SUCCESS,
     STATUS_ERROR
+)
+from backend.users import (
+    ensure_owner_migrated,
+    get_user,
+    get_user_by_id,
+    find_by_email,
+    list_users,
+    create_user,
+    delete_user,
+    set_active,
+    set_email,
+    set_permissions,
+    set_user_password,
+    has_permission,
+    is_owner,
+    UserError,
+    PERMISSIONS,
+    ROLE_OWNER,
+    ROLE_SUBADMIN
 )
 from backend.ratelimit import (
     seconds_until_unblocked,
@@ -110,7 +134,12 @@ OPEN_API_PATHS = {
     "/api/auth/logout",
     "/api/auth/me",
     "/api/devices/register",
-    "/api/devices/heartbeat"
+    "/api/devices/heartbeat",
+    # Recuperacion: por definicion se usa SIN sesion. Ambos endpoints
+    # tienen su propio limite de intentos y responden siempre lo mismo.
+    "/api/auth/forgot",
+    "/api/auth/reset",
+    "/api/auth/reset/check"
 }
 
 
@@ -151,6 +180,77 @@ async def require_authentication(request: Request, call_next):
     return await call_next(request)
 
 
+# ==============================
+# AUTORIZACION
+# ==============================
+#
+# El usuario de una peticion se deduce SIEMPRE del token de sesion firmado.
+# Nada de lo que mande el navegador —rol, identificador o lista de
+# permisos— se tiene en cuenta: ocultar un boton es comodidad visual, no
+# una medida de seguridad.
+
+def current_user(request):
+    """Usuario autenticado de esta peticion, o None."""
+
+    token = (
+        token_from_header(request.headers.get("Authorization"))
+        or request.cookies.get(AUTH_COOKIE_NAME)
+    )
+
+    username = verify_token(token)
+
+    return get_user(username) if username else None
+
+
+def _denegado(mensaje="No tienes permiso para esta accion"):
+
+    return JSONResponse(
+        status_code=403,
+        content={"status": "error", "message": mensaje}
+    )
+
+
+def require_permission(request, permission):
+    """
+    Devuelve (usuario, None) si puede, o (None, respuesta 403) si no.
+
+    El owner pasa siempre; al subadmin se le exige el permiso concreto. Un
+    usuario desactivado no pasa nunca, aunque conserve una sesion.
+    """
+
+    usuario = current_user(request)
+
+    if usuario is None:
+        return None, JSONResponse(
+            status_code=401,
+            content={"status": "error", "message": "No autenticado"}
+        )
+
+    if not has_permission(usuario, permission):
+        return None, _denegado()
+
+    return usuario, None
+
+
+def require_owner(request):
+    """La administracion de usuarios es exclusiva del owner."""
+
+    usuario = current_user(request)
+
+    if usuario is None:
+        return None, JSONResponse(
+            status_code=401,
+            content={"status": "error", "message": "No autenticado"}
+        )
+
+    if not is_owner(usuario) or not usuario.get("active"):
+        return None, _denegado(
+            "Solo el Owner puede administrar usuarios"
+        )
+
+    return usuario, None
+
+
 connected_agents = {}
 latest_screens = {}
 latest_cursors = {}
@@ -164,6 +264,9 @@ def startup():
     # tablas. Si la configuracion es invalida, el arranque falla igual un
     # momento despues; crear tablas vacias no cambia nada.
     init_db()
+    # La cuenta unica anterior pasa a ser el owner. Idempotente: si ya hay
+    # usuarios, no hace nada.
+    ensure_owner_migrated()
     # Exige AUTH_SECRET_KEY y AGENT_TOKEN en el .env; si faltan, el arranque falla
     require_security_config()
     # Subidas interrumpidas por un reinicio o una caída anterior
@@ -172,7 +275,8 @@ def startup():
     print("[AUTH] Middleware de autenticación ACTIVO (protege /api/*)")
 
 
-# Retención automática: limpia grabaciones de más de RETENTION_DAYS días una vez
+# Retención automática: limpia grabaciones más antiguas que el periodo
+# configurado (15, 30 o 90 días) una vez
 # al día. Corre en el event loop del proceso; con --reload se recrea en cada
 # recarga sin dejar hilos colgados.
 _retention_task = None
@@ -184,7 +288,11 @@ async def _retention_loop():
 
         try:
             loop = asyncio.get_running_loop()
-            result = await loop.run_in_executor(None, apply_retention, RETENTION_DAYS)
+            # Se lee en cada pasada: cambiar la retencion desde el panel
+            # surte efecto en la siguiente limpieza, sin reiniciar.
+            dias = get_retention_days()
+
+            result = await loop.run_in_executor(None, apply_retention, dias)
 
             if result["deleted"] or result["skipped_traversal"]:
                 print(f"[RETENCIÓN] {result}")
@@ -319,14 +427,26 @@ def heartbeat(
 
 
 @app.get("/api/devices")
-def devices():
+def devices(request: Request):
+
+    _, error = require_permission(request, "devices.view")
+
+    if error:
+        return error
+
     # Detecta cambios de estado antes de devolver la lista
     detect_alerts()
     return get_devices()
 
 
 @app.get("/api/alerts")
-def alerts():
+def alerts(request: Request):
+
+    _, error = require_permission(request, "dashboard.view")
+
+    if error:
+        return error
+
     detect_alerts()
     return get_alerts()
 
@@ -342,12 +462,18 @@ def alerts_read_all():
 
 
 @app.get("/api/settings")
-def settings():
+def settings(request: Request):
+
+    _, error = require_permission(request, "settings.view")
+
+    if error:
+        return error
+
     return get_settings()
 
 
 @app.post("/api/settings")
-def update_settings(data: dict):
+async def update_settings(data: dict, request: Request):
     """
     Guarda ajustes. Solo las claves de la lista blanca de settings.py.
 
@@ -355,14 +481,29 @@ def update_settings(data: dict):
     puede usarse para colar estado de autenticacion en la base.
     """
 
+    _, error = require_permission(request, "settings.edit")
+
+    if error:
+        return error
+
+    anterior = get_retention_days()
+
     try:
-        return save_settings(data)
+        resultado = save_settings(data)
 
     except UnknownSettingError as error:
         return JSONResponse(
             status_code=400,
             content={"status": "error", "message": str(error)}
         )
+
+    # Si han cambiado los dias de retencion, los Agents conectados deben
+    # enterarse ya; si no, seguirian aplicando el periodo anterior hasta
+    # su proxima reconexion.
+    if get_retention_days() != anterior:
+        await broadcast_retention_policy()
+
+    return resultado
 
 
 # ==============================
@@ -507,9 +648,12 @@ def auth_change_password(data: dict, request: Request):
             }
         )
 
+    # Cada usuario cambia la SUYA. El nombre sale del token, nunca del
+    # cuerpo: si no, cualquiera podria cambiar la de otro.
     resultado, detalle = change_password(
         data.get("current_password", ""),
-        data.get("new_password", "")
+        data.get("new_password", ""),
+        username=usuario
     )
 
     if resultado == CHANGE_CURRENT_INVALID:
@@ -568,6 +712,202 @@ def auth_change_password(data: dict, request: Request):
     )
 
     return respuesta
+
+
+# Respuesta unica de la recuperacion. Se escribe una sola vez y se usa en
+# todos los caminos: si cada rama redactara la suya, antes o despues una
+# acabaria delatando si la direccion existe.
+RESPUESTA_RECUPERACION = (
+    "Si esa direccion corresponde a una cuenta, se ha enviado un correo "
+    "con las instrucciones para restablecer la contrasena."
+)
+
+
+@app.post("/api/auth/forgot")
+def auth_forgot(data: dict, request: Request):
+    """
+    Pide un enlace de recuperacion.
+
+    Responde SIEMPRE lo mismo, exista o no la direccion y falle o no el
+    envio. Un panel que contesta distinto segun el caso es un comprobador
+    de cuentas para cualquiera.
+    """
+
+    ip_origen = request.client.host if request.client else "desconocido"
+
+    generica = {"status": "ok", "message": RESPUESTA_RECUPERACION}
+
+    bloqueado = seconds_until_unblocked(ip_origen, scope="recovery")
+
+    if bloqueado:
+
+        log_audit(
+            "auth.password_recovery", status=STATUS_ERROR,
+            source_ip=ip_origen,
+            details="Bloqueado por demasiadas peticiones"
+        )
+
+        return JSONResponse(
+            status_code=429,
+            headers={"Retry-After": str(bloqueado)},
+            content={
+                "status": "error",
+                "message": (
+                    "Demasiadas peticiones. "
+                    f"Intentalo de nuevo en {bloqueado} segundos."
+                )
+            }
+        )
+
+    # Cuenta antes de saber el resultado: si solo se contaran los aciertos,
+    # el propio contador revelaria que direcciones existen.
+    register_failure(ip_origen, scope="recovery")
+
+    correo = (data.get("email") or "").strip()
+
+    usuario = find_by_email(correo) if correo else None
+
+    if usuario is None:
+
+        # Se deja constancia del intento, sin la direccion tecleada: podria
+        # ser la de cualquiera y no aporta nada al historial.
+        log_audit(
+            "auth.password_recovery", status=STATUS_ERROR,
+            source_ip=ip_origen,
+            details="Peticion para una direccion sin cuenta activa"
+        )
+
+        return generica
+
+    token = recovery.create_token(usuario["id"])
+
+    try:
+        mailer.send_password_reset(usuario["email"], token)
+
+        log_audit(
+            "auth.password_recovery", request=None, status=STATUS_SUCCESS,
+            username=usuario["username"], source_ip=ip_origen,
+            details="Enlace de recuperacion enviado"
+        )
+
+    except mailer.MailError as error:
+
+        # El enlace no sirve de nada si no ha salido: se anula.
+        recovery.invalidate_user_tokens(usuario["id"])
+
+        log_audit(
+            "auth.password_recovery", status=STATUS_ERROR,
+            username=usuario["username"], source_ip=ip_origen,
+            details=f"No se pudo enviar el correo: {error}"
+        )
+
+    # Misma respuesta en los tres casos
+    return generica
+
+
+@app.post("/api/auth/reset/check")
+def auth_reset_check(data: dict):
+    """
+    Dice si un enlace sigue sirviendo, sin gastarlo.
+
+    Permite que el panel avise antes de que el usuario teclee una
+    contrasena nueva para nada.
+    """
+
+    _, motivo = recovery.peek_token(data.get("token"))
+
+    if motivo:
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "message": motivo}
+        )
+
+    return {"status": "ok"}
+
+
+@app.post("/api/auth/reset")
+def auth_reset(data: dict, request: Request):
+    """
+    Establece una contrasena nueva con un enlace de recuperacion.
+
+    El enlace se gasta, los demas del mismo usuario se anulan y todas sus
+    sesiones se cierran: si se llega aqui es porque la contrasena anterior
+    ya no es de fiar.
+    """
+
+    ip_origen = request.client.host if request.client else "desconocido"
+
+    bloqueado = seconds_until_unblocked(ip_origen, scope="recovery")
+
+    if bloqueado:
+        return JSONResponse(
+            status_code=429,
+            headers={"Retry-After": str(bloqueado)},
+            content={
+                "status": "error",
+                "message": (
+                    "Demasiadas peticiones. "
+                    f"Intentalo de nuevo en {bloqueado} segundos."
+                )
+            }
+        )
+
+    nueva = data.get("new_password")
+
+    # La politica se comprueba ANTES de gastar el enlace: si no, una
+    # contrasena demasiado corta quemaria el unico enlace que tenia.
+    user_id, motivo = recovery.peek_token(data.get("token"))
+
+    if motivo:
+        register_failure(ip_origen, scope="recovery")
+
+        log_audit("auth.password_recovery", status=STATUS_ERROR,
+                  source_ip=ip_origen, details=f"Enlace rechazado: {motivo}")
+
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "message": motivo}
+        )
+
+    problema = validate_new_password(nueva)
+
+    if problema:
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "message": problema}
+        )
+
+    user_id, motivo = recovery.consume_token(data.get("token"))
+
+    if motivo:
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "message": motivo}
+        )
+
+    usuario = get_user_by_id(user_id)
+
+    if usuario is None:
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "message": "El enlace no es valido"}
+        )
+
+    set_user_password(usuario["username"], nueva)
+
+    reset_failures(ip_origen, scope="recovery")
+
+    log_audit(
+        "auth.password_recovery", status=STATUS_SUCCESS,
+        username=usuario["username"], source_ip=ip_origen,
+        details="Contrasena restablecida por correo; "
+                "se cerraron sus sesiones"
+    )
+
+    return {
+        "status": "ok",
+        "message": "Contrasena actualizada. Ya puedes iniciar sesion."
+    }
 
 
 @app.get("/api/auth/me")
@@ -685,6 +1025,21 @@ async def agent_websocket(websocket: WebSocket):
                 )
             except Exception as error:
                 print(f"[continuo] no se pudo enviar el flag inicial: {error}")
+
+            # Y su horario: el Agent lo cumple con su propio reloj, asi
+            # que debe tenerlo desde el primer momento, no cuando alguien
+            # abra el panel.
+            try:
+                await websocket.send_text(
+                    "set_schedule:"
+                    + json.dumps(recording_schedule.get_schedule(device_id))
+                )
+            except Exception as error:
+                print(f"[horario] no se pudo enviar el horario inicial: {error}")
+
+            # La politica de retencion local. Hasta recibirla, el Agent no
+            # borra nada: ante la duda, conserva.
+            await send_retention_policy(device_id)
 
         while True:
 
@@ -2069,7 +2424,14 @@ async def upload_recording(
 
 
 @app.get("/api/recordings")
-def recordings_list(device_id: str = None, start: str = None, end: str = None):
+def recordings_list(request: Request, device_id: str = None,
+                    start: str = None, end: str = None):
+
+    _, error = require_permission(request, "recordings.view")
+
+    if error:
+        return error
+
 
     # Protegido por sesión (el middleware exige token en /api/* salvo rutas abiertas).
     # device_id se usa solo como filtro parametrizado (a prueba de inyección).
@@ -2089,13 +2451,28 @@ def recordings_list(device_id: str = None, start: str = None, end: str = None):
 
 
 @app.post("/api/recordings/{recording_id}/keep")
-def recording_keep(recording_id: int, data: dict):
+async def recording_keep(recording_id: int, data: dict, request: Request):
+
+    _, error = require_permission(request, "recordings.manage")
+
+    if error:
+        return error
+
 
     # Protegido por sesión. Marca/desmarca "Conservar".
     keep = 1 if data.get("keep") else 0
 
     if not set_keep(recording_id, keep):
         return file_transfer_error(404, "Grabación no encontrada")
+
+    # El Agent tiene su propia copia: hay que decirle que esta marcada,
+    # o su retencion la borraria igual al cumplir los dias. Al quitar la
+    # marca, la lista nueva ya no la incluye y vuelve a estar sujeta a la
+    # retencion, que es justo lo que se espera.
+    grabacion = get_recording(recording_id)
+
+    if grabacion:
+        await send_retention_policy(grabacion["device_id"])
 
     return {
         "status": "ok",
@@ -2105,7 +2482,13 @@ def recording_keep(recording_id: int, data: dict):
 
 
 @app.get("/api/recordings/{recording_id}/video")
-def recording_video(recording_id: int):
+def recording_video(recording_id: int, request: Request):
+
+    _, error = require_permission(request, "recordings.view")
+
+    if error:
+        return error
+
 
     # Protegido por sesión (el middleware exige token en /api/*).
     recording = get_recording(recording_id)
@@ -2133,7 +2516,13 @@ def recording_video(recording_id: int):
 
 
 @app.get("/api/recordings/{recording_id}/download")
-def recording_download(recording_id: int):
+def recording_download(recording_id: int, request: Request):
+
+    _, error = require_permission(request, "recordings.download")
+
+    if error:
+        return error
+
 
     # Protegido por sesión. Descarga el MP4 por streaming, sin borrar ni modificar
     # el original. Se resuelve por recording_id, nunca por una ruta del frontend.
@@ -2350,6 +2739,11 @@ async def _consultar_agente(device_id, request, kind, comando, accion,
 async def list_device_processes(device_id: str, request: Request):
     """Procesos activos del equipo. Solo lectura (G2)."""
 
+    _, error = require_permission(request, "processes.view")
+
+    if error:
+        return error
+
     return await _consultar_agente(
         device_id, request, KIND_PROCESSES,
         "get_processes", "device.processes", normalize_processes
@@ -2360,10 +2754,413 @@ async def list_device_processes(device_id: str, request: Request):
 async def list_device_services(device_id: str, request: Request):
     """Servicios de Windows del equipo. Solo lectura (G3)."""
 
+    _, error = require_permission(request, "services.view")
+
+    if error:
+        return error
+
     return await _consultar_agente(
         device_id, request, KIND_SERVICES,
         "get_services", "device.services", normalize_services
     )
+
+
+# ==============================
+# RETENCION LOCAL DEL AGENT
+# ==============================
+#
+# El Agent conserva sus grabaciones despues de subirlas y las retira
+# cuando cumplen los dias configurados. Para eso necesita dos cosas del
+# servidor: cuantos dias, y cuales estan marcadas para conservar.
+#
+# La correspondencia entre la copia del servidor y la local se hace por el
+# NOMBRE del archivo (rec_<marca de tiempo>.mp4), que el Agent genera y el
+# servidor conserva tal cual al publicarlo.
+
+def build_retention_policy(device_id):
+    """Dias de retencion y nombres de archivo marcados para conservar."""
+
+    connection = get_connection()
+
+    try:
+        filas = connection.execute(
+            "SELECT path FROM recordings WHERE device_id = ? AND keep = 1",
+            (device_id,)
+        ).fetchall()
+
+    finally:
+        connection.close()
+
+    return {
+        "days": get_retention_days(),
+        "keep": [
+            fila["path"].replace("\\", "/").rsplit("/", 1)[-1]
+            for fila in filas
+        ]
+    }
+
+
+async def send_retention_policy(device_id):
+    """Manda la politica al Agent, si esta conectado."""
+
+    websocket = connected_agents.get(device_id)
+
+    if not websocket:
+        return False
+
+    try:
+        await websocket.send_text(
+            "set_retention:" + json.dumps(build_retention_policy(device_id))
+        )
+        return True
+
+    except Exception as error:
+        print(f"[retencion] no se pudo avisar a {device_id}: {error}")
+        return False
+
+
+async def broadcast_retention_policy():
+    """
+    Reenvia la politica a todos los Agents conectados.
+
+    Se usa al cambiar los dias de retencion desde el panel: afecta a
+    todos, no solo al equipo que se este mirando.
+    """
+
+    for device_id in list(connected_agents):
+        await send_retention_policy(device_id)
+
+
+# ==============================
+# PROGRAMACION DE GRABACION
+# ==============================
+
+@app.get("/api/devices/{device_id}/recording/schedule")
+def recording_schedule_get(device_id: str, request: Request):
+
+    _, error = require_permission(request, "recordings.view")
+
+    if error:
+        return error
+
+    horario = recording_schedule.get_schedule(device_id)
+
+    return {
+        "status": "ok",
+        "schedule": horario,
+        "description": recording_schedule.describe(horario)
+    }
+
+
+@app.post("/api/devices/{device_id}/recording/schedule")
+async def recording_schedule_set(device_id: str, data: dict,
+                                 request: Request):
+    """
+    Guarda el horario de un equipo y se lo manda al Agent.
+
+    Si el Agent no esta conectado, el horario queda guardado igualmente y
+    se le entrega en cuanto vuelva: la programacion no depende de que
+    nadie tenga el panel abierto.
+    """
+
+    _, error = require_permission(request, "recordings.manage")
+
+    if error:
+        return error
+
+    if not device_exists(device_id):
+        return JSONResponse(
+            status_code=404,
+            content={"status": "error",
+                     "message": "Dispositivo no encontrado"}
+        )
+
+    try:
+        horario = recording_schedule.set_schedule(device_id, data)
+
+    except recording_schedule.ScheduleError as problema:
+
+        log_audit("recording.schedule", request=request, device_id=device_id,
+                  status=STATUS_ERROR, details=f"Horario rechazado: {problema}")
+
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "message": str(problema)}
+        )
+
+    entregado = False
+
+    websocket = connected_agents.get(device_id)
+
+    if websocket:
+        try:
+            await websocket.send_text("set_schedule:" + json.dumps(horario))
+            entregado = True
+        except Exception as error:
+            print(f"[horario] no se pudo avisar al Agent: {error}")
+
+    log_audit(
+        "recording.schedule", request=request, device_id=device_id,
+        status=STATUS_SUCCESS,
+        details={"resumen": recording_schedule.describe(horario),
+                 "entregado_al_agent": entregado}
+    )
+
+    return {
+        "status": "ok",
+        "schedule": horario,
+        "description": recording_schedule.describe(horario),
+        "delivered": entregado
+    }
+
+
+# ==============================
+# USUARIOS, ROLES Y PERMISOS
+# ==============================
+
+def _usuario_o_error(funcion, *args, **kwargs):
+    """Ejecuta una operacion de usuarios y traduce su rechazo a un 400."""
+
+    try:
+        return funcion(*args, **kwargs), None
+
+    except UserError as error:
+        return None, JSONResponse(
+            status_code=400,
+            content={"status": "error", "message": str(error)}
+        )
+
+
+@app.get("/api/users")
+def users_list(request: Request):
+    """Usuarios del panel. Solo el owner."""
+
+    _, error = require_owner(request)
+
+    if error:
+        return error
+
+    return {
+        "status": "ok",
+        "users": list_users(),
+        "permissions": list(PERMISSIONS),
+        "roles": [ROLE_OWNER, ROLE_SUBADMIN]
+    }
+
+
+@app.get("/api/users/me")
+def users_me(request: Request):
+    """
+    Quien soy y que puedo hacer.
+
+    El panel lo usa para ocultar lo que no procede. Es una comodidad: cada
+    endpoint vuelve a comprobar el permiso por su cuenta.
+    """
+
+    usuario = current_user(request)
+
+    if usuario is None:
+        return JSONResponse(
+            status_code=401,
+            content={"status": "error", "message": "No autenticado"}
+        )
+
+    return {
+        "status": "ok",
+        "username": usuario["username"],
+        "role": usuario["role"],
+        "email": usuario["email"],
+        "is_owner": is_owner(usuario),
+        "permissions": (
+            list(PERMISSIONS) if is_owner(usuario)
+            else usuario.get("permissions", [])
+        )
+    }
+
+
+@app.post("/api/users")
+def users_create(data: dict, request: Request):
+    """Alta de un subadmin. Solo el owner; el rol owner no se puede asignar."""
+
+    actor, error = require_owner(request)
+
+    if error:
+        return error
+
+    usuario, error = _usuario_o_error(
+        create_user,
+        username=data.get("username"),
+        password=data.get("password"),
+        email=data.get("email"),
+        # El rol NO se toma del cuerpo: un alta nunca puede fabricar un
+        # segundo control total.
+        role=ROLE_SUBADMIN,
+        permissions=data.get("permissions"),
+        active=bool(data.get("active", True))
+    )
+
+    if error:
+        log_audit("user.created", request=request, status=STATUS_ERROR,
+                  details="Alta rechazada")
+        return error
+
+    log_audit(
+        "user.created", request=request, status=STATUS_SUCCESS,
+        details={"username": usuario["username"],
+                 "role": usuario["role"],
+                 "permissions": len(usuario.get("permissions", []))}
+    )
+
+    return {"status": "ok", "user": usuario}
+
+
+@app.post("/api/users/{username}/permissions")
+def users_permissions(username: str, data: dict, request: Request):
+
+    actor, error = require_owner(request)
+
+    if error:
+        return error
+
+    usuario, error = _usuario_o_error(
+        set_permissions, username, data.get("permissions")
+    )
+
+    if error:
+        log_audit("user.permissions_changed", request=request,
+                  status=STATUS_ERROR,
+                  details={"username": username, "error": "rechazado"})
+        return error
+
+    log_audit(
+        "user.permissions_changed", request=request, status=STATUS_SUCCESS,
+        details={"username": usuario["username"],
+                 "permissions": usuario.get("permissions", [])}
+    )
+
+    return {"status": "ok", "user": usuario}
+
+
+@app.post("/api/users/{username}/active")
+def users_active(username: str, data: dict, request: Request):
+
+    actor, error = require_owner(request)
+
+    if error:
+        return error
+
+    activo = bool(data.get("active"))
+
+    usuario, error = _usuario_o_error(set_active, username, activo)
+
+    if error:
+        log_audit(
+            "user.enabled" if activo else "user.disabled",
+            request=request, status=STATUS_ERROR,
+            details={"username": username, "error": "rechazado"}
+        )
+        return error
+
+    log_audit(
+        "user.enabled" if activo else "user.disabled",
+        request=request, status=STATUS_SUCCESS,
+        details={"username": usuario["username"]}
+    )
+
+    return {"status": "ok", "user": usuario}
+
+
+@app.post("/api/users/{username}/email")
+def users_email(username: str, data: dict, request: Request):
+
+    actor, error = require_owner(request)
+
+    if error:
+        return error
+
+    usuario, error = _usuario_o_error(set_email, username, data.get("email"))
+
+    if error:
+        return error
+
+    log_audit("user.updated", request=request, status=STATUS_SUCCESS,
+              details={"username": usuario["username"], "campo": "email"})
+
+    return {"status": "ok", "user": usuario}
+
+
+@app.post("/api/users/{username}/password")
+def users_reset_password(username: str, data: dict, request: Request):
+    """
+    El owner restablece la contrasena de un subadmin.
+
+    Accion administrativa distinta del cambio propio: aqui no se pide la
+    contrasena anterior, porque el owner no la conoce. Cierra todas las
+    sesiones de ese usuario.
+    """
+
+    actor, error = require_owner(request)
+
+    if error:
+        return error
+
+    objetivo = get_user(username)
+
+    if objetivo is None:
+        return JSONResponse(
+            status_code=404,
+            content={"status": "error", "message": "El usuario no existe"}
+        )
+
+    if objetivo["role"] == ROLE_OWNER and objetivo["username"] != actor["username"]:
+        return _denegado(
+            "La contrasena de otro propietario no se restablece desde aqui"
+        )
+
+    problema = validate_new_password(data.get("new_password"))
+
+    if problema:
+        log_audit("user.password_reset", request=request, status=STATUS_ERROR,
+                  details={"username": username, "error": problema})
+
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "message": problema}
+        )
+
+    set_user_password(objetivo["username"], data.get("new_password"))
+
+    log_audit(
+        "user.password_reset", request=request, status=STATUS_SUCCESS,
+        details={"username": objetivo["username"],
+                 "detalle": "Restablecida por el propietario; "
+                            "se cerraron sus sesiones"}
+    )
+
+    return {"status": "ok",
+            "message": "Contrasena restablecida. "
+                       "Las sesiones de ese usuario se han cerrado."}
+
+
+@app.delete("/api/users/{username}")
+def users_delete(username: str, request: Request):
+
+    actor, error = require_owner(request)
+
+    if error:
+        return error
+
+    _, error = _usuario_o_error(delete_user, username)
+
+    if error:
+        log_audit("user.deleted", request=request, status=STATUS_ERROR,
+                  details={"username": username, "error": "rechazado"})
+        return error
+
+    log_audit("user.deleted", request=request, status=STATUS_SUCCESS,
+              details={"username": username})
+
+    return {"status": "ok"}
 
 
 # ==============================
@@ -2372,6 +3169,7 @@ async def list_device_services(device_id: str, request: Request):
 
 @app.get("/api/audit")
 def audit_list(
+    request: Request,
     limit: int = 100,
     device_id: str = None,
     action: str = None,
@@ -2383,8 +3181,15 @@ def audit_list(
     Solo lectura: no existe ningún endpoint para crear, modificar ni borrar
     registros. Un historial que se puede editar desde fuera no sirve de nada.
 
-    Protegido por el middleware de sesión, como el resto de /api/.
+    Protegido por el middleware de sesion, como el resto de /api/.
+    Reservado al owner: el historial dice quien hizo que, y no es algo que
+    deba ver cualquiera que tenga una sesion abierta.
     """
+
+    _, error = require_owner(request)
+
+    if error:
+        return error
 
     registros = list_audit(
         limit=limit,

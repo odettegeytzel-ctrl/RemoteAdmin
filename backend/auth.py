@@ -152,8 +152,28 @@ def get_auth_state():
     }
 
 
-def get_stored_password_hash():
-    """Hash vigente. Nunca se imprime ni se registra."""
+def get_stored_password_hash(username=None):
+    """
+    Hash vigente de un usuario. Nunca se imprime ni se registra.
+
+    Sin nombre se entiende el owner, que es en quien se convirtio la cuenta
+    unica original: asi las funciones de la epoca de una sola cuenta siguen
+    significando lo mismo.
+    """
+
+    nombre = username or AUTH_USERNAME
+
+    try:
+        from backend.users import get_password_hash
+
+        guardado = get_password_hash(nombre)
+
+        if guardado:
+            return guardado
+
+    except Exception:
+        # Aun no existe la tabla de usuarios: se sigue por el camino antiguo
+        pass
 
     estado = get_auth_state()
 
@@ -170,6 +190,31 @@ def get_sessions_valid_from():
     estado = get_auth_state()
 
     return estado["sessions_valid_from"] if estado else 0
+
+
+def effective_sessions_cutoff(username=None):
+    """
+    Fecha de corte que se aplica a las sesiones de este usuario.
+
+    Hay dos y vale la mas reciente: la GLOBAL de auth_state, que cierra las
+    sesiones de todo el mundo, y la PROPIA del usuario, que cierra solo las
+    suyas. La misma cuenta la usan create_token() y verify_token(), para
+    que un token no nazca ya invalido.
+    """
+
+    global_ = get_sessions_valid_from()
+
+    if not username:
+        return global_
+
+    try:
+        from backend.users import get_sessions_valid_from as corte_de_usuario
+
+        return max(global_, corte_de_usuario(username))
+
+    except Exception:
+        # Aun no existe la tabla de usuarios
+        return global_
 
 
 def _nueva_fecha_de_corte():
@@ -259,7 +304,7 @@ def create_token(username, issued_at=None):
     if issued_at is not None:
         emitido = int(issued_at)
     else:
-        emitido = max(int(time.time()), get_sessions_valid_from())
+        emitido = max(int(time.time()), effective_sessions_cutoff(username))
 
     payload = {
         "sub": username,
@@ -429,10 +474,19 @@ def verify_token(token):
     except (TypeError, ValueError):
         emitido = 0
 
-    if emitido < get_sessions_valid_from():
+    usuario = payload.get("sub")
+
+    if emitido < effective_sessions_cutoff(usuario):
         return None
 
-    return payload.get("sub")
+    from backend.users import is_active
+
+    # Un usuario desactivado pierde el acceso en el acto, sin esperar a que
+    # caduque su token.
+    if not is_active(usuario):
+        return None
+
+    return usuario
 
 
 # ==============================
@@ -440,26 +494,42 @@ def verify_token(token):
 # ==============================
 
 def authenticate(username, password):
+    """
+    Comprueba las credenciales y devuelve un token de sesion, o None.
 
-    # Se lee en cada intento, no al importar: un cambio de contrasena debe
-    # valer de inmediato, sin reiniciar el servidor.
-    stored_hash = get_stored_password_hash()
+    Se lee en cada intento, no al importar: un cambio de contrasena debe
+    valer de inmediato, sin reiniciar el servidor.
+
+    Con varios usuarios, la credencial vive en la fila de cada uno. Un
+    usuario desactivado no entra, aunque acierte la contrasena.
+
+    Se comprueba la contrasena incluso cuando el usuario no existe, contra
+    un hash de descarte, para que el tiempo de respuesta no delate que
+    nombres estan dados de alta.
+    """
+
+    from backend.users import get_password_hash, is_active, ensure_owner_migrated
+
+    ensure_owner_migrated()
+
+    nombre = (username or "").strip()
+
+    stored_hash = get_password_hash(nombre) if nombre else None
 
     if not stored_hash:
-        # Sin credencial configurada no se permite el acceso
+
+        # Sin usuario: se gasta el mismo tiempo que en un intento real
+        verify_password(password or "", _HASH_DE_DESCARTE)
+
         return None
 
-    username_ok = hmac.compare_digest(
-        (username or "").encode("utf-8"),
-        AUTH_USERNAME.encode("utf-8")
-    )
+    if not verify_password(password or "", stored_hash):
+        return None
 
-    password_ok = verify_password(password or "", stored_hash)
+    if not is_active(nombre):
+        return None
 
-    if username_ok and password_ok:
-        return create_token(username)
-
-    return None
+    return create_token(nombre)
 
 
 # ==============================
@@ -474,6 +544,13 @@ PASSWORD_MIN_LENGTH = 12
 # Maximo: PBKDF2 con 200.000 iteraciones sobre una entrada enorme es un
 # consumidor de CPU gratuito para quien la envie. 128 no estorba a nadie.
 PASSWORD_MAX_LENGTH = 128
+
+
+# Hash contra el que se comprueba la contrasena cuando el usuario no
+# existe. Nunca coincide con nada: su unico fin es que un intento con un
+# nombre inventado cueste lo mismo que uno con un nombre real, y no se
+# pueda deducir quien esta dado de alta midiendo el tiempo de respuesta.
+_HASH_DE_DESCARTE = generate_password_hash(secrets.token_urlsafe(32))
 
 
 # Resultados posibles de un cambio de contrasena
@@ -514,9 +591,14 @@ def validate_new_password(new_password, current_hash=None):
     return None
 
 
-def set_password(new_password, invalidate_sessions=True):
+def set_password(new_password, username=None, invalidate_sessions=True):
     """
-    Guarda la contrasena nueva y, por defecto, cierra todas las sesiones.
+    Guarda la contrasena de un usuario y cierra SUS demas sesiones.
+
+    Sin nombre se entiende el owner, que es en quien se convirtio la cuenta
+    unica original. El corte es del usuario, no global: cambiar la
+    contrasena de alguien no debe echar del panel a los demas. Para cerrar
+    todas las sesiones de todo el mundo esta invalidate_all_sessions().
 
     Se guarda solo el hash PBKDF2-SHA256, en el mismo formato de siempre.
     La contrasena en claro no se escribe en ninguna parte ni se devuelve.
@@ -524,57 +606,20 @@ def set_password(new_password, invalidate_sessions=True):
     Devuelve la fecha de corte aplicada (0 si no se invalido nada).
     """
 
-    from backend.database import get_connection
+    from backend.users import ensure_owner_migrated, set_user_password
 
-    nuevo_hash = generate_password_hash(new_password)
-    cambiado_en = _utc_now_iso()
+    ensure_owner_migrated()
 
-    corte = _nueva_fecha_de_corte() if invalidate_sessions else None
+    nombre = username or AUTH_USERNAME
 
-    connection = get_connection()
+    corte = set_user_password(
+        nombre, new_password, invalidate_sessions=invalidate_sessions
+    )
 
-    try:
-
-        if corte is None:
-
-            connection.execute(
-                """
-                INSERT INTO auth_state (
-                    id, password_hash, password_changed_at, sessions_valid_from
-                )
-                VALUES (1, ?, ?, 0)
-                ON CONFLICT(id) DO UPDATE SET
-                    password_hash = excluded.password_hash,
-                    password_changed_at = excluded.password_changed_at
-                """,
-                (nuevo_hash, cambiado_en)
-            )
-
-        else:
-
-            connection.execute(
-                """
-                INSERT INTO auth_state (
-                    id, password_hash, password_changed_at, sessions_valid_from
-                )
-                VALUES (1, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    password_hash = excluded.password_hash,
-                    password_changed_at = excluded.password_changed_at,
-                    sessions_valid_from = excluded.sessions_valid_from
-                """,
-                (nuevo_hash, cambiado_en, corte)
-            )
-
-        connection.commit()
-
-    finally:
-        connection.close()
-
-    return corte or 0
+    return corte if invalidate_sessions else 0
 
 
-def change_password(current_password, new_password):
+def change_password(current_password, new_password, username=None):
     """
     Cambia la contrasena verificando antes la actual.
 
@@ -587,7 +632,9 @@ def change_password(current_password, new_password):
     valida: una cookie robada no debe bastar para apropiarse de la cuenta.
     """
 
-    stored_hash = get_stored_password_hash()
+    nombre = username or AUTH_USERNAME
+
+    stored_hash = get_stored_password_hash(nombre)
 
     if not stored_hash:
         return CHANGE_CURRENT_INVALID, "No hay ninguna credencial configurada"
@@ -600,7 +647,7 @@ def change_password(current_password, new_password):
     if problema:
         return CHANGE_POLICY, problema
 
-    return CHANGE_OK, set_password(new_password)
+    return CHANGE_OK, set_password(new_password, username=nombre)
 
 
 def require_security_config():

@@ -101,11 +101,11 @@ def test_se_guardan_hash_y_fecha():
 
     h.reiniciar()
 
-    antes = h.fila_auth_state()
+    antes = h.fila_credencial()
 
     reset_password.reset_password(h.CLAVE_NUEVA)
 
-    despues = h.fila_auth_state()
+    despues = h.fila_credencial()
 
     comprobar("El hash cambia",
               despues["password_hash"] != antes["password_hash"])
@@ -308,30 +308,48 @@ def test_fallo_al_guardar():
 # ==============================
 
 def test_no_hay_endpoint_de_reset():
+    """
+    No existe ninguna via HTTP de restablecer sin demostrar nada.
+
+    Esta comprobacion cambio al anadirse la recuperacion por correo: ya
+    hay endpoints publicos de reset, pero exigen un token de un solo uso
+    enviado a la direccion de la cuenta. Lo que sigue sin existir es un
+    endpoint que cambie la contrasena sin esa prueba, y el script de
+    consola sigue sin ser alcanzable desde la red.
+    """
 
     codigo = io.open(RAIZ / "backend" / "main.py", encoding="utf-8").read()
 
+    # Se busca un IMPORT, no la cadena suelta: hay endpoints cuyo nombre
+    # contiene 'reset_password' y no son el script de consola.
     comprobar(
-        "No hay ninguna ruta de reset en el backend",
-        "password/reset" not in codigo
-        and "auth/reset" not in codigo
-        and "forgot" not in codigo.lower()
-    )
-
-    comprobar(
-        "El backend no importa reset_password",
-        "reset_password" not in codigo
+        "El backend no importa el script de consola",
+        "import reset_password" not in codigo
+        and "from reset_password" not in codigo
     )
 
     cliente = h.cliente(con_sesion=False)
 
-    for ruta in ("/api/auth/reset", "/api/auth/password/reset",
-                 "/api/auth/forgot"):
+    # Rutas que no deben existir de ninguna manera
+    for ruta in ("/api/auth/password/reset", "/api/auth/forgot/confirm",
+                 "/api/reset_password"):
 
         comprobar(
             f"{ruta} no existe",
             cliente.post(ruta, json={}).status_code in (401, 404, 405)
         )
+
+    # Y la que si existe exige token: sin el, no cambia nada
+    sin_token = cliente.post(
+        "/api/auth/reset",
+        json={"new_password": "ClaveColadaSinToken1!"}
+    )
+
+    comprobar("El reset por HTTP sin token se rechaza",
+              sin_token.status_code == 400, str(sin_token.status_code))
+
+    comprobar("Y no cambia la contrasena",
+              auth.authenticate("odette", "ClaveColadaSinToken1!") is None)
 
 
 def test_el_script_no_imprime_secretos():
@@ -391,7 +409,7 @@ def test_el_informe_no_expone_secretos():
     )
 
     prohibidos = [h.CLAVE_INICIAL, h.CLAVE_NUEVA,
-                  h.fila_auth_state()["password_hash"]]
+                  h.fila_credencial()["password_hash"]]
 
     comprobar("Ninguna comprobacion expone contrasenas, hashes ni tokens",
               not [p for p in prohibidos if p and p in texto])

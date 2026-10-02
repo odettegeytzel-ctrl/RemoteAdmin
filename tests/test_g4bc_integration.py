@@ -118,15 +118,15 @@ def test_el_corte_avanza_en_cada_operacion():
 
     h.reiniciar()
 
-    inicial = h.fila_auth_state()["sessions_valid_from"]
+    inicial = h.fila_credencial()["sessions_valid_from"]
 
     cambiar(h.cliente(), h.CLAVE_INICIAL, h.CLAVE_NUEVA)
 
-    tras_cambio = h.fila_auth_state()["sessions_valid_from"]
+    tras_cambio = h.fila_credencial()["sessions_valid_from"]
 
     reset_password.reset_password(h.CLAVE_TERCERA)
 
-    tras_reset = h.fila_auth_state()["sessions_valid_from"]
+    tras_reset = h.fila_credencial()["sessions_valid_from"]
 
     comprobar("El cambio adelanta la fecha de corte",
               tras_cambio > inicial)
@@ -274,7 +274,7 @@ def test_el_informe_no_expone_secretos():
     )
 
     prohibidos = [h.CLAVE_INICIAL, h.CLAVE_NUEVA, h.CLAVE_TERCERA,
-                  h.fila_auth_state()["password_hash"]]
+                  h.fila_credencial()["password_hash"]]
 
     comprobar("Ninguna comprobacion expone contrasenas, hashes ni tokens",
               not [p for p in prohibidos if p and p in texto])

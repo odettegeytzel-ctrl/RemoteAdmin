@@ -47,10 +47,15 @@ def poner_clave(clave):
     """
     Deja la credencial en un estado conocido, sin cortar sesiones.
 
-    Se escribe directamente para no depender de lo que se esta probando.
+    Se parte de cero —sin usuarios y sin auth_state— y se siembra como lo
+    haria una instalacion real: el hash entra por auth_state y la migracion
+    lo convierte en la fila del owner, que es la credencial de record.
     """
 
     conexion = database.get_connection()
+    conexion.execute("DELETE FROM user_permissions")
+    conexion.execute("DELETE FROM users")
+    conexion.execute("DELETE FROM auth_state")
 
     conexion.execute(
         """
@@ -58,10 +63,6 @@ def poner_clave(clave):
             id, password_hash, password_changed_at, sessions_valid_from
         )
         VALUES (1, ?, NULL, 0)
-        ON CONFLICT(id) DO UPDATE SET
-            password_hash = excluded.password_hash,
-            password_changed_at = NULL,
-            sessions_valid_from = 0
         """,
         (auth.generate_password_hash(clave),)
     )
@@ -69,8 +70,33 @@ def poner_clave(clave):
     conexion.commit()
     conexion.close()
 
+    from backend import users
+
+    users.ensure_owner_migrated()
+
+
+def fila_credencial():
+    """
+    Fila donde vive la credencial vigente: la del owner.
+
+    Antes del bloque de usuarios era auth_state. Esa tabla sigue ahi, con
+    el corte GLOBAL de sesiones y el hash historico, pero quien manda en el
+    login es el usuario.
+    """
+
+    conexion = database.get_connection()
+
+    fila = conexion.execute(
+        "SELECT * FROM users WHERE role = 'owner'"
+    ).fetchone()
+
+    conexion.close()
+
+    return fila
+
 
 def fila_auth_state():
+    """Corte global de sesiones y rastro historico."""
 
     conexion = database.get_connection()
 

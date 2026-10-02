@@ -98,16 +98,26 @@ def main():
     comprobar("y avisa de que el archivo se conserva",
               "se conserva" in cuerpo)
 
-    print("\n=== 7. F2 intacta: el borrado sigue atado a la confirmación ===")
+    print(chr(10) + "=== 7. La copia local se conserva tras subir ===")
     inicio = codigo.index("def _process_pending(")
     fin = codigo.index("def on_segment_complete(")
     proceso = codigo[inicio:fin]
 
-    comprobar("solo se borra si _upload_one devolvió True",
+    comprobar("solo se retira de la cola si _upload_one devolvio True",
               "if _upload_one(segment):" in proceso)
-    comprobar("el borrado sigue antes de retirar de la cola",
-              proceso.index("_delete_uploaded_recording") <
-              proceso.index("_remove_pending(segment"))
+
+    # Cambio de politica: antes, confirmar la subida borraba el archivo.
+    # Ahora el equipo conserva su copia y solo la retencion la retira.
+    comprobar("una subida correcta ya NO borra el archivo local",
+              "_delete_uploaded_recording" not in proceso
+              and "delete_recording_file" not in proceso)
+
+    comprobar("lo unico que ocurre es salir de la cola de pendientes",
+              "_remove_pending(segment" in proceso)
+
+    comprobar("el borrado automatico vive solo en la retencion",
+              "apply_local_retention" in codigo
+              and "_is_pending_upload" in codigo)
 
     fallos = [d for d, ok in resultados if not ok]
 

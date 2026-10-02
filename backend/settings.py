@@ -14,8 +14,17 @@ DEFAULT_SETTINGS = {
     "ram_warning_percent": "75",
     "ram_critical_percent": "90",
     "disk_warning_percent": "75",
-    "disk_critical_percent": "90"
+    "disk_critical_percent": "90",
+
+    # Dias que se conservan las grabaciones antes de la limpieza
+    # automatica. Configurable: un periodo fijo obliga a tocar el codigo
+    # cada vez que cambia la politica de la casa.
+    "recording_retention_days": "90"
 }
+
+# Valores admitidos para la retencion. Lista cerrada: evita que un "0" o un
+# "1" mal tecleados conviertan la limpieza en un borrado masivo.
+RETENTION_CHOICES = ("15", "30", "90")
 
 
 # Unicas claves que se pueden escribir. Lista blanca explicita, no una
@@ -39,6 +48,17 @@ class UnknownSettingError(ValueError):
         super().__init__(
             "Ajustes no reconocidos: " + ", ".join(self.keys)
         )
+
+
+def get_retention_days():
+    """Dias de retencion configurados, acotados a los valores permitidos."""
+
+    valor = get_settings().get("recording_retention_days")
+
+    if str(valor) not in RETENTION_CHOICES:
+        return int(DEFAULT_SETTINGS["recording_retention_days"])
+
+    return int(valor)
 
 
 def get_settings():
@@ -69,6 +89,14 @@ def save_settings(values):
 
     if desconocidas:
         raise UnknownSettingError(desconocidas)
+
+    retencion = values.get("recording_retention_days")
+
+    if retencion is not None and str(retencion) not in RETENTION_CHOICES:
+        raise UnknownSettingError(
+            ["recording_retention_days (solo "
+             + ", ".join(RETENTION_CHOICES) + ")"]
+        )
 
     connection = get_connection()
 

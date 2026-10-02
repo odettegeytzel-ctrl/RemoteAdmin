@@ -96,6 +96,91 @@ def init_db():
         )
     """)
 
+    # Usuarios del panel. Migracion aditiva: la cuenta unica anterior se
+    # convierte en el owner conservando su hash (backend/users.py).
+    #
+    # username es unico sin distinguir mayusculas: "Odette" y "odette" no
+    # pueden ser dos cuentas distintas, seria una trampa evidente.
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            password_hash TEXT NOT NULL,
+            email TEXT,
+            email_verified INTEGER NOT NULL DEFAULT 0,
+            role TEXT NOT NULL DEFAULT 'subadmin',
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT,
+            updated_at TEXT,
+            password_changed_at TEXT,
+            sessions_valid_from INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+
+    # Permisos concedidos a cada usuario. Una fila por permiso: anadir uno
+    # nuevo no obliga a migrar ninguna columna.
+    #
+    # El owner no aparece aqui: tiene control total por su rol, no por una
+    # lista que alguien pudiera vaciar por error.
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS user_permissions (
+            user_id INTEGER NOT NULL,
+            permission TEXT NOT NULL,
+            PRIMARY KEY (user_id, permission)
+        )
+    """)
+
+    connection.execute("""
+        CREATE INDEX IF NOT EXISTS idx_user_permissions_user
+        ON user_permissions (user_id)
+    """)
+
+    connection.execute("""
+        CREATE INDEX IF NOT EXISTS idx_users_email
+        ON users (email)
+    """)
+
+    # Enlaces de recuperacion de contrasena.
+    #
+    # Solo se guarda el SHA-256 del token: quien lea esta tabla no puede
+    # fabricar un enlace valido. Caducidad corta y un solo uso; used_at
+    # marca el momento en que se gasto o se anulo.
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS password_reset_tokens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            token_hash TEXT NOT NULL UNIQUE,
+            created_at INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL,
+            used_at INTEGER
+        )
+    """)
+
+    connection.execute("""
+        CREATE INDEX IF NOT EXISTS idx_reset_tokens_user
+        ON password_reset_tokens (user_id)
+    """)
+
+    # Programacion de grabacion por equipo. Una fila por dispositivo.
+    #
+    # Los dias se guardan como una cadena de numeros separados por comas
+    # (0 = lunes ... 6 = domingo) para no crear otra tabla por algo que
+    # siempre se lee y se escribe entero.
+    #
+    # timezone se guarda junto al horario: "de 8 a 17" no significa nada
+    # sin saber de donde es ese reloj.
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS recording_schedule (
+            device_id TEXT PRIMARY KEY,
+            enabled INTEGER NOT NULL DEFAULT 0,
+            start_time TEXT NOT NULL DEFAULT '08:00',
+            end_time TEXT NOT NULL DEFAULT '17:00',
+            days TEXT NOT NULL DEFAULT '0,1,2,3,4',
+            timezone TEXT NOT NULL DEFAULT 'local',
+            updated_at TEXT
+        )
+    """)
+
     # Registro de auditoría: una fila por acción administrativa solicitada.
     #
     # Responde a "quién pidió qué, sobre qué equipo, desde dónde y cuándo".

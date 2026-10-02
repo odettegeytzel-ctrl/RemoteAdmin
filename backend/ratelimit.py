@@ -47,6 +47,16 @@ PASSWORD_MAX_FAILURES = 3
 PASSWORD_WINDOW_SECONDS = 900
 
 
+# --- scope "recovery" ---
+# Pedir un enlace de recuperacion es barato para quien lo pide y caro para
+# el servidor (envia un correo). Sin limite, seria un modo comodo de
+# inundar un buzon ajeno. Aqui se cuentan TODAS las peticiones, no solo
+# las fallidas: no hay forma de distinguirlas sin revelar si la direccion
+# existe, que es justo lo que no se quiere revelar.
+RECOVERY_MAX_FAILURES = 3
+RECOVERY_WINDOW_SECONDS = 900
+
+
 # (scope, IP) -> lista de marcas de tiempo de los fallos recientes
 _failures = {}
 
@@ -62,6 +72,9 @@ def _limits(scope):
 
     if scope == "password":
         return PASSWORD_MAX_FAILURES, PASSWORD_WINDOW_SECONDS
+
+    if scope == "recovery":
+        return RECOVERY_MAX_FAILURES, RECOVERY_WINDOW_SECONDS
 
     return MAX_FAILURES, WINDOW_SECONDS
 

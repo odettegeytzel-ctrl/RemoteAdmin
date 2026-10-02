@@ -135,6 +135,8 @@ from paths import get_data_dir, get_config_dir
 import storage
 import inventory
 
+from scheduler import RecordingScheduler
+
 # ---- Estado del Agent (leído por el bucle asíncrono, escrito por hilos) ----
 _state_lock = threading.Lock()
 continuous_enabled = False
@@ -214,23 +216,104 @@ def _is_recording_protected(path):
     return False
 
 
-def _delete_uploaded_recording(path):
-    """
-    Borra el MP4 local de un segmento ya confirmado por el backend.
+# El antiguo _delete_uploaded_recording() se retiro al cambiar la politica:
+# una subida correcta ya no borra nada. El unico borrado automatico de
+# grabaciones locales es ahora el de la retencion, que pasa por
+# storage.delete_recording_file() y comprueba carpeta, nombre, grabacion en
+# curso, cola de pendientes y marca de conservar.
 
-    El borrado solo ocurre DESPUÉS de que el servidor haya respondido
-    correctamente y solo sobre archivos gestionados por RemoteAdmin: la
-    comprobación vive en storage.py y no admite rutas de fuera de la carpeta
-    de grabaciones.
+
+def _is_pending_upload(path):
+    """
+    True si el archivo sigue en la cola de subidas.
+
+    La retencion lo consulta antes de borrar: mientras la cola necesite el
+    archivo para un reintento, no se toca, por muy antiguo que sea.
     """
 
     if not path:
         return False
 
-    return storage.delete_recording_file(
-        path,
-        is_protected=_is_recording_protected
+    objetivo = os.path.normcase(os.path.abspath(str(path)))
+
+    with _pending_lock:
+        for item in _load_pending():
+
+            pendiente = item.get("path")
+
+            if not pendiente:
+                continue
+
+            if os.path.normcase(os.path.abspath(pendiente)) == objetivo:
+                return True
+
+    return False
+
+
+# Politica de retencion local. La manda el servidor: cuantos dias se
+# conservan las grabaciones y cuales estan marcadas para no borrarse.
+#
+# Arranca vacia a proposito. Mientras no llegue una politica, la retencion
+# no borra NADA: ante la duda, se gasta disco antes que perder grabaciones.
+_retention_policy = {"days": None, "keep": set()}
+_retention_lock = threading.Lock()
+
+# Cada cuanto se revisa la carpeta. Una vez por hora sobra para una
+# politica que se mide en dias y no molesta al equipo.
+RETENTION_CHECK_SECONDS = 3600
+
+
+def apply_retention_policy(policy):
+    """Guarda la politica recibida del servidor."""
+
+    dias = (policy or {}).get("days")
+
+    nombres = {
+        os.path.basename(str(n))
+        for n in ((policy or {}).get("keep") or ())
+    }
+
+    with _retention_lock:
+        _retention_policy["days"] = dias
+        _retention_policy["keep"] = nombres
+
+    print(
+        f"[retencion] Politica recibida: {dias} dias, "
+        f"{len(nombres)} grabaciones marcadas para conservar"
     )
+
+
+def run_local_retention():
+    """Aplica la retencion local una vez. Devuelve el resumen."""
+
+    with _retention_lock:
+        dias = _retention_policy["days"]
+        protegidas = set(_retention_policy["keep"])
+
+    if not dias:
+        # Sin politica todavia: no se borra nada
+        return None
+
+    return storage.apply_local_retention(
+        dias,
+        keep_names=protegidas,
+        is_protected=_is_recording_protected,
+        is_pending=_is_pending_upload
+    )
+
+
+def _retention_loop():
+    """Revisa la carpeta local cada hora, en un hilo propio."""
+
+    while True:
+
+        try:
+            run_local_retention()
+
+        except Exception as error:
+            print(f"[retencion] Error al aplicar la retencion: {error}")
+
+        time.sleep(RETENTION_CHECK_SECONDS)
 
 
 # Códigos HTTP que merecen otro intento con exactamente la misma petición.
@@ -411,18 +494,17 @@ def _process_pending():
             continue
 
         if _upload_one(segment):
-            # Se borra el archivo ANTES de sacarlo de la cola. Si el borrado
-            # falla (permisos, antivirus, archivo bloqueado), la entrada sigue
-            # pendiente y el hilo de reintentos volverá a intentarlo: no hay
-            # ningún barrido que recoja huérfanos, así que la cola es la única
-            # garantía de que el archivo acabe eliminándose.
+            # La copia local SE CONSERVA. Antes se borraba aqui mismo en
+            # cuanto el servidor confirmaba; ahora el equipo guarda sus
+            # grabaciones y es la retencion local quien las retira cuando
+            # cumplen los dias configurados.
             #
-            # El caso inverso también es seguro: si el borrado funciona pero el
-            # proceso muere antes de limpiar la cola, en el siguiente arranque
-            # _upload_one() ve que el archivo ya no existe y devuelve True, con
-            # lo que la entrada se limpia sola.
-            if _delete_uploaded_recording(segment.get("path")):
-                _remove_pending(segment.get("path"))
+            # Lo unico que ocurre al confirmarse la subida es que el
+            # segmento sale de la cola de pendientes: ya no hace falta
+            # reintentarlo. Mientras siga en la cola, la retencion no lo
+            # tocara, de modo que un archivo nunca se pierde por haberse
+            # quedado a medias.
+            _remove_pending(segment.get("path"))
             any_ok = True
             with _state_lock:
                 last_upload_at = datetime.now(timezone.utc).isoformat()
@@ -469,22 +551,97 @@ screen_recorder = ScreenRecorder(
     on_segment_complete=on_segment_complete
 )
 
+# Programacion horaria. El horario llega del servidor; la decision de
+# arrancar y parar la toma este Agent con su propio reloj, para que siga
+# cumpliendose con el navegador cerrado y hasta sin conexion.
+recording_scheduler = RecordingScheduler()
 
-def start_screen_recording():
+# Cada cuanto se comprueba si toca empezar o terminar. Treinta segundos dan
+# una precision mas que suficiente para un horario en minutos y no gastan
+# nada.
+SCHEDULE_CHECK_SECONDS = 30
+
+
+def start_screen_recording(manual=True):
     global agent_state
     result = screen_recorder.start()
     with _state_lock:
         agent_state = "recording"
+
+    # Si lo ha pedido una persona, la programacion no le lleva la
+    # contraria durante el resto de la franja en curso.
+    if manual:
+        recording_scheduler.notify_manual(True)
+    else:
+        recording_scheduler.notify_state(True)
+
     return result
 
 
-def stop_screen_recording():
+def stop_screen_recording(manual=True):
     global agent_state
     result = screen_recorder.stop()
     with _state_lock:
         if not screen_recorder.is_recording():
             agent_state = "idle"
+
+    # Parar a mano dentro de una franja programada NO destruye el horario:
+    # simplemente no se reanuda hasta la siguiente. Nadie quiere que el
+    # programa le vuelva a arrancar la grabacion medio minuto despues.
+    if manual:
+        recording_scheduler.notify_manual(False)
+    else:
+        recording_scheduler.notify_state(False)
+
     return result
+
+
+def apply_schedule(horario):
+    """Guarda el horario recibido del servidor y lo aplica de inmediato."""
+
+    recording_scheduler.set_schedule(horario or {})
+    recording_scheduler.notify_state(screen_recorder.is_recording())
+
+    print(f"[horario] Programacion recibida: {horario}")
+
+    _aplicar_decision_del_horario()
+
+
+def _aplicar_decision_del_horario():
+    """Arranca o detiene la grabacion si el horario lo pide."""
+
+    recording_scheduler.notify_state(screen_recorder.is_recording())
+
+    decision = recording_scheduler.decide()
+
+    if decision == "start":
+        print("[horario] Empieza la franja programada: grabando")
+        start_screen_recording(manual=False)
+
+    elif decision == "stop":
+        print("[horario] Termina la franja programada: deteniendo")
+        stop_screen_recording(manual=False)
+
+    return decision
+
+
+def _schedule_loop():
+    """
+    Comprueba el horario cada poco, en un hilo propio.
+
+    Va aparte del WebSocket a proposito: si se cae la conexion con el
+    servidor, el ultimo horario recibido se sigue cumpliendo.
+    """
+
+    while True:
+
+        try:
+            _aplicar_decision_del_horario()
+
+        except Exception as error:
+            print(f"[horario] Error al evaluar la programacion: {error}")
+
+        time.sleep(SCHEDULE_CHECK_SECONDS)
 
 
 def apply_continuous(enabled):
@@ -1691,6 +1848,30 @@ async def websocket_connection():
                             "recording_status:" + json.dumps(build_recording_status())
                         )
 
+                    elif message.startswith("set_retention:"):
+
+                        try:
+                            politica = json.loads(message.split(":", 1)[1])
+                        except json.JSONDecodeError:
+                            politica = {}
+
+                        await asyncio.to_thread(
+                            apply_retention_policy, politica
+                        )
+
+                    elif message.startswith("set_schedule:"):
+
+                        try:
+                            horario = json.loads(message.split(":", 1)[1])
+                        except json.JSONDecodeError:
+                            horario = {}
+
+                        await asyncio.to_thread(apply_schedule, horario)
+
+                        await websocket.send(
+                            "recording_status:" + json.dumps(build_recording_status())
+                        )
+
                     elif message.startswith("set_continuous:"):
 
                         try:
@@ -2006,6 +2187,22 @@ async def main():
         daemon=True
     ).start()
 
+    # Hilo del horario: independiente tambien, para que la programacion se
+    # siga cumpliendo aunque se pierda la conexion con el servidor.
+    threading.Thread(
+        target=_schedule_loop,
+        name="RecordingSchedule",
+        daemon=True
+    ).start()
+
+    # Hilo de la retencion local: retira las grabaciones que ya han
+    # cumplido los dias configurados.
+    threading.Thread(
+        target=_retention_loop,
+        name="LocalRetention",
+        daemon=True
+    ).start()
+
     while True:
 
         try:
@@ -2027,6 +2224,11 @@ async def main():
             await asyncio.sleep(
                 5
             )
+
+    # Cada equipo graba en su propia carpeta. El identificador lo asigna
+    # el servidor en el alta, asi que no se conoce hasta despues de
+    # registrarse.
+    screen_recorder.device_id = get_device_id()
 
     try:
 

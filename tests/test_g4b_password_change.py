@@ -80,11 +80,11 @@ def test_se_guarda_hash_y_fecha():
 
     h.reiniciar()
 
-    antes = h.fila_auth_state()
+    antes = h.fila_credencial()
 
     cambiar(h.cliente(), h.CLAVE_INICIAL, h.CLAVE_NUEVA)
 
-    despues = h.fila_auth_state()
+    despues = h.fila_credencial()
 
     comprobar("El hash almacenado cambia",
               despues["password_hash"] != antes["password_hash"])
@@ -297,7 +297,7 @@ def test_logout_individual_sigue_funcionando():
 
     # Tras el cambio hay una sesion (la reemitida) y se abre otra
     segunda = h.cliente(token=auth.create_token(
-        "odette", issued_at=h.fila_auth_state()["sessions_valid_from"] + 1
+        "odette", issued_at=h.fila_credencial()["sessions_valid_from"] + 1
     ))
 
     comprobar("La segunda sesion arranca valida",
@@ -352,7 +352,7 @@ def test_settings_sigue_sin_poder_tocar_auth_state():
 
     h.reiniciar()
 
-    hash_antes = h.fila_auth_state()["password_hash"]
+    hash_antes = h.fila_credencial()["password_hash"]
 
     respuesta = h.cliente().post(
         "/api/settings",
@@ -363,7 +363,7 @@ def test_settings_sigue_sin_poder_tocar_auth_state():
               respuesta.status_code == 400, str(respuesta.status_code))
 
     comprobar("auth_state no se ha movido",
-              h.fila_auth_state()["password_hash"] == hash_antes)
+              h.fila_credencial()["password_hash"] == hash_antes)
 
 
 # ==============================
@@ -551,7 +551,7 @@ def test_el_informe_no_expone_secretos():
     )
 
     prohibidos = [h.CLAVE_INICIAL, h.CLAVE_NUEVA,
-                  h.fila_auth_state()["password_hash"]]
+                  h.fila_credencial()["password_hash"]]
 
     comprobar(
         "Ninguna comprobacion expone contrasenas, hashes ni tokens",

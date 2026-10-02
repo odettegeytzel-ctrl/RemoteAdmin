@@ -42,6 +42,7 @@ from backend.database import init_db
 from backend.audit import log_audit, STATUS_SUCCESS, STATUS_ERROR
 from backend.auth import (
     get_stored_password_hash,
+    invalidate_all_sessions,
     set_password,
     validate_new_password,
     PASSWORD_MIN_LENGTH
@@ -95,6 +96,12 @@ def reset_password(nueva_contrasena):
 
     try:
         corte = set_password(nueva_contrasena)
+
+        # Un restablecimiento de emergencia cierra las sesiones de TODO el
+        # mundo, no solo las del owner: si se llega aqui es porque algo va
+        # mal, y dejar abiertas las sesiones de otros usuarios seria
+        # justamente lo contrario de lo que se pretende.
+        corte = max(corte, invalidate_all_sessions())
 
     except Exception as error:
 

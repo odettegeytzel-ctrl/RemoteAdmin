@@ -121,6 +121,120 @@ def delete_recording_file(path, is_protected=None):
     return True
 
 
+# ==============================
+# RETENCION LOCAL
+# ==============================
+#
+# Desde el cambio de politica, una subida correcta YA NO borra la copia
+# local: el equipo conserva sus grabaciones y es la retencion quien las
+# retira cuando les llega la hora. El servidor manda cuantos dias se
+# guardan y cuales estan marcadas para conservar.
+
+def _antiguedad_en_dias(ruta, ahora=None):
+    """Dias transcurridos desde la ultima modificacion del archivo."""
+
+    import time as _time
+
+    try:
+        modificado = os.path.getmtime(ruta)
+    except OSError:
+        return None
+
+    referencia = ahora if ahora is not None else _time.time()
+
+    return (referencia - modificado) / 86400.0
+
+
+def apply_local_retention(days, keep_names=None, is_protected=None,
+                          is_pending=None, ahora=None):
+    """
+    Retira las grabaciones locales que ya han cumplido su tiempo.
+
+    Un archivo solo se borra si pasa TODAS estas condiciones:
+
+      - esta dentro de la carpeta administrada y se llama como un segmento
+        (is_managed_recording: ni enlaces ni '..' se escapan);
+      - no es el segmento que se esta escribiendo ahora mismo;
+      - no esta pendiente de subir: mientras la cola lo necesite para un
+        reintento, no se toca;
+      - no esta marcado para conservar;
+      - su antiguedad supera los dias configurados.
+
+    Haber subido el archivo al servidor NO es motivo para borrarlo. La
+    copia local se conserva hasta que le toque por antiguedad.
+
+    Si 'days' no es un numero positivo no se borra nada: ante una
+    configuracion rara, mejor gastar disco que perder grabaciones.
+    """
+
+    resumen = {
+        "revisados": 0,
+        "eliminados": 0,
+        "conservados_por_keep": 0,
+        "en_uso": 0,
+        "pendientes": 0,
+        "errores": 0
+    }
+
+    try:
+        dias = float(days)
+    except (TypeError, ValueError):
+        return resumen
+
+    if dias <= 0:
+        return resumen
+
+    protegidos = {str(n) for n in (keep_names or ())}
+
+    base = str(get_recordings_dir())
+
+    for raiz, _, archivos in os.walk(base):
+
+        for nombre in archivos:
+
+            ruta = os.path.join(raiz, nombre)
+
+            # La misma puerta de siempre: fuera de la carpeta o con otro
+            # nombre, no se toca.
+            if not is_managed_recording(ruta):
+                continue
+
+            resumen["revisados"] += 1
+
+            if nombre in protegidos:
+                resumen["conservados_por_keep"] += 1
+                continue
+
+            if is_protected is not None and is_protected(ruta):
+                resumen["en_uso"] += 1
+                continue
+
+            if is_pending is not None and is_pending(ruta):
+                resumen["pendientes"] += 1
+                continue
+
+            antiguedad = _antiguedad_en_dias(ruta, ahora)
+
+            if antiguedad is None or antiguedad < dias:
+                continue
+
+            # Se vuelve a comprobar justo antes de borrar: entre el
+            # recorrido y este punto, el grabador puede haber abierto el
+            # archivo o la cola puede haberlo reclamado.
+            if delete_recording_file(ruta, is_protected=is_protected):
+                resumen["eliminados"] += 1
+            else:
+                resumen["errores"] += 1
+
+    if resumen["eliminados"]:
+        print(
+            f"[storage] Retencion local: {resumen['eliminados']} grabaciones "
+            f"de mas de {dias:.0f} dias eliminadas"
+        )
+
+    return resumen
+
+
 def recordings_size_bytes():
     """Espacio que ocupan ahora mismo las grabaciones locales."""
 

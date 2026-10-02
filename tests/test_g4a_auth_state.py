@@ -49,10 +49,30 @@ def comprobar(nombre, condicion, detalle=""):
 
 def vaciar_auth_state():
 
+    # Tambien los usuarios: desde el bloque de usuarios, la cuenta unica se
+    # migra a una fila owner. Si esa fila sobreviviera, la siembra desde el
+    # .env ya no volveria a reproducirse y la prueba no probaria nada.
     conexion = database.get_connection()
     conexion.execute("DELETE FROM auth_state")
+    conexion.execute("DELETE FROM user_permissions")
+    conexion.execute("DELETE FROM users")
     conexion.commit()
     conexion.close()
+
+
+def escribir_clave_del_owner(clave):
+    """
+    Cambia la contrasena en la fuente de verdad actual: la fila del owner.
+
+    Antes se escribia en auth_state. Desde el bloque de usuarios, auth_state
+    conserva solo el corte global de sesiones y el hash historico; quien
+    manda en el login es la fila del usuario.
+    """
+
+    from backend import users
+
+    users.ensure_owner_migrated()
+    users.set_user_password("odette", clave, invalidate_sessions=False)
 
 
 def fila_auth_state():
@@ -214,13 +234,7 @@ def test_no_siembra_dos_veces():
     auth.get_auth_state()
 
     # Se cambia la contrasena en el almacen, como hara G4b
-    conexion = database.get_connection()
-    conexion.execute(
-        "UPDATE auth_state SET password_hash = ? WHERE id = 1",
-        (auth.generate_password_hash(CLAVE_NUEVA),)
-    )
-    conexion.commit()
-    conexion.close()
+    escribir_clave_del_owner(CLAVE_NUEVA)
 
     auth.get_auth_state()
 
@@ -271,14 +285,7 @@ def test_cambio_en_caliente_sin_reiniciar():
     poner_semilla(CLAVE_SEMILLA)
     auth.get_auth_state()
 
-    conexion = database.get_connection()
-    conexion.execute(
-        "UPDATE auth_state SET password_hash = ?, password_changed_at = ? "
-        "WHERE id = 1",
-        (auth.generate_password_hash(CLAVE_NUEVA), "2026-09-28T00:00:00Z")
-    )
-    conexion.commit()
-    conexion.close()
+    escribir_clave_del_owner(CLAVE_NUEVA)
 
     comprobar("La contrasena nueva vale de inmediato",
               auth.authenticate("odette", CLAVE_NUEVA) is not None)
@@ -302,6 +309,10 @@ def test_arranque_detecta_la_contrasena_por_defecto():
 
     # El .env tiene una buena, pero la vigente es la de por defecto
     poner_semilla(CLAVE_SEMILLA)
+
+    # La cuenta unica se migra al owner arrastrando esa contrasena mala
+    from backend import users
+    users.ensure_owner_migrated()
 
     try:
         auth.require_security_config()
