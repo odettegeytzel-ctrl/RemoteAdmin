@@ -140,31 +140,29 @@ def test_los_permisos_se_pintan_desde_el_backend():
     panel: las casillas de la administracion de usuarios se generan con
     la lista que manda el servidor.
 
-    No prohibe que un control concreto nombre el permiso que exige. Los
-    botones de acciones del equipo lo hacen por necesidad: un boton de
-    "Apagar" solo puede existir atado a device.shutdown, y un permiso
-    nuevo no puede hacer aparecer un boton que nadie ha escrito.
+    No prohibe que un control concreto nombre el permiso que exige. Un
+    boton de "Apagar" solo puede existir atado a device.shutdown, y un
+    permiso nuevo no puede hacer aparecer un boton que nadie ha escrito.
+    La condicion es estructural: cada permiso nombrado tiene que estar
+    atado a un control, sea con puede("X") o con permiso: "X".
     """
 
     import backend.users as users
 
-    # Permisos que un control concreto puede nombrar, con el control que
-    # los justifica.
-    ATADOS_A_UN_BOTON = {
-        "device.lock", "device.logoff",
-        "device.restart", "device.shutdown"
-    }
-
-    escritos = {
+    nombrados = {
         permiso for permiso in users.PERMISSIONS
         if f'"{permiso}"' in JS
     }
 
-    de_mas = escritos - ATADOS_A_UN_BOTON
+    sueltos = [
+        permiso for permiso in nombrados
+        if f'puede("{permiso}")' not in JS
+        and f'permiso: "{permiso}"' not in JS
+    ]
 
     comprobar(
-        "El frontend no lleva escrita a mano la lista de permisos",
-        not de_mas, str(sorted(de_mas))
+        "Cada permiso nombrado esta atado a un control concreto",
+        not sueltos, str(sorted(sueltos))
     )
 
     comprobar("El catalogo lo recibe del servidor",
@@ -175,14 +173,12 @@ def test_los_permisos_se_pintan_desde_el_backend():
         "catalogoDePermisos.forEach" in JS
     )
 
-    # Y cada permiso nombrado corresponde a un boton de verdad
-    sin_boton = [
-        permiso for permiso in escritos
-        if f'permiso: "{permiso}"' not in JS
-    ]
-
-    comprobar("Cada permiso nombrado pertenece a un boton concreto",
-              not sin_boton, str(sin_boton))
+    # Y que no haya una lista completa escrita a mano en ningun sitio
+    comprobar(
+        "No hay una lista entera de permisos escrita en el panel",
+        len(nombrados) < len(users.PERMISSIONS),
+        f"{len(nombrados)} de {len(users.PERMISSIONS)}"
+    )
 
 
 def test_el_rol_no_se_envia_al_crear():

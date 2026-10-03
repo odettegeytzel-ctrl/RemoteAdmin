@@ -85,6 +85,169 @@ def add_recording(device_id, path, started_at, ended_at, duration_sec, size_byte
         connection.close()
 
 
+# ==============================
+# ESTADO DE ALMACENAMIENTO
+# ==============================
+#
+# Desde el cambio de modelo, el equipo es el almacen principal: las
+# grabaciones nuevas NO se suben solas. El servidor conoce su ficha
+# (device_id, nombre, fechas, tamano) y solo recibe el archivo cuando un
+# administrador decide archivarlo.
+
+STORAGE_LOCAL_ONLY = "local_only"
+STORAGE_PENDING = "server_pending"
+STORAGE_STORED = "server_stored"
+STORAGE_ERROR = "server_error"
+
+
+def storage_state_of(fila):
+    """
+    Estado de almacenamiento de una fila, interpretando el historico.
+
+    Las filas creadas antes de esta columna llevan NULL. Son del modelo
+    anterior, en el que subir era automatico: si tienen archivo en el
+    servidor, estan archivadas.
+    """
+
+    if not fila:
+        return None
+
+    estado = fila["storage_state"]
+
+    if estado:
+        return estado
+
+    return STORAGE_STORED if fila["status"] == "stored" else STORAGE_LOCAL_ONLY
+
+
+def set_storage_state(recording_id, estado, status=None):
+    """Cambia el estado de almacenamiento. Nunca toca el archivo."""
+
+    connection = get_connection()
+
+    try:
+        if status is None:
+            connection.execute(
+                "UPDATE recordings SET storage_state = ? WHERE id = ?",
+                (estado, recording_id)
+            )
+        else:
+            connection.execute(
+                "UPDATE recordings SET storage_state = ?, status = ? "
+                "WHERE id = ?",
+                (estado, status, recording_id)
+            )
+
+        connection.commit()
+
+    finally:
+        connection.close()
+
+    return True
+
+
+def register_local_recording(device_id, path, started_at, ended_at,
+                             duration_sec, size_bytes):
+    """
+    Anota una grabacion que existe SOLO en el equipo.
+
+    Es la ficha, no el archivo: el servidor sabe que la grabacion existe y
+    puede ofrecerla en el panel, pero no tiene el video. status='local' la
+    mantiene fuera de la retencion del servidor y de todo lo que sirve
+    archivos, que filtran por status='stored'.
+
+    Si la ficha ya existe no se duplica ni se pisa: una grabacion ya
+    archivada no debe volver a "solo local" porque llegue un aviso
+    repetido del Agent.
+
+    Devuelve (id, creada).
+    """
+
+    connection = get_connection()
+
+    try:
+
+        existente = connection.execute(
+            "SELECT id FROM recordings WHERE device_id = ? AND path = ?",
+            (device_id, path)
+        ).fetchone()
+
+        if existente is not None:
+            return existente["id"], False
+
+        cursor = connection.execute(
+            """
+            INSERT INTO recordings (
+                device_id, started_at, ended_at, duration_sec,
+                size_bytes, path, status, keep, storage_state
+            )
+            VALUES (?, ?, ?, ?, ?, ?, 'local', 0, ?)
+            """,
+            (device_id, started_at, ended_at, duration_sec,
+             size_bytes, path, STORAGE_LOCAL_ONLY)
+        )
+
+        connection.commit()
+
+        return cursor.lastrowid, True
+
+    except sqlite3.IntegrityError:
+
+        # El indice unico (device_id, path) gano la carrera: la ficha ya
+        # la creo otro aviso simultaneo.
+        fila = connection.execute(
+            "SELECT id FROM recordings WHERE device_id = ? AND path = ?",
+            (device_id, path)
+        ).fetchone()
+
+        return (fila["id"] if fila else None), False
+
+    finally:
+        connection.close()
+
+
+def mark_stored(recording_id, size_bytes=None, duration_sec=None):
+    """Pasa una grabacion a archivada en el servidor, ya validada."""
+
+    connection = get_connection()
+
+    try:
+        connection.execute(
+            """
+            UPDATE recordings
+            SET status = 'stored',
+                storage_state = ?,
+                size_bytes = COALESCE(?, size_bytes),
+                duration_sec = COALESCE(?, duration_sec)
+            WHERE id = ?
+            """,
+            (STORAGE_STORED, size_bytes, duration_sec, recording_id)
+        )
+        connection.commit()
+
+    finally:
+        connection.close()
+
+    return True
+
+
+def get_recording_by_path(device_id, rel_path):
+    """Fila completa por su ruta relativa, o None."""
+
+    connection = get_connection()
+
+    try:
+        fila = connection.execute(
+            "SELECT * FROM recordings WHERE device_id = ? AND path = ?",
+            (device_id, rel_path)
+        ).fetchone()
+
+    finally:
+        connection.close()
+
+    return dict(fila) if fila else None
+
+
 def find_recording_by_path(device_id, rel_path):
     # Evita filas duplicadas cuando el Agent reintenta subir un segmento
     connection = get_connection()
@@ -275,7 +438,8 @@ def get_recording(recording_id):
     row = connection.execute(
         """
         SELECT id, device_id, started_at, ended_at,
-               duration_sec, size_bytes, path, status, keep, created_at
+               duration_sec, size_bytes, path, status, keep,
+               storage_state, created_at
         FROM recordings
         WHERE id = ?
         """,
@@ -295,27 +459,46 @@ def list_recordings(device_id=None):
     base_query = """
         SELECT r.id, r.device_id, r.started_at, r.ended_at,
                r.duration_sec, r.size_bytes, r.path, r.status, r.keep,
-               r.created_at, d.hostname
+               r.storage_state, r.created_at, d.hostname
         FROM recordings r
         LEFT JOIN devices d ON d.device_id = r.device_id
     """
 
     # Las grabaciones en cuarentena (status='invalid') no se mezclan con las
     # buenas: siguen en la base y en disco, pero no aparecen en el listado.
+    #
+    # Si aparecen las que estan solo en el equipo (status='local'): el
+    # panel debe poder ensenarlas y ofrecer archivarlas. Lo que no tienen
+    # es archivo en el servidor, y de eso se ocupa cada endpoint que lo
+    # necesite.
+    visibles = " WHERE r.status IN ('stored', 'local')"
+
     if device_id:
         rows = connection.execute(
-            base_query + " WHERE r.status = 'stored' AND r.device_id = ?"
+            base_query + visibles + " AND r.device_id = ?"
                          " ORDER BY r.started_at DESC",
             (device_id,)
         ).fetchall()
     else:
         rows = connection.execute(
-            base_query + " WHERE r.status = 'stored' ORDER BY r.started_at DESC"
+            base_query + visibles + " ORDER BY r.started_at DESC"
         ).fetchall()
 
     connection.close()
 
-    return [dict(row) for row in rows]
+    resultado = []
+
+    for row in rows:
+
+        fila = dict(row)
+
+        # El historico sin columna se interpreta aqui, una sola vez, para
+        # que el panel y la API no tengan que saber de la migracion.
+        fila["storage_state"] = storage_state_of(row)
+
+        resultado.append(fila)
+
+    return resultado
 
 
 # ==============================

@@ -246,6 +246,29 @@ def init_db():
             "ALTER TABLE recordings ADD COLUMN invalid_reason TEXT"
         )
 
+    # Estado de almacenamiento de la grabacion. Desde el cambio de modelo,
+    # el equipo guarda sus grabaciones y NO se suben solas: el servidor
+    # conoce que existen (por su ficha) pero no tiene el archivo hasta que
+    # alguien decide archivarlo.
+    #
+    #   local_only     solo esta en el equipo
+    #   server_pending se esta transfiriendo ahora mismo
+    #   server_stored  archivada en el servidor y validada
+    #   server_error   fallo el ultimo intento de archivarla
+    #
+    # Las filas anteriores a esta columna quedan a NULL y se interpretan
+    # como server_stored: son las que ya se subieron con el modelo viejo.
+    # Asi ninguna grabacion historica cambia de significado.
+    if "storage_state" not in columnas_recordings:
+        connection.execute(
+            "ALTER TABLE recordings ADD COLUMN storage_state TEXT"
+        )
+
+    connection.execute("""
+        CREATE INDEX IF NOT EXISTS idx_recordings_storage_state
+        ON recordings (device_id, storage_state)
+    """)
+
     # Una grabación = un archivo. El índice impide que dos subidas
     # simultáneas del mismo segmento creen varias filas para el mismo
     # archivo: la comprobación previa del endpoint es solo un atajo, la

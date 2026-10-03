@@ -131,7 +131,7 @@ if not AGENT_TOKEN:
 # - Cada segmento cerrado se encola y se sube; si el servidor está caído queda
 #   pendiente y se reintenta. El MP4 local NUNCA se borra hasta confirmarse.
 from recorder import ScreenRecorder
-from paths import get_data_dir, get_config_dir
+from paths import get_data_dir, get_config_dir, get_recordings_dir
 import storage
 import inventory
 
@@ -315,6 +315,168 @@ def _retention_loop():
             print(f"[retencion] Error al aplicar la retencion: {error}")
 
         time.sleep(RETENTION_CHECK_SECONDS)
+
+
+def report_recording_catalog(segment):
+    """
+    Avisa al servidor de que existe una grabacion nueva, sin subirla.
+
+    Va por el WebSocket, que es el canal que ya esta abierto. Si no hay
+    conexion no pasa nada grave: la grabacion sigue en disco y el Agent
+    reenvia su catalogo completo al reconectar.
+    """
+
+    if not segment:
+        return False
+
+    carga = {
+        "filename": os.path.basename(str(segment.get("path") or "")),
+        "started_at": segment.get("started_at"),
+        "ended_at": segment.get("ended_at"),
+        "duration_sec": segment.get("duration_sec") or 0,
+        "size_bytes": segment.get("size_bytes") or 0
+    }
+
+    if not carga["filename"]:
+        return False
+
+    return send_ws_threadsafe("recording_catalog:" + json.dumps(carga))
+
+
+def local_recordings_catalog():
+    """
+    Fichas de todas las grabaciones que hay en este equipo.
+
+    Se recorre la carpeta administrada; no se acepta ninguna ruta de
+    fuera. Lo que no pase is_managed_recording() no se mira siquiera.
+    """
+
+    fichas = []
+
+    base = str(get_recordings_dir())
+
+    for raiz, _, archivos in os.walk(base):
+
+        for nombre in archivos:
+
+            ruta = os.path.join(raiz, nombre)
+
+            if not storage.is_managed_recording(ruta):
+                continue
+
+            try:
+                tamano = os.path.getsize(ruta)
+                modificado = os.path.getmtime(ruta)
+
+            except OSError:
+                continue
+
+            fichas.append({
+                "filename": nombre,
+                "started_at": datetime.fromtimestamp(
+                    modificado, timezone.utc
+                ).isoformat(),
+                "ended_at": datetime.fromtimestamp(
+                    modificado, timezone.utc
+                ).isoformat(),
+                "duration_sec": 0,
+                "size_bytes": tamano
+            })
+
+    return fichas
+
+
+def find_managed_recording(filename):
+    """
+    Localiza una grabacion de este equipo por su NOMBRE de archivo.
+
+    El servidor manda solo un nombre, nunca una ruta: aqui se busca
+    dentro de la carpeta administrada comparando nombres, asi que no hay
+    forma de que un '..' o una ruta absoluta lleven a otro sitio. Ademas
+    el resultado pasa por is_managed_recording(), que comprueba
+    contencion real y patron de nombre.
+
+    Devuelve la ruta o None.
+    """
+
+    nombre = os.path.basename(str(filename or ""))
+
+    if not nombre:
+        return None
+
+    base = str(get_recordings_dir())
+
+    for raiz, _, archivos in os.walk(base):
+
+        if nombre not in archivos:
+            continue
+
+        ruta = os.path.join(raiz, nombre)
+
+        if storage.is_managed_recording(ruta):
+            return ruta
+
+    return None
+
+
+def store_recording_on_server(filename):
+    """
+    Sube UNA grabacion concreta, la que el servidor acaba de pedir.
+
+    Reutiliza el mismo _upload_one() de siempre: misma peticion, mismos
+    reintentos, misma validacion en el servidor. Lo unico que cambia es
+    quien lo dispara.
+
+    Nunca lanza: devuelve el resultado para que el servidor lo registre.
+    """
+
+    ruta = find_managed_recording(filename)
+
+    if ruta is None:
+        return {
+            "stored": False,
+            "error": "La grabacion no existe en este equipo"
+        }
+
+    try:
+        tamano = os.path.getsize(ruta)
+        modificado = os.path.getmtime(ruta)
+
+    except OSError as error:
+        return {"stored": False, "error": f"No se pudo leer: {error}"}
+
+    marca = datetime.fromtimestamp(modificado, timezone.utc).isoformat()
+
+    segmento = {
+        "path": ruta,
+        "started_at": marca,
+        "ended_at": marca,
+        "duration_sec": 0,
+        "size_bytes": tamano
+    }
+
+    # Entra en la cola ANTES de subir: si el proceso muere a mitad, el
+    # hilo de reintentos la retoma. Es el unico camino por el que la cola
+    # se alimenta desde el cambio de modelo.
+    enqueue_pending(segmento)
+
+    try:
+        ok = _upload_one(segmento)
+
+    except Exception as error:
+        return {"stored": False, "error": f"Error al subir: {error}"}
+
+    if not ok:
+        return {
+            "stored": False,
+            "error": "El servidor no acepto la grabacion"
+        }
+
+    # Confirmada: sale de la cola. El archivo local SE QUEDA; de retirarlo
+    # ya se encarga la retencion local cuando le toque.
+    _remove_pending(ruta)
+
+    return {"stored": True, "size_bytes": tamano}
 
 
 # Códigos HTTP que merecen otro intento con exactamente la misma petición.
@@ -524,17 +686,25 @@ def _process_pending():
 
 
 def on_segment_complete(segment):
-    """Llamado por el hilo del grabador al cerrar cada segmento."""
+    """
+    Llamado por el hilo del grabador al cerrar cada segmento.
+
+    CAMBIO DE MODELO: el segmento ya NO se encola para subir. Este equipo
+    es el almacen principal de sus grabaciones; el servidor solo recibe
+    una ficha para poder ensenarlas en el panel, y el archivo unicamente
+    cuando un administrador decide archivarlo.
+
+    La cola de subidas y sus reintentos siguen intactos: los usa el flujo
+    explicito de archivado, que es el unico que la alimenta ahora.
+    """
 
     global last_segment_at
 
     with _state_lock:
         last_segment_at = datetime.now(timezone.utc).isoformat()
 
-    enqueue_pending(segment)
-
-    # Intento inmediato; si falla, el hilo de reintentos lo tomará luego
-    _process_pending()
+    # Solo la ficha: nombre, fechas y tamano. El video se queda aqui.
+    report_recording_catalog(segment)
 
     report_status_threadsafe()
 
@@ -680,6 +850,26 @@ def build_recording_status():
 # Referencia al WebSocket/loop para que los hilos reporten el estado en vivo
 _event_loop = None
 _ws = None
+
+
+def send_ws_threadsafe(payload):
+    """
+    Envia un mensaje por el WebSocket desde un hilo que no es el del bucle.
+
+    Si no hay conexion no se guarda nada ni se reintenta: quien llame debe
+    poder vivir sin ello. Lo que se manda por aqui es informativo, y al
+    reconectar se reenvia el catalogo completo.
+    """
+
+    if _event_loop is None or _ws is None:
+        return False
+
+    try:
+        asyncio.run_coroutine_threadsafe(_ws.send(payload), _event_loop)
+        return True
+
+    except Exception:
+        return False
 
 
 def report_status_threadsafe():
@@ -1794,11 +1984,24 @@ async def websocket_connection():
                 _event_loop = asyncio.get_running_loop()
                 _ws = websocket
 
-                # Al reconectar, se reintentan las subidas pendientes y se informa el estado
+                # Al reconectar, se reintentan las subidas pendientes (solo
+                # las de archivados explicitos que quedaron a medias) y se
+                # informa el estado.
                 _process_pending()
                 await websocket.send(
                     "recording_status:" + json.dumps(build_recording_status())
                 )
+
+                # Y el catalogo completo: mientras no hubo conexion se han
+                # podido grabar segmentos cuya ficha no llego al servidor.
+                try:
+                    await websocket.send(
+                        "recording_catalog_full:" + json.dumps({
+                            "recordings": local_recordings_catalog()
+                        })
+                    )
+                except Exception as error:
+                    print(f"[grabaciones] no se pudo enviar el catalogo: {error}")
 
                 screen_stream_task = None
 
@@ -1847,6 +2050,44 @@ async def websocket_connection():
 
                         await websocket.send(
                             "recording_status:" + json.dumps(build_recording_status())
+                        )
+
+                    elif message.startswith("store_recording:"):
+
+                        # El servidor pide archivar UNA grabacion. Del
+                        # mensaje solo se lee un nombre de archivo, que se
+                        # busca dentro de la carpeta administrada: no hay
+                        # ruta que manipular ni comando que ejecutar.
+                        try:
+                            peticion = json.loads(message.split(":", 1)[1])
+                        except json.JSONDecodeError:
+                            peticion = {}
+
+                        print(
+                            "[grabaciones] Archivado solicitado: "
+                            f"{peticion.get('filename')}"
+                        )
+
+                        resultado = await asyncio.to_thread(
+                            store_recording_on_server,
+                            peticion.get("filename")
+                        )
+
+                        resultado["query_id"] = peticion.get("query_id")
+
+                        await websocket.send(
+                            "store_result:" + json.dumps(resultado)
+                        )
+
+                    elif message == "get_recording_catalog":
+
+                        fichas = await asyncio.to_thread(
+                            local_recordings_catalog
+                        )
+
+                        await websocket.send(
+                            "recording_catalog_full:"
+                            + json.dumps({"recordings": fichas})
                         )
 
                     elif message.startswith("power_action:"):

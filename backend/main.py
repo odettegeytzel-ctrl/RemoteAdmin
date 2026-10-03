@@ -48,6 +48,15 @@ from backend.auth import (
 )
 from backend.recordings import (
     add_recording,
+    register_local_recording,
+    get_recording_by_path,
+    set_storage_state,
+    storage_state_of,
+    mark_stored,
+    STORAGE_LOCAL_ONLY,
+    STORAGE_PENDING,
+    STORAGE_STORED,
+    STORAGE_ERROR,
     add_invalid_recording,
     quarantine_recording,
     RecordingAlreadyExists,
@@ -83,6 +92,7 @@ from backend.queries import (
     KIND_PROCESSES,
     KIND_SERVICES,
     KIND_POWER,
+    KIND_STORE,
     QUERY_TIMEOUT_SECONDS
 )
 from backend.audit import (
@@ -1187,6 +1197,42 @@ async def agent_websocket(websocket: WebSocket):
                     print(f"[consulta] respuesta ilegible de {device_id}")
 
 
+            elif message.startswith("recording_catalog:"):
+
+                # Ficha de una grabacion nueva: el servidor se entera de
+                # que existe, pero el video se queda en el equipo.
+                try:
+                    registrar_ficha_local(
+                        device_id,
+                        json.loads(message.split(":", 1)[1])
+                    )
+
+                except json.JSONDecodeError:
+                    print(f"[grabaciones] ficha ilegible de {device_id}")
+
+
+            elif message.startswith("recording_catalog_full:"):
+
+                # Catalogo completo, al reconectar: pone al dia las fichas
+                # de lo que se grabo mientras no habia conexion.
+                try:
+                    datos = json.loads(message.split(":", 1)[1])
+
+                except json.JSONDecodeError:
+                    datos = {}
+
+                nuevas = 0
+
+                for ficha in (datos.get("recordings") or [])[:5000]:
+                    if registrar_ficha_local(device_id, ficha):
+                        nuevas += 1
+
+                if nuevas:
+                    print(
+                        f"[grabaciones] {nuevas} fichas nuevas de {device_id}"
+                    )
+
+
             elif message.startswith("recording_status:"):
 
                 try:
@@ -1611,6 +1657,11 @@ async def mouse_up(device_id: str, data: dict):
 # ==============================
 
 MAX_FILE_SIZE = 200 * 1024 * 1024
+
+# Espera maxima al archivar una grabacion. Es generosa a proposito: el
+# Agent tiene que leer el archivo y subirlo entero, y un segmento de
+# varios MB por una conexion lenta tarda bastante mas que una consulta.
+STORE_TIMEOUT_SECONDS = 300
 
 # Menor que el limite de 1 MB por mensaje de la libreria websockets del Agent
 FILE_CHUNK_SIZE = 256 * 1024
@@ -2214,15 +2265,24 @@ async def upload_recording(
     dest_path = _os.path.join(dest_dir, safe_name)
     rel_path = _os.path.join(rel_dir, safe_name).replace("\\", "/")
 
-    # Idempotencia: si el Agent reintenta subir el mismo segmento, no se duplica
-    existing_id = find_recording_by_path(device_id, rel_path)
-    if existing_id is not None:
+    # Idempotencia: si el Agent reintenta subir el mismo segmento, no se
+    # duplica. Con el modelo nuevo hay un matiz importante: puede existir
+    # ya una FICHA de esa grabacion (solo local, sin archivo). En ese caso
+    # no es un duplicado: es justo la que hay que completar.
+    existente = get_recording_by_path(device_id, rel_path)
+
+    if existente is not None \
+            and storage_state_of(existente) == STORAGE_STORED:
+
         return {
             "status": "stored",
-            "id": existing_id,
+            "id": existente["id"],
             "duplicate": True,
             "path": rel_path
         }
+
+    # Fila a completar al terminar (ficha local, pendiente o con error)
+    ficha_previa = existente["id"] if existente else None
 
     # Escritura atómica: se recibe en un .part y solo al terminar se publica
     # con el nombre definitivo. Un corte a mitad deja un .part reconocible,
@@ -2383,14 +2443,31 @@ async def upload_recording(
 
     try:
 
-        recording_id = add_recording(
-            device_id=device_id,
-            path=rel_path,
-            started_at=started_at or when.isoformat(),
-            ended_at=ended_at,
-            duration_sec=duration_sec,
-            size_bytes=received
-        )
+        if ficha_previa is not None:
+
+            # Ya habia ficha: se completa en lugar de crear otra fila. Asi
+            # el panel conserva la misma grabacion, con su historial y su
+            # marca de conservar, y no aparece duplicada.
+            mark_stored(
+                ficha_previa,
+                size_bytes=received,
+                duration_sec=duration_sec or None
+            )
+
+            recording_id = ficha_previa
+
+        else:
+
+            recording_id = add_recording(
+                device_id=device_id,
+                path=rel_path,
+                started_at=started_at or when.isoformat(),
+                ended_at=ended_at,
+                duration_sec=duration_sec,
+                size_bytes=received
+            )
+
+            mark_stored(recording_id)
 
     except RecordingAlreadyExists as existente:
 
@@ -2498,6 +2575,15 @@ def recording_video(recording_id: int, request: Request):
     if not recording:
         return file_transfer_error(404, "Grabación no encontrada")
 
+    # Solo en el equipo: el servidor no tiene el archivo. Se dice con
+    # claridad en vez de devolver un 404 que parece un error del sistema.
+    if storage_state_of(recording) != STORAGE_STORED:
+        return file_transfer_error(
+            409,
+            "Esta grabacion solo esta en el equipo. Guardala en el "
+            "servidor para poder verla o descargarla desde aqui."
+        )
+
     rel_path = recording.get("path") or ""
 
     base = _os.path.realpath(str(get_recordings_dir()))
@@ -2532,6 +2618,15 @@ def recording_download(recording_id: int, request: Request):
 
     if not recording:
         return file_transfer_error(404, "Grabación no encontrada")
+
+    # Solo en el equipo: el servidor no tiene el archivo. Se dice con
+    # claridad en vez de devolver un 404 que parece un error del sistema.
+    if storage_state_of(recording) != STORAGE_STORED:
+        return file_transfer_error(
+            409,
+            "Esta grabacion solo esta en el equipo. Guardala en el "
+            "servidor para poder verla o descargarla desde aqui."
+        )
 
     rel_path = recording.get("path") or ""
 
@@ -2957,6 +3052,287 @@ async def device_power_action(device_id: str, action: str, request: Request):
         "executed": resultado.get("executed", False),
         "pending": resultado.get("pending", False),
         "message": descripcion
+    }
+
+
+def recording_rel_path(device_id, filename, started_at=""):
+    """
+    Ruta relativa con la que se archiva una grabacion en el servidor:
+
+        <device_id>/AAAA/MM/DD/<nombre>.mp4
+
+    La calculan igual la ficha que llega por WebSocket y la subida real,
+    de modo que las dos apuntan a la MISMA fila. Si cada una usara su
+    criterio, archivar crearia una fila nueva en vez de completar la que
+    ya existe, y acabariamos con la grabacion duplicada en el panel.
+
+    Devuelve None si el nombre no es valido. Solo se queda con el nombre
+    de archivo: cualquier ruta que venga se descarta.
+    """
+
+    from datetime import datetime, timezone
+
+    safe_name = _os.path.basename(str(filename or "")).strip()
+
+    if not safe_name.lower().endswith(".mp4"):
+        return None
+
+    try:
+        cuando = (
+            datetime.fromisoformat(started_at) if started_at
+            else datetime.now(timezone.utc)
+        )
+    except ValueError:
+        cuando = datetime.now(timezone.utc)
+
+    return "/".join([
+        device_id,
+        cuando.strftime("%Y"),
+        cuando.strftime("%m"),
+        cuando.strftime("%d"),
+        safe_name
+    ])
+
+
+def registrar_ficha_local(device_id, ficha):
+    """
+    Anota la ficha de una grabacion que esta SOLO en el equipo.
+
+    Es metadato: nombre, fechas y tamano. El video no viaja.
+    """
+
+    if not isinstance(ficha, dict):
+        return None
+
+    started_at = str(ficha.get("started_at") or "")
+
+    rel_path = recording_rel_path(
+        device_id, ficha.get("filename"), started_at
+    )
+
+    if rel_path is None:
+        return None
+
+    try:
+        recording_id, creada = register_local_recording(
+            device_id=device_id,
+            path=rel_path,
+            started_at=started_at,
+            ended_at=str(ficha.get("ended_at") or ""),
+            duration_sec=int(ficha.get("duration_sec") or 0),
+            size_bytes=int(ficha.get("size_bytes") or 0)
+        )
+
+    except Exception as error:
+        print(f"[grabaciones] No se pudo anotar la ficha: {error}")
+        return None
+
+    return recording_id if creada else None
+
+
+# ==============================
+# ARCHIVAR UNA GRABACION EN EL SERVIDOR
+# ==============================
+
+@app.post("/api/recordings/{recording_id}/store")
+async def recording_store(recording_id: int, request: Request):
+    """
+    Archiva en el servidor UNA grabacion concreta.
+
+    Las grabaciones nuevas se quedan en el equipo; esta es la unica via
+    por la que un archivo llega al servidor, y siempre porque alguien lo
+    ha pedido para esa grabacion en particular.
+
+    La peticion no lleva ninguna ruta: solo el identificador de la fila.
+    El nombre del archivo lo saca el servidor de su propia base, y el
+    Agent lo busca dentro de su carpeta administrada.
+    """
+
+    usuario, error = require_permission(request, "recordings.manage")
+
+    if error:
+
+        log_audit(
+            "recording.store", request=request, status=STATUS_ERROR,
+            details={"recording_id": recording_id,
+                     "error": "El usuario no tiene permiso"}
+        )
+
+        return error
+
+    grabacion = get_recording(recording_id)
+
+    if grabacion is None:
+        return JSONResponse(
+            status_code=404,
+            content={"status": "error",
+                     "message": "La grabacion no existe"}
+        )
+
+    device_id = grabacion["device_id"]
+
+    def auditar(estado, detalle):
+        log_audit("recording.store", request=request, device_id=device_id,
+                  status=estado,
+                  details={"recording_id": recording_id, **detalle})
+
+    estado_actual = storage_state_of(grabacion)
+
+    # Idempotente: si ya esta archivada no se vuelve a transferir
+    if estado_actual == STORAGE_STORED:
+        return {
+            "status": "ok",
+            "recording_id": recording_id,
+            "storage_state": STORAGE_STORED,
+            "already_stored": True,
+            "message": "Esta grabacion ya estaba guardada en el servidor"
+        }
+
+    # Doble clic y peticiones simultaneas: mientras una transferencia
+    # sigue en curso, otra no arranca.
+    if estado_actual == STORAGE_PENDING:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "status": "error",
+                "storage_state": STORAGE_PENDING,
+                "message": "Esta grabacion ya se esta guardando"
+            }
+        )
+
+    nombre = _os.path.basename(grabacion["path"] or "")
+
+    if not nombre.lower().endswith(".mp4"):
+        auditar(STATUS_ERROR, {"error": "Nombre de grabacion no valido"})
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error",
+                     "message": "Nombre de grabacion no valido"}
+        )
+
+    websocket = connected_agents.get(device_id)
+
+    if not websocket:
+
+        auditar(STATUS_ERROR, {"error": "El equipo no esta conectado"})
+
+        # No se deja 'pendiente': no hay cola persistente de solicitudes,
+        # y marcarla asi seria prometer un reintento que nadie hara.
+        return JSONResponse(
+            status_code=409,
+            content={
+                "status": "error",
+                "storage_state": estado_actual,
+                "message": (
+                    "El equipo esta desconectado. Vuelve a intentarlo "
+                    "cuando este en linea."
+                )
+            }
+        )
+
+    set_storage_state(recording_id, STORAGE_PENDING)
+
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    query_id = create_query(device_id, KIND_STORE, future)
+
+    try:
+
+        await websocket.send_text(
+            "store_recording:" + json.dumps({
+                "query_id": query_id,
+                "filename": nombre
+            })
+        )
+
+        respuesta = await asyncio.wait_for(future, STORE_TIMEOUT_SECONDS)
+
+    except asyncio.TimeoutError:
+
+        discard_query(query_id)
+        set_storage_state(recording_id, STORAGE_ERROR)
+
+        auditar(STATUS_ERROR, {"error": "El equipo no respondio a tiempo"})
+
+        return JSONResponse(
+            status_code=504,
+            content={
+                "status": "error",
+                "storage_state": STORAGE_ERROR,
+                "message": "El equipo no respondio a tiempo"
+            }
+        )
+
+    except Exception as error:
+
+        discard_query(query_id)
+        set_storage_state(recording_id, STORAGE_ERROR)
+
+        auditar(STATUS_ERROR, {"error": f"No se pudo pedir el archivo: {error}"})
+
+        return JSONResponse(
+            status_code=502,
+            content={"status": "error",
+                     "storage_state": STORAGE_ERROR,
+                     "message": f"No se pudo pedir el archivo: {error}"}
+        )
+
+    finally:
+        discard_query(query_id)
+
+    if not isinstance(respuesta, dict) or not respuesta.get("stored"):
+
+        motivo = "El equipo no pudo enviar la grabacion"
+
+        if isinstance(respuesta, dict) and respuesta.get("error"):
+            motivo = str(respuesta["error"])[:200]
+
+        set_storage_state(recording_id, STORAGE_ERROR)
+
+        auditar(STATUS_ERROR, {"error": motivo})
+
+        return JSONResponse(
+            status_code=502,
+            content={"status": "error",
+                     "storage_state": STORAGE_ERROR,
+                     "message": motivo}
+        )
+
+    # El Agent subio el archivo por el endpoint de siempre, que ya aplico
+    # F3 y F4 y dejo la fila como archivada. Se relee para no fiarse de
+    # lo que diga el Agent.
+    final = get_recording(recording_id)
+    estado_final = storage_state_of(final) if final else None
+
+    if estado_final != STORAGE_STORED:
+
+        set_storage_state(recording_id, STORAGE_ERROR)
+
+        auditar(STATUS_ERROR,
+                {"error": "La grabacion no quedo validada en el servidor"})
+
+        return JSONResponse(
+            status_code=502,
+            content={
+                "status": "error",
+                "storage_state": STORAGE_ERROR,
+                "message": (
+                    "La grabacion llego pero no paso la validacion; "
+                    "no se ha archivado."
+                )
+            }
+        )
+
+    auditar(STATUS_SUCCESS, {"detalle": "Grabacion archivada en el servidor"})
+
+    return {
+        "status": "ok",
+        "recording_id": recording_id,
+        "storage_state": STORAGE_STORED,
+        "message": (
+            "Grabacion guardada en el servidor. La copia del equipo se "
+            "conserva."
+        )
     }
 
 

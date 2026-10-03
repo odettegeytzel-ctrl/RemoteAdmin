@@ -40,11 +40,17 @@ KIND_SERVICES = "services"
 # comprobacion de identidad ya estan resueltos aqui.
 KIND_POWER = "power"
 
+# Archivado de una grabacion concreta en el servidor. Usa la misma
+# centralita: el emparejamiento pregunta-respuesta y la comprobacion de
+# identidad ya estan resueltos aqui.
+KIND_STORE = "store"
+
 # Prefijo del mensaje que envía el Agent con la respuesta
 RESPONSE_PREFIXES = {
     "processes_info:": KIND_PROCESSES,
     "services_info:": KIND_SERVICES,
-    "power_result:": KIND_POWER
+    "power_result:": KIND_POWER,
+    "store_result:": KIND_STORE
 }
 
 

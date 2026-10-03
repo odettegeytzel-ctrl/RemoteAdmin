@@ -7013,7 +7013,7 @@ detail.innerHTML = `
         <div class="grid grid-cols-2 sm:grid-cols-3 gap-4 text-sm">
             <div><p class="text-xs text-slate-500">Dispositivo</p><strong>${pc}</strong></div>
             <div><p class="text-xs text-slate-500">Fecha</p><strong>${start.date}</strong></div>
-            <div><p class="text-xs text-slate-500">Estado</p><strong>${rec.status || "-"}</strong></div>
+            <div><p class="text-xs text-slate-500">Almacenamiento</p>${insigniaDeAlmacenamiento(rec)}</div>
             <div><p class="text-xs text-slate-500">Hora inicio</p><strong>${start.time}</strong></div>
             <div><p class="text-xs text-slate-500">Hora fin</p><strong>${end.time || "-"}</strong></div>
             <div><p class="text-xs text-slate-500">Duración</p><strong>${formatDuration(rec.duration_sec)}</strong></div>
@@ -7028,6 +7028,7 @@ detail.innerHTML = `
                 class="text-center px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs hover:bg-blue-500 transition">
                 Descargar
             </a>
+            ${botonGuardarEnServidor(rec)}
         </div>
     </div>
 `;
@@ -7343,9 +7344,7 @@ try {
                 <td class="px-6 py-4 text-slate-600">${formatDuration(rec.duration_sec)}</td>
                 <td class="px-6 py-4 text-slate-600">${formatFileSize(rec.size_bytes)}</td>
                 <td class="px-6 py-4">
-                    <span class="px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 text-xs">
-                        ${rec.status || "-"}
-                    </span>
+                    ${insigniaDeAlmacenamiento(rec)}
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap">${keepCell}</td>
                 <td class="px-6 py-4 whitespace-nowrap">
@@ -7361,6 +7360,7 @@ try {
                     >
                         Descargar
                     </a>
+                    ${botonGuardarEnServidor(rec)}
                 </td>
             </tr>
         `;
@@ -7375,6 +7375,136 @@ try {
 }
 
 }
+
+/* ==============================
+GUARDAR UNA GRABACION EN EL SERVIDOR
+============================== */
+
+// Las grabaciones se quedan en el equipo que las genera. Esta es la unica
+// via por la que una llega al servidor, y siempre porque alguien la elige.
+const ESTADOS_DE_ALMACENAMIENTO = {
+    local_only: {
+        etiqueta: "\uD83D\uDCCD Solo local",
+        clase: "bg-slate-100 text-slate-600",
+        sePuedeGuardar: true
+    },
+    server_pending: {
+        etiqueta: "\u23F3 Guardando...",
+        clase: "bg-blue-100 text-blue-700",
+        sePuedeGuardar: false
+    },
+    server_stored: {
+        etiqueta: "\u2601 En el servidor",
+        clase: "bg-emerald-100 text-emerald-700",
+        sePuedeGuardar: false
+    },
+    server_error: {
+        etiqueta: "\u26A0 Error al guardar",
+        clase: "bg-red-100 text-red-700",
+        sePuedeGuardar: true
+    }
+};
+
+
+function estadoDeAlmacenamiento(rec) {
+
+    const clave = rec.storage_state || "local_only";
+
+    return ESTADOS_DE_ALMACENAMIENTO[clave]
+        || ESTADOS_DE_ALMACENAMIENTO.local_only;
+}
+
+
+function insigniaDeAlmacenamiento(rec) {
+
+    const estado = estadoDeAlmacenamiento(rec);
+
+    return `<span class="px-2 py-0.5 rounded-full text-xs ${estado.clase}">`
+        + `${estado.etiqueta}</span>`;
+}
+
+
+// Grabaciones con una peticion en vuelo, para que un segundo clic no
+// mande otra. La barrera de verdad esta en el servidor, que rechaza una
+// segunda peticion mientras la primera sigue en curso.
+const guardadosEnCurso = new Set();
+
+
+function botonGuardarEnServidor(rec) {
+
+    // El boton solo aparece si el usuario puede administrar grabaciones.
+    // Es comodidad visual: el servidor vuelve a comprobar el permiso.
+    if (!puede("recordings.manage")) {
+        return "";
+    }
+
+    if (!estadoDeAlmacenamiento(rec).sePuedeGuardar) {
+        return "";
+    }
+
+    return `<button
+                onclick="guardarEnServidor(${rec.id}, this)"
+                class="ml-2 px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-xs hover:bg-emerald-500 transition disabled:opacity-50"
+                title="Transferir esta grabacion al servidor. La copia del equipo se conserva."
+            >
+                \u2601 Guardar en servidor
+            </button>`;
+}
+
+
+async function guardarEnServidor(recordingId, boton) {
+
+    if (guardadosEnCurso.has(recordingId)) {
+        return;
+    }
+
+    guardadosEnCurso.add(recordingId);
+
+    if (boton) {
+        boton.disabled = true;
+        boton.textContent = "Guardando...";
+    }
+
+    try {
+
+        const response =
+            await fetch(`/api/recordings/${recordingId}/store`, {
+                method: "POST"
+            });
+
+        const data = await response.json().catch(() => ({}));
+
+        if (!response.ok) {
+
+            alert(
+                data.message
+                || "No se pudo guardar la grabacion en el servidor"
+            );
+
+            return;
+        }
+
+        // Se recarga la lista para que la fila muestre su estado nuevo
+        if (typeof loadRecordings === "function") {
+            await loadRecordings();
+        }
+
+    } catch (error) {
+
+        console.error("Error guardando la grabacion:", error);
+
+        alert("No se pudo contactar con el servidor");
+
+    } finally {
+
+        guardadosEnCurso.delete(recordingId);
+
+        if (boton) {
+            boton.disabled = false;
+        }
+    }
+}
+
 
 /* ==============================
 ALERTAS
