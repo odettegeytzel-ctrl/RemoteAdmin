@@ -55,6 +55,51 @@ def init_db():
         )
     """)
 
+    # Organizacion del aviso. Aditiva, derivada del equipo que lo genera.
+    #
+    # Se guarda ademas de poder derivarse del equipo porque los avisos
+    # se consultan en bloque y muy a menudo: filtrarlos con una columna
+    # propia evita unir con devices en cada carga del panel. El valor lo
+    # pone el servidor al crear el aviso; nunca llega de fuera.
+    columnas_alerts = {
+        column["name"]
+        for column in connection.execute("PRAGMA table_info(alerts)")
+    }
+
+    if "organization_id" not in columnas_alerts:
+        connection.execute(
+            "ALTER TABLE alerts ADD COLUMN organization_id INTEGER"
+        )
+
+    connection.execute("""
+        CREATE INDEX IF NOT EXISTS idx_alerts_organization
+        ON alerts (organization_id)
+    """)
+
+    # Configuracion POR ORGANIZACION.
+    #
+    # Va en una tabla aparte y no como columna de 'settings' porque esa
+    # tiene la clave como PRIMARY KEY: una misma clave no podria existir
+    # para dos empresas. Cambiar una clave primaria en SQLite obliga a
+    # reconstruir la tabla, y no hay motivo para arriesgar los valores
+    # que ya estan guardados.
+    #
+    # La separacion ademas es util por si misma: 'settings' queda para
+    # lo que es de la instalacion y esta para lo que es de cada empresa.
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS organization_settings (
+            organization_id INTEGER NOT NULL,
+            key TEXT NOT NULL,
+            value TEXT,
+            PRIMARY KEY (organization_id, key)
+        )
+    """)
+
+    connection.execute("""
+        CREATE INDEX IF NOT EXISTS idx_organization_settings_org
+        ON organization_settings (organization_id)
+    """)
+
     # Tabla de configuracion: pares clave/valor
     connection.execute("""
         CREATE TABLE IF NOT EXISTS settings (
@@ -96,6 +141,59 @@ def init_db():
         )
     """)
 
+    # Organizaciones: la empresa cliente es la unidad de aislamiento.
+    #
+    # El plan dice QUE puede hacer, el estado de suscripcion dice SI
+    # puede usarse ahora, y 'active' permite suspender sin tocar ni un
+    # dato. Son tres cosas distintas a proposito: mezclarlas lleva a no
+    # poder suspender a quien paga ni dejar operar a quien no paga.
+    #
+    # Suspender NUNCA borra nada; reactivar devuelve el acceso tal cual.
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS organizations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            slug TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            plan TEXT NOT NULL DEFAULT 'free',
+            subscription_status TEXT NOT NULL DEFAULT 'trial',
+            billing_mode TEXT NOT NULL DEFAULT 'standard',
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT,
+            updated_at TEXT,
+            notes TEXT
+        )
+    """)
+
+    # Credenciales de alta de Agents, una o varias por organizacion.
+    #
+    # Sustituyen al AGENT_TOKEN compartido para decidir a que empresa
+    # entra un equipo nuevo: la organizacion se deriva de la credencial,
+    # nunca de lo que diga el Agent. Se guarda solo el SHA-256, igual
+    # que con los tokens individuales: quien lea la base no puede
+    # fabricar una credencial valida.
+    #
+    # Se pueden revocar (active = 0) y caducar (expires_at). El
+    # AGENT_TOKEN del .env sigue funcionando mientras tanto, para no
+    # romper las instalaciones que ya existen.
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS enrollment_tokens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            organization_id INTEGER NOT NULL,
+            token_hash TEXT NOT NULL UNIQUE,
+            label TEXT,
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT,
+            expires_at INTEGER,
+            last_used_at TEXT,
+            uses INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+
+    connection.execute("""
+        CREATE INDEX IF NOT EXISTS idx_enrollment_tokens_org
+        ON enrollment_tokens (organization_id)
+    """)
+
     # Usuarios del panel. Migracion aditiva: la cuenta unica anterior se
     # convierte en el owner conservando su hash (backend/users.py).
     #
@@ -115,6 +213,27 @@ def init_db():
             password_changed_at TEXT,
             sessions_valid_from INTEGER NOT NULL DEFAULT 0
         )
+    """)
+
+    # A que organizacion pertenece cada usuario. Aditiva: las filas
+    # existentes quedan a NULL y la migracion las asocia a la primera
+    # organizacion.
+    #
+    # NULL es legitimo en un solo caso: el usuario de plataforma, que
+    # esta por encima de las organizaciones y no pertenece a ninguna.
+    columnas_users = {
+        column["name"]
+        for column in connection.execute("PRAGMA table_info(users)")
+    }
+
+    if "organization_id" not in columnas_users:
+        connection.execute(
+            "ALTER TABLE users ADD COLUMN organization_id INTEGER"
+        )
+
+    connection.execute("""
+        CREATE INDEX IF NOT EXISTS idx_users_organization
+        ON users (organization_id)
     """)
 
     # Permisos concedidos a cada usuario. Una fila por permiso: anadir uno
@@ -200,6 +319,28 @@ def init_db():
             status TEXT NOT NULL,
             details TEXT
         )
+    """)
+
+    # Organizacion de la accion. Aditiva.
+    #
+    # NULL tiene un significado concreto: la accion es de PLATAFORMA (no
+    # pertenece a ninguna empresa) o es un registro historico anterior a
+    # esta columna cuya organizacion no se puede deducir con seguridad.
+    # En ese segundo caso se deja NULL a proposito: inventar una
+    # organizacion seria peor que no saberla.
+    columnas_audit = {
+        column["name"]
+        for column in connection.execute("PRAGMA table_info(audit_log)")
+    }
+
+    if "organization_id" not in columnas_audit:
+        connection.execute(
+            "ALTER TABLE audit_log ADD COLUMN organization_id INTEGER"
+        )
+
+    connection.execute("""
+        CREATE INDEX IF NOT EXISTS idx_audit_organization
+        ON audit_log (organization_id)
     """)
 
     # Consultas habituales: los últimos registros, por equipo y por acción
@@ -331,7 +472,12 @@ def init_db():
         "last_disk_status": "TEXT",
         # 1 = activo, 0 = revocado. NULL en dispositivos aún sin token
         # individual (los registrados con el esquema anterior).
-        "agent_token_active": "INTEGER"
+        "agent_token_active": "INTEGER",
+
+        # Organizacion a la que pertenece el equipo. La asigna el
+        # servidor en el alta y NUNCA se acepta del cliente: un Agent no
+        # puede cambiar de empresa enviando otro identificador.
+        "organization_id": "INTEGER"
     }
 
     for column_name, column_type in new_columns.items():
@@ -339,6 +485,11 @@ def init_db():
             connection.execute(
                 f"ALTER TABLE devices ADD COLUMN {column_name} {column_type}"
             )
+
+    connection.execute("""
+        CREATE INDEX IF NOT EXISTS idx_devices_organization
+        ON devices (organization_id)
+    """)
 
     connection.commit()
     connection.close()

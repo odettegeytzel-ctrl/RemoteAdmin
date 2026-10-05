@@ -66,14 +66,24 @@ def test_tabla_y_columnas():
 
     conexion.close()
 
+    # Las ocho originales. La comprobacion es de inclusion y no de
+    # igualdad a proposito: las migraciones posteriores son ADITIVAS, y
+    # lo que hay que vigilar es que no desaparezca ninguna, no que no
+    # aparezcan nuevas.
     esperadas = {
         "id", "timestamp", "action", "device_id",
         "username", "source_ip", "status", "details"
     }
 
     comprobar(
-        "La tabla audit_log tiene las 8 columnas previstas",
-        columnas == esperadas,
+        "La tabla audit_log conserva sus ocho columnas originales",
+        esperadas <= columnas,
+        f"faltan: {sorted(esperadas - columnas)}"
+    )
+
+    comprobar(
+        "Y lleva la organizacion que anadio el bloque multiempresa",
+        "organization_id" in columnas,
         f"encontradas: {sorted(columnas)}"
     )
 

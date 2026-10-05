@@ -129,8 +129,129 @@ def get_request_context(request):
     return username, source_ip
 
 
+def resolve_organization(device_id=None, username=None):
+    """
+    Organizacion a la que pertenece una accion.
+
+    Se mira primero el EQUIPO y despues el USUARIO. El equipo manda
+    porque una accion sobre un equipo pertenece a la empresa dueña de
+    ese equipo, aunque quien la ejecute sea el operador de la
+    plataforma dando soporte.
+
+    None significa una de dos cosas, y las dos son legitimas:
+      - la accion es de plataforma (crear una organizacion, por ejemplo)
+      - no hay forma segura de saberlo
+
+    Nunca se inventa: antes NULL que una organizacion equivocada.
+    """
+
+    from backend.database import get_connection
+
+    connection = get_connection()
+
+    try:
+
+        if device_id:
+
+            fila = connection.execute(
+                "SELECT organization_id FROM devices WHERE device_id = ?",
+                (device_id,)
+            ).fetchone()
+
+            if fila and fila["organization_id"]:
+                return fila["organization_id"]
+
+        if username:
+
+            fila = connection.execute(
+                "SELECT organization_id FROM users "
+                "WHERE username = ? COLLATE NOCASE",
+                (username,)
+            ).fetchone()
+
+            if fila and fila["organization_id"]:
+                return fila["organization_id"]
+
+    except Exception:
+        # Un fallo al deducir la organizacion no debe impedir registrar
+        # la accion: es peor perder el rastro que perder el contexto.
+        return None
+
+    finally:
+        connection.close()
+
+    return None
+
+
+def backfill_organizations():
+    """
+    Rellena la organizacion de los registros historicos.
+
+    Solo cuando se puede deducir con seguridad del equipo o del usuario
+    que ya constan en la fila. Lo que no se pueda deducir se queda en
+    NULL: una organizacion inventada en un historial de auditoria es
+    peor que un hueco.
+
+    Idempotente: solo toca filas con organization_id NULL.
+    """
+
+    from backend.database import get_connection
+
+    connection = get_connection()
+
+    try:
+
+        # Por equipo
+        connection.execute(
+            """
+            UPDATE audit_log
+            SET organization_id = (
+                SELECT d.organization_id FROM devices d
+                WHERE d.device_id = audit_log.device_id
+            )
+            WHERE organization_id IS NULL
+              AND device_id IS NOT NULL
+              AND EXISTS (
+                  SELECT 1 FROM devices d
+                  WHERE d.device_id = audit_log.device_id
+                    AND d.organization_id IS NOT NULL
+              )
+            """
+        )
+
+        # Por usuario, para las acciones que no tienen equipo
+        connection.execute(
+            """
+            UPDATE audit_log
+            SET organization_id = (
+                SELECT u.organization_id FROM users u
+                WHERE u.username = audit_log.username COLLATE NOCASE
+            )
+            WHERE organization_id IS NULL
+              AND device_id IS NULL
+              AND username IS NOT NULL
+              AND EXISTS (
+                  SELECT 1 FROM users u
+                  WHERE u.username = audit_log.username COLLATE NOCASE
+                    AND u.organization_id IS NOT NULL
+              )
+            """
+        )
+
+        connection.commit()
+
+    except Exception as error:
+        print(f"[auditoria] No se pudo completar el relleno: {error}")
+
+    finally:
+        connection.close()
+
+    return True
+
+
 def log_audit(action, request=None, device_id=None, status=STATUS_REQUESTED,
-              details=None, username=None, source_ip=None):
+              details=None, username=None, source_ip=None,
+              organization_id=None):
     """
     Registra una acción administrativa.
 
@@ -147,6 +268,12 @@ def log_audit(action, request=None, device_id=None, status=STATUS_REQUESTED,
         if request is not None:
             username, source_ip = get_request_context(request)
 
+        # Si quien llama no la indica, se deduce del equipo o del
+        # usuario. Indicarla explicitamente sirve para las acciones de
+        # plataforma, donde lo correcto es dejarla vacia.
+        if organization_id is None:
+            organization_id = resolve_organization(device_id, username)
+
         registro = (
             datetime.now(timezone.utc).isoformat(),
             str(action),
@@ -154,7 +281,8 @@ def log_audit(action, request=None, device_id=None, status=STATUS_REQUESTED,
             username,
             source_ip,
             str(status),
-            _format_details(details)
+            _format_details(details),
+            organization_id
         )
 
         connection = get_connection()
@@ -164,9 +292,9 @@ def log_audit(action, request=None, device_id=None, status=STATUS_REQUESTED,
                 """
                 INSERT INTO audit_log (
                     timestamp, action, device_id, username,
-                    source_ip, status, details
+                    source_ip, status, details, organization_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 registro
             )
@@ -182,12 +310,18 @@ def log_audit(action, request=None, device_id=None, status=STATUS_REQUESTED,
         return False
 
 
-def list_audit(limit=100, device_id=None, action=None, offset=0):
+def list_audit(limit=100, device_id=None, action=None, offset=0,
+               organization_id=None):
     """
     Consulta el registro, de más reciente a más antiguo.
 
     Filtros opcionales por equipo y por acción. El límite se acota para que
     una consulta no pueda arrastrar el historial entero.
+
+    organization_id ACOTA la consulta a una empresa: solo se devuelven
+    sus registros, y los de plataforma o sin organizacion quedan fuera.
+    Sin ese argumento se devuelve todo, asi que quien llame debe haber
+    comprobado antes que tiene derecho a verlo.
     """
 
     limite = max(1, min(int(limit or 100), 500))
@@ -195,6 +329,10 @@ def list_audit(limit=100, device_id=None, action=None, offset=0):
 
     condiciones = []
     parametros = []
+
+    if organization_id is not None:
+        condiciones.append("organization_id = ?")
+        parametros.append(organization_id)
 
     if device_id:
         condiciones.append("device_id = ?")
@@ -212,7 +350,7 @@ def list_audit(limit=100, device_id=None, action=None, offset=0):
         filas = connection.execute(
             f"""
             SELECT id, timestamp, action, device_id, username,
-                   source_ip, status, details
+                   source_ip, status, details, organization_id
             FROM audit_log
             {filtro}
             ORDER BY id DESC
@@ -227,11 +365,15 @@ def list_audit(limit=100, device_id=None, action=None, offset=0):
     return [dict(fila) for fila in filas]
 
 
-def count_audit(device_id=None, action=None):
+def count_audit(device_id=None, action=None, organization_id=None):
     """Número total de registros que cumplen el filtro."""
 
     condiciones = []
     parametros = []
+
+    if organization_id is not None:
+        condiciones.append("organization_id = ?")
+        parametros.append(organization_id)
 
     if device_id:
         condiciones.append("device_id = ?")

@@ -491,6 +491,13 @@ def test_endpoints():
     conexion.commit()
     conexion.close()
 
+    # Los equipos recien insertados se adjuntan a la organizacion por
+    # defecto, igual que hace el servidor al arrancar. Sin esto el
+    # aislamiento los trata como equipos sin dueno.
+    from backend import organizations
+
+    organizations.ensure_default_organization()
+
     owner = h.cliente(h.OWNER)
 
     respuesta = owner.post(
@@ -531,6 +538,13 @@ def test_permisos_del_horario():
     conexion.commit()
     conexion.close()
 
+    # Los equipos recien insertados se adjuntan a la organizacion por
+    # defecto, igual que hace el servidor al arrancar. Sin esto el
+    # aislamiento los trata como equipos sin dueno.
+    from backend import organizations
+
+    organizations.ensure_default_organization()
+
     h.crear_subadmin("ana", permisos=["recordings.view"])
 
     cliente = h.cliente("ana")
@@ -562,6 +576,13 @@ def test_auditoria_del_horario():
     )
     conexion.commit()
     conexion.close()
+
+    # Los equipos recien insertados se adjuntan a la organizacion por
+    # defecto, igual que hace el servidor al arrancar. Sin esto el
+    # aislamiento los trata como equipos sin dueno.
+    from backend import organizations
+
+    organizations.ensure_default_organization()
 
     owner = h.cliente(h.OWNER)
 

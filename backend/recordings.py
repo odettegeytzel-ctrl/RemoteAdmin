@@ -288,24 +288,42 @@ def _resolve_inside_dir(rel_path):
     return target
 
 
-def apply_retention(days=RETENTION_DAYS):
+def apply_retention(days=RETENTION_DAYS, organization_id=None):
     """
     Elimina grabaciones cuya fecha de fin supera `days` días, excepto las
     marcadas con keep=1 o las que no estén en estado 'stored' (activas).
     Devuelve un resumen. Es seguro: nunca borra fuera de server_recordings.
+
+    Con organization_id solo se tocan las grabaciones de los equipos de
+    esa empresa. Cada organizacion tiene su propio periodo, y aplicar el
+    de una a las grabaciones de otra borraria material que todavia
+    debia conservarse.
     """
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
 
     connection = get_connection()
 
-    rows = connection.execute(
-        """
-        SELECT id, path, ended_at, keep, status
-        FROM recordings
-        WHERE keep = 0 AND status = 'stored'
-        """
-    ).fetchall()
+    if organization_id is None:
+        rows = connection.execute(
+            """
+            SELECT id, path, ended_at, keep, status
+            FROM recordings
+            WHERE keep = 0 AND status = 'stored'
+            """
+        ).fetchall()
+
+    else:
+        rows = connection.execute(
+            """
+            SELECT r.id, r.path, r.ended_at, r.keep, r.status
+            FROM recordings r
+            JOIN devices d ON d.device_id = r.device_id
+            WHERE r.keep = 0 AND r.status = 'stored'
+              AND d.organization_id = ?
+            """,
+            (organization_id,)
+        ).fetchall()
 
     deleted = []           # fila eliminada y su archivo MP4 borrado
     missing_file = []      # fila eliminada, pero el archivo ya no existía (disjunto de deleted)

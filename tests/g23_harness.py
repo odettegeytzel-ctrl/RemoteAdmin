@@ -59,6 +59,13 @@ def preparar_dispositivos():
     conexion.commit()
     conexion.close()
 
+    # Los equipos recien insertados se adjuntan a la organizacion por
+    # defecto, igual que hace el servidor al arrancar. Sin esto el
+    # aislamiento los trata como equipos sin dueno y no los deja ver.
+    from backend import organizations
+
+    organizations.ensure_default_organization()
+
 
 def limpiar_auditoria():
 

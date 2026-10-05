@@ -3925,8 +3925,22 @@ async function cargarSesionActual() {
             seccion.classList.toggle("hidden", !sesionActual.is_owner);
         }
 
+        // Organizaciones: solo quien opera la plataforma
+        const seccionOrgs =
+            document.getElementById("organizations-section");
+
+        if (seccionOrgs) {
+            seccionOrgs.classList.toggle(
+                "hidden", !sesionActual.is_platform_owner
+            );
+        }
+
         if (sesionActual.is_owner) {
             await cargarUsuarios();
+        }
+
+        if (sesionActual.is_platform_owner) {
+            await cargarOrganizaciones();
         }
 
     } catch (error) {
@@ -7507,6 +7521,308 @@ async function guardarEnServidor(recordingId, boton) {
 
 
 /* ==============================
+ORGANIZACIONES (nivel plataforma)
+============================== */
+
+// Solo las ve quien opera RemoteAdmin. El Owner de una empresa no ve
+// esta seccion, y el servidor ademas rechaza sus peticiones: esconder
+// la tabla es comodidad, no seguridad.
+
+const ETIQUETA_DE_ESTADO = {
+    trial: { texto: "Prueba", clase: "bg-blue-100 text-blue-700" },
+    active: { texto: "Activa", clase: "bg-emerald-100 text-emerald-700" },
+    past_due: { texto: "Pago pendiente", clase: "bg-amber-100 text-amber-800" },
+    suspended: { texto: "Suspendida", clase: "bg-red-100 text-red-700" },
+    cancelled: { texto: "Cancelada", clase: "bg-slate-200 text-slate-700" }
+};
+
+const ETIQUETA_DE_FACTURACION = {
+    standard: "Estándar",
+    courtesy: "Cortesía"
+};
+
+let catalogoDePlanes = [];
+let catalogoDeEstados = [];
+let catalogoDeFacturacion = [];
+
+
+function insigniaDeOrganizacion(organizacion) {
+
+    const estado =
+        ETIQUETA_DE_ESTADO[organizacion.subscription_status]
+        || { texto: organizacion.subscription_status, clase: "bg-slate-100 text-slate-600" };
+
+    const insignia = document.createElement("span");
+
+    insignia.textContent = estado.texto;
+    insignia.className =
+        "px-2 py-0.5 rounded-full text-xs " + estado.clase;
+
+    // Si no puede operar, se dice ademas del estado: "suspendida" y
+    // "sin acceso" no son lo mismo para quien mira la tabla.
+    if (!organizacion.usable) {
+
+        const aviso = document.createElement("span");
+
+        aviso.textContent = " sin acceso";
+        aviso.className = "ml-2 text-xs text-red-600";
+
+        const caja = document.createElement("span");
+        caja.appendChild(insignia);
+        caja.appendChild(aviso);
+
+        return caja;
+    }
+
+    return insignia;
+}
+
+
+function rellenarSelector(id, opciones, valorPorDefecto) {
+
+    const selector = document.getElementById(id);
+
+    if (!selector) {
+        return;
+    }
+
+    selector.innerHTML = "";
+
+    opciones.forEach(opcion => {
+
+        const elemento = document.createElement("option");
+
+        elemento.value = opcion.valor;
+        elemento.textContent = opcion.texto;
+        elemento.selected = opcion.valor === valorPorDefecto;
+
+        selector.appendChild(elemento);
+    });
+}
+
+
+async function cargarOrganizaciones() {
+
+    const cuerpo = document.getElementById("organizations-table");
+
+    if (!cuerpo) {
+        return;
+    }
+
+    try {
+
+        const response = await fetch("/api/organizations");
+
+        if (!response.ok) {
+            return;
+        }
+
+        const data = await response.json();
+
+        catalogoDePlanes = data.plans || [];
+        catalogoDeEstados = data.subscription_statuses || [];
+        catalogoDeFacturacion = data.billing_modes || [];
+
+        rellenarSelector(
+            "new-org-plan",
+            catalogoDePlanes.map(p => ({ valor: p.name, texto: p.label })),
+            "free"
+        );
+
+        rellenarSelector(
+            "new-org-billing",
+            catalogoDeFacturacion.map(m => ({
+                valor: m,
+                texto: ETIQUETA_DE_FACTURACION[m] || m
+            })),
+            "standard"
+        );
+
+        cuerpo.innerHTML = "";
+
+        (data.organizations || []).forEach(organizacion => {
+
+            const fila = document.createElement("tr");
+
+            fila.appendChild(celda(
+                organizacion.name,
+                "px-4 py-3 font-medium text-slate-900"
+            ));
+
+            const estado = document.createElement("td");
+            estado.className = "px-4 py-3";
+            estado.appendChild(insigniaDeOrganizacion(organizacion));
+            fila.appendChild(estado);
+
+            // Plan: se puede cambiar desde aqui
+            const plan = document.createElement("td");
+            plan.className = "px-4 py-3";
+
+            const selectorPlan = document.createElement("select");
+            selectorPlan.className =
+                "px-2 py-1 border border-slate-300 rounded-lg text-xs";
+
+            catalogoDePlanes.forEach(p => {
+                const opcion = document.createElement("option");
+                opcion.value = p.name;
+                opcion.textContent = p.label;
+                opcion.selected = p.name === organizacion.plan;
+                selectorPlan.appendChild(opcion);
+            });
+
+            selectorPlan.addEventListener("change", () =>
+                actualizarOrganizacion(organizacion.id, {
+                    plan: selectorPlan.value
+                })
+            );
+
+            plan.appendChild(selectorPlan);
+            fila.appendChild(plan);
+
+            fila.appendChild(celda(
+                ETIQUETA_DE_FACTURACION[organizacion.billing_mode]
+                || organizacion.billing_mode
+            ));
+
+            const uso = organizacion.usage || { devices: 0, users: 0 };
+
+            fila.appendChild(celda(
+                `${uso.devices} equipos · ${uso.users} usuarios`
+            ));
+
+            // Acciones
+            const acciones = document.createElement("td");
+            acciones.className = "px-4 py-3";
+
+            const grupo = document.createElement("div");
+            grupo.className = "flex flex-wrap gap-2";
+
+            const suspendida =
+                !organizacion.active
+                || organizacion.subscription_status === "suspended";
+
+            grupo.appendChild(botonPequeno(
+                suspendida ? "Reactivar" : "Suspender",
+                suspendida ? "normal" : "peligro",
+                () => cambiarEstadoOrganizacion(organizacion, suspendida)
+            ));
+
+            acciones.appendChild(grupo);
+            fila.appendChild(acciones);
+
+            cuerpo.appendChild(fila);
+        });
+
+    } catch (error) {
+        console.error("No se pudieron cargar las organizaciones:", error);
+    }
+}
+
+
+async function actualizarOrganizacion(organizationId, cambios) {
+
+    try {
+
+        const response =
+            await fetch(`/api/organizations/${organizationId}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(cambios)
+            });
+
+        const data = await response.json().catch(() => ({}));
+
+        mostrarEstado(
+            "organizations-status",
+            response.ok
+                ? "Organización actualizada"
+                : (data.message || "No se pudo actualizar"),
+            response.ok ? "ok" : "error"
+        );
+
+        if (response.ok) {
+            await cargarOrganizaciones();
+        }
+
+    } catch (error) {
+        mostrarEstado(
+            "organizations-status",
+            "No se pudo contactar con el servidor",
+            "error"
+        );
+    }
+}
+
+
+function cambiarEstadoOrganizacion(organizacion, reactivar) {
+
+    if (!reactivar && !confirm(
+        `Se suspenderá el acceso de ${organizacion.name}.`
+        + "\n\nNo se borra ningún dato: equipos, grabaciones y usuarios"
+        + " se conservan, y al reactivarla todo vuelve igual."
+    )) {
+        return;
+    }
+
+    return actualizarOrganizacion(organizacion.id, {
+        active: reactivar,
+        subscription_status: reactivar ? "active" : "suspended"
+    });
+}
+
+
+async function crearOrganizacion() {
+
+    const nombre = document.getElementById("new-org-name").value.trim();
+
+    if (!nombre) {
+        mostrarEstado(
+            "new-org-status", "Escribe el nombre de la empresa", "error"
+        );
+        return;
+    }
+
+    try {
+
+        const response = await fetch("/api/organizations", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                name: nombre,
+                plan: document.getElementById("new-org-plan").value,
+                billing_mode:
+                    document.getElementById("new-org-billing").value
+            })
+        });
+
+        const data = await response.json().catch(() => ({}));
+
+        if (!response.ok) {
+            mostrarEstado(
+                "new-org-status",
+                data.message || "No se pudo crear",
+                "error"
+            );
+            return;
+        }
+
+        document.getElementById("new-org-name").value = "";
+
+        mostrarEstado("new-org-status", "Organización creada", "ok");
+
+        await cargarOrganizaciones();
+
+    } catch (error) {
+        mostrarEstado(
+            "new-org-status",
+            "No se pudo contactar con el servidor",
+            "error"
+        );
+    }
+}
+
+
+/* ==============================
 ALERTAS
 ============================== */
 
@@ -8051,6 +8367,7 @@ requestInstalledSoftware
     ["reset-send", guardarContrasenaRecuperada],
     ["account-email-save", guardarCorreoDeLaCuenta],
     ["new-user-save", crearUsuario],
+    ["new-org-save", crearOrganizacion],
     ["schedule-save", guardarProgramacion]
 ].forEach(([id, accion]) => {
 

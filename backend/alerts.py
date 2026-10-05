@@ -32,7 +32,7 @@ def _read_threshold(settings, key, default):
         return default
 
 
-def get_health_thresholds():
+def get_health_thresholds(organization_id=None):
     """
     Umbrales de aviso y crítico para RAM y disco, desde la configuración.
 
@@ -41,7 +41,7 @@ def get_health_thresholds():
     se usa el de respaldo: es preferible avisar de más que dejar de avisar.
     """
 
-    settings = get_settings()
+    settings = get_settings(organization_id)
 
     thresholds = {}
 
@@ -177,13 +177,22 @@ def detect_alerts():
             storage_total,
             storage_free,
             last_ram_status,
-            last_disk_status
+            last_disk_status,
+            organization_id
         FROM devices
         """
     ).fetchall()
 
-    # Se leen una sola vez para todos los equipos
-    thresholds = get_health_thresholds()
+    # Cada empresa tiene sus umbrales. Se cachean por organizacion para
+    # no releer la configuracion en cada equipo del bucle.
+    umbrales_por_organizacion = {}
+
+    def thresholds_de(organization_id):
+
+        if organization_id not in umbrales_por_organizacion:
+            umbrales_por_organizacion[organization_id] =                 get_health_thresholds(organization_id)
+
+        return umbrales_por_organizacion[organization_id]
 
     now = datetime.now(timezone.utc)
 
@@ -210,16 +219,18 @@ def detect_alerts():
                     hostname,
                     type,
                     message,
-                    created_at
+                    created_at,
+                    organization_id
                 )
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     device["device_id"],
                     device["hostname"],
                     alert_type,
                     message,
-                    now.isoformat()
+                    now.isoformat(),
+                    device.get("organization_id")
                 )
             )
 
@@ -256,7 +267,9 @@ def detect_alerts():
             if percent is None:
                 continue
 
-            warning, critical = thresholds[recurso]
+            warning, critical = thresholds_de(
+                device.get("organization_id")
+            )[recurso]
 
             actual = _next_health_status(percent, previo, warning, critical)
 
@@ -283,11 +296,89 @@ def detect_alerts():
     connection.close()
 
 
-def get_alerts():
+def backfill_alert_organizations():
+    """
+    Rellena la organizacion de los avisos historicos.
+
+    Solo cuando se deduce del equipo que ya consta en el aviso. Lo que
+    no se pueda deducir se queda en NULL: no se inventa nada.
+
+    Idempotente: solo toca filas con organization_id NULL.
+    """
+
     connection = get_connection()
 
-    alerts = connection.execute(
-        """
+    try:
+        connection.execute(
+            """
+            UPDATE alerts
+            SET organization_id = (
+                SELECT d.organization_id FROM devices d
+                WHERE d.device_id = alerts.device_id
+            )
+            WHERE organization_id IS NULL
+              AND EXISTS (
+                  SELECT 1 FROM devices d
+                  WHERE d.device_id = alerts.device_id
+                    AND d.organization_id IS NOT NULL
+              )
+            """
+        )
+
+        connection.commit()
+
+    except Exception as error:
+        print(f"[alertas] No se pudo completar el relleno: {error}")
+
+    finally:
+        connection.close()
+
+    return True
+
+
+def alert_organization(alert_id):
+    """Organizacion de un aviso concreto. None si no existe o no la tiene."""
+
+    connection = get_connection()
+
+    try:
+        fila = connection.execute(
+            "SELECT organization_id FROM alerts WHERE id = ?",
+            (alert_id,)
+        ).fetchone()
+
+    finally:
+        connection.close()
+
+    return fila["organization_id"] if fila else None
+
+
+def alert_exists(alert_id):
+
+    connection = get_connection()
+
+    try:
+        fila = connection.execute(
+            "SELECT 1 FROM alerts WHERE id = ?", (alert_id,)
+        ).fetchone()
+
+    finally:
+        connection.close()
+
+    return fila is not None
+
+
+def get_alerts(organization_id=None):
+    """
+    Avisos, de mas reciente a mas antiguo.
+
+    Con organization_id se devuelven SOLO los de esa empresa. Sin el,
+    todos: quien llame debe haber comprobado que tiene derecho.
+    """
+
+    connection = get_connection()
+
+    base = """
         SELECT
             id,
             device_id,
@@ -295,12 +386,22 @@ def get_alerts():
             type,
             message,
             is_read,
-            created_at
+            created_at,
+            organization_id
         FROM alerts
-        ORDER BY created_at DESC
-        LIMIT 100
-        """
-    ).fetchall()
+    """
+
+    if organization_id is None:
+        alerts = connection.execute(
+            base + " ORDER BY created_at DESC LIMIT 100"
+        ).fetchall()
+
+    else:
+        alerts = connection.execute(
+            base + " WHERE organization_id = ?"
+                   " ORDER BY created_at DESC LIMIT 100",
+            (organization_id,)
+        ).fetchall()
 
     connection.close()
 
@@ -321,12 +422,28 @@ def mark_alert_read(alert_id):
     return {"status": "ok", "id": alert_id}
 
 
-def mark_all_alerts_read():
+def mark_all_alerts_read(organization_id=None):
+    """
+    Marca los avisos como leidos.
+
+    Con organization_id solo los de esa empresa: sin acotarlo, un Owner
+    daria por leidos los avisos de todas, que es justo el tipo de fuga
+    silenciosa que el aislamiento debe evitar.
+    """
+
     connection = get_connection()
 
-    connection.execute(
-        "UPDATE alerts SET is_read = 1 WHERE is_read = 0"
-    )
+    if organization_id is None:
+        connection.execute(
+            "UPDATE alerts SET is_read = 1 WHERE is_read = 0"
+        )
+
+    else:
+        connection.execute(
+            "UPDATE alerts SET is_read = 1 "
+            "WHERE is_read = 0 AND organization_id = ?",
+            (organization_id,)
+        )
 
     connection.commit()
     connection.close()

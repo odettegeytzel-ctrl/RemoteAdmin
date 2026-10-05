@@ -652,19 +652,21 @@ def change_password(current_password, new_password, username=None):
 
 def require_security_config():
     """
-    Exige que AUTH_SECRET_KEY y AGENT_TOKEN estén definidos en el .env, y que
-    AUTH_PASSWORD_HASH no corresponda a la contraseña por defecto.
-    Si algo falla, lanza RuntimeError con un mensaje claro para que el
-    backend falle al arrancar en vez de correr con seguridad incompleta.
+    Exige que AUTH_SECRET_KEY este definida en el .env y que la
+    contrasena vigente no sea la de por defecto. Si algo falla, lanza
+    RuntimeError con un mensaje claro para que el backend falle al
+    arrancar en vez de correr con seguridad incompleta.
+
+    AGENT_TOKEN ya NO se exige: dejo de servir para dar de alta equipos.
+    Cada organizacion emite sus propias credenciales de alta, asi que
+    una instalacion nueva no necesita ningun token compartido. Si la
+    variable sigue en el .env, no hace nada.
     """
 
     missing = []
 
     if not AUTH_SECRET_KEY:
         missing.append("AUTH_SECRET_KEY")
-
-    if not AGENT_TOKEN:
-        missing.append("AGENT_TOKEN")
 
     if missing:
         raise RuntimeError(
@@ -691,6 +693,14 @@ def require_security_config():
 
 
 def verify_agent_token(token):
+    """
+    Compara con el AGENT_TOKEN compartido del .env.
+
+    RETIRADO como via de alta: ya no se usa para registrar equipos
+    nuevos. Se conserva la funcion porque la variable sigue existiendo
+    en configuraciones antiguas y para no romper nada que la importe,
+    pero ningun endpoint la consulta para autorizar un alta.
+    """
 
     # Sin AGENT_TOKEN configurado en .env no se autoriza ningun Agent
     if not AGENT_TOKEN:

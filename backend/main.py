@@ -23,12 +23,16 @@ from backend.alerts import (
     detect_alerts,
     get_alerts,
     mark_alert_read,
-    mark_all_alerts_read
+    mark_all_alerts_read,
+    alert_exists,
+    alert_organization,
+    backfill_alert_organizations
 )
 from backend.settings import (
     get_settings,
     get_retention_days,
     save_settings,
+    migrate_settings_to_organization,
     UnknownSettingError
 )
 from backend.auth import (
@@ -42,7 +46,6 @@ from backend.auth import (
     verify_token,
     revoke_session_token,
     token_from_header,
-    verify_agent_token,
     require_security_config,
     TOKEN_HOURS
 )
@@ -74,7 +77,8 @@ from backend.recordings import (
 from backend.devices import (
     set_continuous_recording,
     get_continuous_recording,
-    device_exists
+    device_exists,
+    get_device_organization
 )
 from backend.media import validate_recording
 from backend import mailer
@@ -97,6 +101,7 @@ from backend.queries import (
 )
 from backend.audit import (
     log_audit,
+    backfill_organizations,
     list_audit,
     count_audit,
     get_request_context,
@@ -104,8 +109,15 @@ from backend.audit import (
     STATUS_SUCCESS,
     STATUS_ERROR
 )
+from backend import organizations
+from backend import enrollment
 from backend.users import (
     ensure_owner_migrated,
+    is_platform_owner,
+    organization_of,
+    same_organization,
+    set_organization,
+    ROLE_PLATFORM_OWNER,
     get_user,
     get_user_by_id,
     find_by_email,
@@ -164,8 +176,9 @@ async def require_authentication(request: Request, call_next):
     needs_auth = (
         path.startswith("/api/")
         and path not in OPEN_API_PATHS
-        # La subida de grabaciones la hace el Agent con su AGENT_TOKEN,
-        # no con sesión de panel; se valida dentro del endpoint.
+        # La subida de grabaciones la hace el Agent con su token
+        # individual, no con sesión de panel; se valida dentro del
+        # endpoint.
         and not path.endswith("/recordings/upload")
         and request.method != "OPTIONS"
     )
@@ -189,7 +202,83 @@ async def require_authentication(request: Request, call_next):
                 }
             )
 
+        # Aislamiento: si la ruta apunta a un equipo o a una grabacion,
+        # tiene que ser de la organizacion de quien pide. Aqui, una sola
+        # vez, para todas las rutas presentes y futuras.
+        negado = _organizacion_bloquea(request, path)
+
+        if negado is not None:
+            return negado
+
     return await call_next(request)
+
+
+# Rutas con device_id que NO pasan por la sesion del panel: las usa el
+# propio Agent con su token individual, que ya ata la peticion a su
+# equipo. Comprobar aqui la organizacion no aportaria nada.
+RUTAS_DE_AGENT = ("/recordings/upload",)
+
+
+def _organizacion_bloquea(request, path):
+    """
+    Devuelve una respuesta de rechazo si la ruta toca otra organizacion.
+
+    None significa que puede seguir. Ante cualquier duda —usuario sin
+    organizacion, recurso sin organizacion— se rechaza: es preferible
+    que algo deje de verse a que una empresa vea lo de otra.
+    """
+
+    if path.endswith(RUTAS_DE_AGENT):
+        return None
+
+    partes = [t for t in path.split("/") if t]
+
+    # /api/devices/{device_id}/...  y  /api/recordings/{id}/...
+    if len(partes) < 3 or partes[0] != "api":
+        return None
+
+    recurso = partes[1]
+    identificador = partes[2]
+
+    if recurso not in ("devices", "recordings"):
+        return None
+
+    usuario = current_user(request)
+
+    if usuario is None:
+        return JSONResponse(
+            status_code=401,
+            content={"status": "error", "message": "No autenticado"}
+        )
+
+    # El operador de la plataforma trabaja con todas las organizaciones
+    if is_platform_owner(usuario):
+        return None
+
+    if recurso == "devices":
+
+        # Un equipo que no existe se deja pasar: que conteste el
+        # endpoint con su propio 404. Asi un identificador inventado
+        # y uno de otra empresa responden exactamente lo mismo.
+        if not device_exists(identificador):
+            return None
+
+        if not same_organization(
+            usuario, organization_of_device(identificador)
+        ):
+            return _no_encontrado()
+
+        return None
+
+    organizacion, existe = organization_of_recording(identificador)
+
+    if not existe:
+        return None
+
+    if not same_organization(usuario, organizacion):
+        return _no_encontrado()
+
+    return None
 
 
 # ==============================
@@ -212,6 +301,92 @@ def current_user(request):
     username = verify_token(token)
 
     return get_user(username) if username else None
+
+
+# ==============================
+# AISLAMIENTO ENTRE ORGANIZACIONES
+# ==============================
+#
+# Cada empresa cliente ve lo suyo y nada mas. La comprobacion vive en un
+# unico sitio —el middleware de abajo— y no repartida por los treinta y
+# tantos endpoints que llevan un device_id en la ruta: con una sola
+# puerta hay una sola cosa que revisar, y un endpoint nuevo queda
+# protegido sin que nadie se acuerde de anadirle nada.
+#
+# La organizacion se deduce SIEMPRE del usuario de la sesion. Nunca se
+# acepta un organization_id del navegador: seria pedirle al visitante
+# que diga de que casa es.
+
+def organization_of_device(device_id):
+    """Organizacion a la que pertenece un equipo. None si no la tiene."""
+
+    if not device_id:
+        return None
+
+    connection = get_connection()
+
+    try:
+        fila = connection.execute(
+            "SELECT organization_id FROM devices WHERE device_id = ?",
+            (device_id,)
+        ).fetchone()
+
+    finally:
+        connection.close()
+
+    return fila["organization_id"] if fila else None
+
+
+def organization_of_recording(recording_id):
+    """
+    Organizacion de una grabacion, derivada de su equipo.
+
+    No se guarda la organizacion en la grabacion: se deriva del equipo,
+    que es su dueno. Duplicarla abriria la puerta a que las dos copias
+    discrepasen, y entonces habria que decidir cual manda.
+    """
+
+    try:
+        identificador = int(recording_id)
+
+    except (TypeError, ValueError):
+        return None, False
+
+    connection = get_connection()
+
+    try:
+        fila = connection.execute(
+            """
+            SELECT d.organization_id AS organization_id
+            FROM recordings r
+            LEFT JOIN devices d ON d.device_id = r.device_id
+            WHERE r.id = ?
+            """,
+            (identificador,)
+        ).fetchone()
+
+    finally:
+        connection.close()
+
+    if fila is None:
+        return None, False
+
+    return fila["organization_id"], True
+
+
+def _no_encontrado():
+    """
+    Respuesta para un recurso de otra organizacion.
+
+    Se responde 404 y no 403 a proposito: un 403 confirmaria que el
+    recurso existe, y con eso se puede recorrer la numeracion de otra
+    empresa para saber cuantos equipos o grabaciones tiene.
+    """
+
+    return JSONResponse(
+        status_code=404,
+        content={"status": "error", "message": "Recurso no encontrado"}
+    )
 
 
 def _denegado(mensaje="No tienes permiso para esta accion"):
@@ -279,7 +454,21 @@ def startup():
     # La cuenta unica anterior pasa a ser el owner. Idempotente: si ya hay
     # usuarios, no hace nada.
     ensure_owner_migrated()
-    # Exige AUTH_SECRET_KEY y AGENT_TOKEN en el .env; si faltan, el arranque falla
+    # Y la instalacion existente pasa a ser la primera organizacion, con
+    # sus equipos y usuarios asociados. Tambien idempotente.
+    organizations.ensure_default_organization()
+    # Con las organizaciones ya asignadas, se rellena la organizacion de
+    # los registros historicos de auditoria y de avisos. Solo donde se
+    # puede deducir con seguridad; el resto se queda en NULL.
+    backfill_organizations()
+    backfill_alert_organizations()
+    # La configuracion que habia era de la unica empresa que existia:
+    # se copia a su organizacion para que no cambie nada de lo que ya
+    # estaba funcionando.
+    migrate_settings_to_organization(
+        organizations.ensure_default_organization()
+    )
+    # Exige AUTH_SECRET_KEY en el .env; si falta, el arranque falla
     require_security_config()
     # Subidas interrumpidas por un reinicio o una caída anterior
     cleanup_orphan_parts()
@@ -302,9 +491,21 @@ async def _retention_loop():
             loop = asyncio.get_running_loop()
             # Se lee en cada pasada: cambiar la retencion desde el panel
             # surte efecto en la siguiente limpieza, sin reiniciar.
-            dias = get_retention_days()
+            #
+            # Una pasada por organizacion: cada empresa tiene su propio
+            # periodo, y aplicar el de una a las grabaciones de otra
+            # borraria material que todavia debia conservarse.
+            result = {}
 
-            result = await loop.run_in_executor(None, apply_retention, dias)
+            for organizacion in organizations.list_organizations():
+
+                dias = get_retention_days(organizacion["id"])
+
+                parcial = await loop.run_in_executor(
+                    None, apply_retention, dias, organizacion["id"]
+                )
+
+                result[organizacion["name"]] = parcial
 
             if result["deleted"] or result["skipped_traversal"]:
                 print(f"[RETENCIÓN] {result}")
@@ -377,7 +578,7 @@ def register(
     if blocked_for:
 
         # Se responde ANTES de validar el token: estando bloqueada, la IP no
-        # puede enrolar aunque presente el AGENT_TOKEN correcto.
+        # puede enrolar aunque presente una credencial valida.
         return JSONResponse(
             status_code=429,
             headers={"Retry-After": str(blocked_for)},
@@ -390,18 +591,47 @@ def register(
             }
         )
 
-    # Agent NUEVO: el AGENT_TOKEN compartido sirve SOLO para el alta.
-    if not verify_agent_token(x_agent_token):
+    # La organizacion sale de la CREDENCIAL, nunca del cuerpo de la
+    # peticion. Un Agent que enviara organization_id no conseguiria
+    # nada: ese campo no se lee en ningun punto de este endpoint.
+    #
+    # El AGENT_TOKEN compartido YA NO da de alta: era una puerta global
+    # con la que cualquiera que lo tuviera podia meter equipos en el
+    # sistema, y estaba en el .env de cada equipo administrado. Los
+    # Agents ya enrolados no se ven afectados: se autentican con su
+    # token individual, que se comprueba mas arriba.
+    organizacion = enrollment.organization_for_token(x_agent_token)
+
+    # Agent NUEVO: hace falta una credencial de alta de la organizacion
+    # en la que debe entrar. No hay otra via.
+    if organizacion is None:
 
         # Solo se anota la IP y la hora: nunca el token presentado.
         register_failure(client_ip, scope="enroll")
 
         return _agent_unauthorized()
 
+    # El plan de la organizacion marca cuantos equipos admite
+    try:
+        organizations.check_limit(organizacion, "devices")
+
+    except organizations.OrganizationError as limite:
+
+        log_audit(
+            "device.enroll", status=STATUS_ERROR,
+            source_ip=client_ip, details=str(limite)
+        )
+
+        return JSONResponse(
+            status_code=409,
+            content={"status": "error", "message": str(limite)}
+        )
+
     device_id, agent_token = enroll_device(
         data.hostname,
         data.operating_system,
-        data.ip_address
+        data.ip_address,
+        organization_id=organizacion
     )
 
     # Alta correcta: se limpia el historial de esa IP, igual que en el login.
@@ -421,7 +651,7 @@ def heartbeat(
     data: DeviceHeartbeat,
     x_agent_token: str = Header(default=None)
 ):
-    # Token individual. El AGENT_TOKEN compartido ya no vale aquí: solo
+    # Token individual. La credencial de alta no vale aquí: solo
     # autoriza el alta de un Agent nuevo.
     device_id = get_device_id_for_token(x_agent_token)
 
@@ -441,10 +671,18 @@ def heartbeat(
 @app.get("/api/devices")
 def devices(request: Request):
 
-    _, error = require_permission(request, "devices.view")
+    usuario, error = require_permission(request, "devices.view")
 
     if error:
         return error
+
+    # Cada empresa ve sus equipos. El operador de la plataforma los ve
+    # todos, que es lo que necesita para dar soporte.
+    if not is_platform_owner(usuario):
+        return [
+            equipo for equipo in get_devices()
+            if equipo.get("organization_id") == organization_of(usuario)
+        ]
 
     # Detecta cambios de estado antes de devolver la lista
     detect_alerts()
@@ -454,34 +692,89 @@ def devices(request: Request):
 @app.get("/api/alerts")
 def alerts(request: Request):
 
-    _, error = require_permission(request, "dashboard.view")
+    usuario, error = require_permission(request, "dashboard.view")
 
     if error:
         return error
+
+    if not is_platform_owner(usuario):
+
+        detect_alerts()
+
+        # Se acota en la consulta, con la columna propia del aviso: es
+        # mas directo que cruzar con la lista de equipos y no depende de
+        # que el equipo siga existiendo.
+        return get_alerts(organization_id=organization_of(usuario))
 
     detect_alerts()
     return get_alerts()
 
 
 @app.post("/api/alerts/{alert_id}/read")
-def alert_read(alert_id: int):
+def alert_read(alert_id: int, request: Request):
+
+    usuario, error = require_permission(request, "dashboard.view")
+
+    if error:
+        return error
+
+    if not is_platform_owner(usuario):
+
+        # Un aviso de otra organizacion responde igual que uno que no
+        # existe: confirmar su existencia ya seria decir de mas.
+        if not alert_exists(alert_id) \
+                or alert_organization(alert_id) != organization_of(usuario):
+
+            return JSONResponse(
+                status_code=404,
+                content={"status": "error",
+                         "message": "Aviso no encontrado"}
+            )
+
     return mark_alert_read(alert_id)
 
 
 @app.post("/api/alerts/read-all")
-def alerts_read_all():
-    return mark_all_alerts_read()
+def alerts_read_all(request: Request):
+
+    usuario, error = require_permission(request, "dashboard.view")
+
+    if error:
+        return error
+
+    # Cada uno da por leidos los suyos. Sin acotarlo, un Owner silenciaria
+    # los avisos de todas las empresas.
+    ambito = None if is_platform_owner(usuario) else organization_of(usuario)
+
+    return mark_all_alerts_read(organization_id=ambito)
+
+
+def _ambito_de_settings(usuario):
+    """
+    Sobre que configuracion actua este usuario.
+
+    Cada empresa tiene la suya; el operador de la plataforma trabaja con
+    la de la instalacion. La organizacion sale SIEMPRE de la sesion: un
+    organization_id en el cuerpo de la peticion no se lee en ningun
+    punto, asi que no hay forma de escribir en la configuracion de otra
+    empresa.
+    """
+
+    if is_platform_owner(usuario):
+        return None
+
+    return organization_of(usuario)
 
 
 @app.get("/api/settings")
 def settings(request: Request):
 
-    _, error = require_permission(request, "settings.view")
+    usuario, error = require_permission(request, "settings.view")
 
     if error:
         return error
 
-    return get_settings()
+    return get_settings(_ambito_de_settings(usuario))
 
 
 @app.post("/api/settings")
@@ -493,15 +786,17 @@ async def update_settings(data: dict, request: Request):
     puede usarse para colar estado de autenticacion en la base.
     """
 
-    _, error = require_permission(request, "settings.edit")
+    usuario, error = require_permission(request, "settings.edit")
 
     if error:
         return error
 
-    anterior = get_retention_days()
+    ambito = _ambito_de_settings(usuario)
+
+    anterior = get_retention_days(ambito)
 
     try:
-        resultado = save_settings(data)
+        resultado = save_settings(data, organization_id=ambito)
 
     except UnknownSettingError as error:
         return JSONResponse(
@@ -509,11 +804,11 @@ async def update_settings(data: dict, request: Request):
             content={"status": "error", "message": str(error)}
         )
 
-    # Si han cambiado los dias de retencion, los Agents conectados deben
+    # Si han cambiado los dias de retencion, los Agents afectados deben
     # enterarse ya; si no, seguirian aplicando el periodo anterior hasta
-    # su proxima reconexion.
-    if get_retention_days() != anterior:
-        await broadcast_retention_policy()
+    # su proxima reconexion. Solo los de esa organizacion.
+    if get_retention_days(ambito) != anterior:
+        await broadcast_retention_policy(organization_id=ambito)
 
     return resultado
 
@@ -2227,7 +2522,7 @@ async def upload_recording(
     x_agent_token: str = Header(default=None)
 ):
 
-    # Token individual del Agent (no sesión de panel, no AGENT_TOKEN).
+    # Token individual del Agent (no sesión de panel).
     authenticated_device_id = get_device_id_for_token(x_agent_token)
 
     if authenticated_device_id is None:
@@ -2506,10 +2801,30 @@ async def upload_recording(
 def recordings_list(request: Request, device_id: str = None,
                     start: str = None, end: str = None):
 
-    _, error = require_permission(request, "recordings.view")
+    usuario, error = require_permission(request, "recordings.view")
 
     if error:
         return error
+
+    if not is_platform_owner(usuario):
+
+        propia = organization_of(usuario)
+
+        equipos = {
+            equipo["device_id"] for equipo in get_devices()
+            if equipo.get("organization_id") == propia
+        }
+
+        # Filtrar por un equipo ajeno no da error: devuelve vacio, como
+        # si no hubiera nada. No se confirma que ese equipo exista.
+        if device_id is not None and device_id not in equipos:
+            return []
+
+        return [
+            grabacion
+            for grabacion in query_recordings(device_id, start, end)
+            if grabacion["device_id"] in equipos
+        ]
 
 
     # Protegido por sesión (el middleware exige token en /api/* salvo rutas abiertas).
@@ -3363,7 +3678,9 @@ def build_retention_policy(device_id):
         connection.close()
 
     return {
-        "days": get_retention_days(),
+        # Los dias son los de la organizacion dueña del equipo: cada
+        # empresa decide cuanto conserva sus grabaciones.
+        "days": get_retention_days(get_device_organization(device_id)),
         "keep": [
             fila["path"].replace("\\", "/").rsplit("/", 1)[-1]
             for fila in filas
@@ -3390,15 +3707,21 @@ async def send_retention_policy(device_id):
         return False
 
 
-async def broadcast_retention_policy():
+async def broadcast_retention_policy(organization_id=None):
     """
-    Reenvia la politica a todos los Agents conectados.
+    Reenvia la politica a los Agents conectados.
 
-    Se usa al cambiar los dias de retencion desde el panel: afecta a
-    todos, no solo al equipo que se este mirando.
+    Con organizacion, solo a los suyos: cambiar la retencion de una
+    empresa no debe tocar los equipos de otra. Sin ella (cambio de la
+    instalacion), a todos.
     """
 
     for device_id in list(connected_agents):
+
+        if organization_id is not None \
+                and get_device_organization(device_id) != organization_id:
+            continue
+
         await send_retention_policy(device_id)
 
 
@@ -3486,8 +3809,344 @@ async def recording_schedule_set(device_id: str, data: dict,
 
 
 # ==============================
+# ORGANIZACIONES (nivel plataforma)
+# ==============================
+#
+# Administrarlas es cosa de quien opera RemoteAdmin, no de las empresas
+# clientes. El Owner de una organizacion no puede crear otras ni ver las
+# demas: su mundo empieza y acaba en la suya.
+
+def require_platform_owner(request):
+    """(usuario, None) si opera la plataforma; (None, respuesta) si no."""
+
+    usuario = current_user(request)
+
+    if usuario is None:
+        return None, JSONResponse(
+            status_code=401,
+            content={"status": "error", "message": "No autenticado"}
+        )
+
+    if not is_platform_owner(usuario) or not usuario.get("active"):
+        return None, _denegado(
+            "Solo el operador de la plataforma administra organizaciones"
+        )
+
+    return usuario, None
+
+
+@app.get("/api/organizations")
+def organizations_list(request: Request):
+    """Todas las organizaciones, con su plan, estado y uso."""
+
+    _, error = require_platform_owner(request)
+
+    if error:
+        return error
+
+    return {
+        "status": "ok",
+        "organizations": organizations.list_organizations(),
+        "plans": [
+            {
+                "name": nombre,
+                "label": datos["label"],
+                "max_devices": datos["max_devices"],
+                "max_users": datos["max_users"],
+                "storage_mb": datos["storage_mb"],
+                "features": list(datos["features"])
+            }
+            for nombre, datos in organizations.PLANS.items()
+        ],
+        "subscription_statuses": list(organizations.SUBSCRIPTION_STATUSES),
+        "billing_modes": list(organizations.BILLING_MODES)
+    }
+
+
+@app.post("/api/organizations")
+def organizations_create(data: dict, request: Request):
+    """Crea una organizacion. Solo la plataforma."""
+
+    _, error = require_platform_owner(request)
+
+    if error:
+
+        log_audit("organization.created", request=request,
+                  status=STATUS_ERROR,
+                  details="Rechazada: no es operador de la plataforma")
+
+        return error
+
+    try:
+        organizacion = organizations.create_organization(
+            name=data.get("name"),
+            plan=data.get("plan", organizations.PLAN_FREE),
+            billing_mode=data.get(
+                "billing_mode", organizations.BILLING_STANDARD
+            ),
+            subscription_status=data.get(
+                "subscription_status", organizations.STATUS_TRIAL
+            ),
+            notes=data.get("notes")
+        )
+
+    except organizations.OrganizationError as problema:
+
+        log_audit("organization.created", request=request,
+                  status=STATUS_ERROR, details=str(problema))
+
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "message": str(problema)}
+        )
+
+    # Sin organizacion a proposito: crear una empresa es una accion de
+    # la plataforma, no de ninguna empresa.
+    log_audit(
+        "organization.created", request=request, status=STATUS_SUCCESS,
+        organization_id=None,
+        details={"organization": organizacion["name"],
+                 "plan": organizacion["plan"],
+                 "scope": "platform"}
+    )
+
+    return {"status": "ok", "organization": organizacion}
+
+
+@app.post("/api/organizations/{organization_id}")
+def organizations_update(organization_id: int, data: dict,
+                         request: Request):
+    """
+    Cambia plan, estado de suscripcion, modalidad o actividad.
+
+    Suspender es cambiar un campo: no se borra ni un equipo, ni una
+    grabacion, ni un usuario. Reactivar devuelve el acceso tal cual.
+    """
+
+    _, error = require_platform_owner(request)
+
+    if error:
+        return error
+
+    try:
+        organizacion = organizations.update_organization(
+            organization_id,
+            plan=data.get("plan"),
+            subscription_status=data.get("subscription_status"),
+            billing_mode=data.get("billing_mode"),
+            active=data.get("active"),
+            notes=data.get("notes")
+        )
+
+    except organizations.OrganizationError as problema:
+
+        log_audit("organization.updated", request=request,
+                  status=STATUS_ERROR, details=str(problema))
+
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "message": str(problema)}
+        )
+
+    log_audit(
+        "organization.updated", request=request, status=STATUS_SUCCESS,
+        organization_id=None,
+        details={"organization": organizacion["name"],
+                 "plan": organizacion["plan"],
+                 "subscription_status":
+                     organizacion["subscription_status"],
+                 "active": organizacion["active"],
+                 "scope": "platform"}
+    )
+
+    return {"status": "ok", "organization": organizacion}
+
+
+# ==============================
+# CREDENCIALES DE ALTA DE AGENTS
+# ==============================
+#
+# Cada organizacion tiene las suyas. Un Owner administra las de su
+# empresa; el operador de la plataforma, las de cualquiera.
+
+def _organizacion_de_credenciales(request, organization_id=None):
+    """
+    Organizacion sobre la que se van a administrar credenciales.
+
+    Devuelve (organizacion, None) o (None, respuesta de rechazo). Un
+    Owner solo puede con la suya, aunque pida otra por parametro.
+    """
+
+    usuario, error = require_owner(request)
+
+    if error:
+        return None, error
+
+    if is_platform_owner(usuario):
+
+        if organization_id is None:
+            return None, JSONResponse(
+                status_code=400,
+                content={
+                    "status": "error",
+                    "message": (
+                        "Indica la organizacion sobre la que actuar"
+                    )
+                }
+            )
+
+        if organizations.get_organization(organization_id) is None:
+            return None, JSONResponse(
+                status_code=404,
+                content={"status": "error",
+                         "message": "La organizacion no existe"}
+            )
+
+        return organization_id, None
+
+    propia = organization_of(usuario)
+
+    # Pedir otra organizacion no la concede: se trabaja siempre sobre la
+    # propia, y pedir una ajena se rechaza en vez de ignorarse en
+    # silencio.
+    if organization_id is not None and organization_id != propia:
+        return None, _denegado(
+            "Solo puedes administrar las credenciales de tu organizacion"
+        )
+
+    return propia, None
+
+
+@app.get("/api/enrollment-tokens")
+def enrollment_tokens_list(request: Request, organization_id: int = None):
+    """Credenciales de alta, sin exponer nunca su valor."""
+
+    organizacion, error = _organizacion_de_credenciales(
+        request, organization_id
+    )
+
+    if error:
+        return error
+
+    return {
+        "status": "ok",
+        "organization_id": organizacion,
+        "tokens": enrollment.list_tokens(organizacion)
+    }
+
+
+@app.post("/api/enrollment-tokens")
+def enrollment_tokens_create(data: dict, request: Request):
+    """
+    Crea una credencial de alta.
+
+    El valor en claro se devuelve UNA sola vez, aqui: el servidor guarda
+    unicamente su SHA-256 y no puede volver a mostrarlo.
+    """
+
+    organizacion, error = _organizacion_de_credenciales(
+        request, data.get("organization_id")
+    )
+
+    if error:
+        return error
+
+    try:
+        ficha, valor = enrollment.create_token(
+            organizacion,
+            label=data.get("label"),
+            expires_in_days=data.get("expires_in_days")
+        )
+
+    except enrollment.EnrollmentError as problema:
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "message": str(problema)}
+        )
+
+    log_audit(
+        "enrollment.token_created", request=request,
+        status=STATUS_SUCCESS,
+        organization_id=organizacion,
+        details={"token_id": ficha["id"], "label": ficha["label"]}
+    )
+
+    return {
+        "status": "ok",
+        "token": ficha,
+        # Unica vez que viaja en claro
+        "value": valor,
+        "message": (
+            "Guarda este valor ahora: no se puede volver a consultar."
+        )
+    }
+
+
+@app.delete("/api/enrollment-tokens/{token_id}")
+def enrollment_tokens_revoke(token_id: int, request: Request):
+    """Revoca una credencial. No se borra: queda su rastro de uso."""
+
+    ficha = enrollment.get_token(token_id)
+
+    if ficha is None:
+        return JSONResponse(
+            status_code=404,
+            content={"status": "error",
+                     "message": "La credencial no existe"}
+        )
+
+    organizacion, error = _organizacion_de_credenciales(
+        request, ficha["organization_id"]
+    )
+
+    if error:
+        return error
+
+    enrollment.revoke_token(token_id)
+
+    log_audit(
+        "enrollment.token_revoked", request=request,
+        status=STATUS_SUCCESS,
+        organization_id=organizacion,
+        details={"token_id": token_id}
+    )
+
+    return {"status": "ok", "token": enrollment.get_token(token_id)}
+
+
+# ==============================
 # USUARIOS, ROLES Y PERMISOS
 # ==============================
+
+def usuario_del_mismo_ambito(actor, username):
+    """
+    Devuelve el usuario objetivo si el actor puede administrarlo.
+
+    (usuario, None) si puede; (None, respuesta) si no. Un Owner solo
+    administra a los de su empresa; el operador de la plataforma, a
+    cualquiera. Se responde 404 y no 403 para no confirmar que ese
+    nombre existe en otra organizacion.
+    """
+
+    objetivo = get_user(username)
+
+    if objetivo is None:
+        return None, JSONResponse(
+            status_code=404,
+            content={"status": "error", "message": "El usuario no existe"}
+        )
+
+    if is_platform_owner(actor):
+        return objetivo, None
+
+    if objetivo.get("organization_id") != organization_of(actor):
+        return None, JSONResponse(
+            status_code=404,
+            content={"status": "error", "message": "El usuario no existe"}
+        )
+
+    return objetivo, None
+
 
 def _usuario_o_error(funcion, *args, **kwargs):
     """Ejecuta una operacion de usuarios y traduce su rechazo a un 400."""
@@ -3504,16 +4163,20 @@ def _usuario_o_error(funcion, *args, **kwargs):
 
 @app.get("/api/users")
 def users_list(request: Request):
-    """Usuarios del panel. Solo el owner."""
+    """Usuarios del panel. Solo el owner, y solo los de su organizacion."""
 
-    _, error = require_owner(request)
+    usuario, error = require_owner(request)
 
     if error:
         return error
 
+    # El Owner de una empresa ve a los suyos. El operador de la
+    # plataforma los ve todos, que es lo que necesita para dar soporte.
+    ambito = None if is_platform_owner(usuario) else organization_of(usuario)
+
     return {
         "status": "ok",
-        "users": list_users(),
+        "users": list_users(organization_id=ambito),
         "permissions": list(PERMISSIONS),
         "roles": [ROLE_OWNER, ROLE_SUBADMIN]
     }
@@ -3536,12 +4199,30 @@ def users_me(request: Request):
             content={"status": "error", "message": "No autenticado"}
         )
 
+    organizacion = (
+        organizations.get_organization(organization_of(usuario))
+        if organization_of(usuario) else None
+    )
+
     return {
         "status": "ok",
         "username": usuario["username"],
         "role": usuario["role"],
         "email": usuario["email"],
         "is_owner": is_owner(usuario),
+        "is_platform_owner": is_platform_owner(usuario),
+        "organization": (
+            {
+                "id": organizacion["id"],
+                "name": organizacion["name"],
+                "plan": organizacion["plan"],
+                "plan_label": organizacion["plan_label"],
+                "subscription_status": organizacion["subscription_status"],
+                "billing_mode": organizacion["billing_mode"],
+                "usable": organizacion["usable"]
+            }
+            if organizacion else None
+        ),
         "permissions": (
             list(PERMISSIONS) if is_owner(usuario)
             else usuario.get("permissions", [])
@@ -3558,6 +4239,29 @@ def users_create(data: dict, request: Request):
     if error:
         return error
 
+    # La organizacion sale de la sesion de quien crea, nunca del cuerpo:
+    # asi un Owner no puede colocar usuarios dentro de otra empresa.
+    destino = organization_of(actor)
+
+    if destino is None:
+        return _denegado(
+            "El operador de la plataforma debe crear los usuarios dentro "
+            "de una organizacion concreta"
+        )
+
+    try:
+        organizations.check_limit(destino, "users")
+
+    except organizations.OrganizationError as limite:
+
+        log_audit("user.created", request=request, status=STATUS_ERROR,
+                  details=str(limite))
+
+        return JSONResponse(
+            status_code=409,
+            content={"status": "error", "message": str(limite)}
+        )
+
     usuario, error = _usuario_o_error(
         create_user,
         username=data.get("username"),
@@ -3567,7 +4271,8 @@ def users_create(data: dict, request: Request):
         # segundo control total.
         role=ROLE_SUBADMIN,
         permissions=data.get("permissions"),
-        active=bool(data.get("active", True))
+        active=bool(data.get("active", True)),
+        organization_id=destino
     )
 
     if error:
@@ -3592,6 +4297,12 @@ def users_permissions(username: str, data: dict, request: Request):
 
     if error:
         return error
+
+    # Solo se administra a quien pertenece a la organizacion del actor
+    _, fuera = usuario_del_mismo_ambito(actor, username)
+
+    if fuera:
+        return fuera
 
     usuario, error = _usuario_o_error(
         set_permissions, username, data.get("permissions")
@@ -3619,6 +4330,12 @@ def users_active(username: str, data: dict, request: Request):
 
     if error:
         return error
+
+    # Solo se administra a quien pertenece a la organizacion del actor
+    _, fuera = usuario_del_mismo_ambito(actor, username)
+
+    if fuera:
+        return fuera
 
     activo = bool(data.get("active"))
 
@@ -3649,6 +4366,12 @@ def users_email(username: str, data: dict, request: Request):
     if error:
         return error
 
+    # Solo se administra a quien pertenece a la organizacion del actor
+    _, fuera = usuario_del_mismo_ambito(actor, username)
+
+    if fuera:
+        return fuera
+
     usuario, error = _usuario_o_error(set_email, username, data.get("email"))
 
     if error:
@@ -3675,13 +4398,10 @@ def users_reset_password(username: str, data: dict, request: Request):
     if error:
         return error
 
-    objetivo = get_user(username)
+    objetivo, fuera = usuario_del_mismo_ambito(actor, username)
 
-    if objetivo is None:
-        return JSONResponse(
-            status_code=404,
-            content={"status": "error", "message": "El usuario no existe"}
-        )
+    if fuera:
+        return fuera
 
     if objetivo["role"] == ROLE_OWNER and objetivo["username"] != actor["username"]:
         return _denegado(
@@ -3721,6 +4441,12 @@ def users_delete(username: str, request: Request):
     if error:
         return error
 
+    # Solo se administra a quien pertenece a la organizacion del actor
+    _, fuera = usuario_del_mismo_ambito(actor, username)
+
+    if fuera:
+        return fuera
+
     _, error = _usuario_o_error(delete_user, username)
 
     if error:
@@ -3755,23 +4481,37 @@ def audit_list(
     Protegido por el middleware de sesion, como el resto de /api/.
     Reservado al owner: el historial dice quien hizo que, y no es algo que
     deba ver cualquiera que tenga una sesion abierta.
+
+    Y acotado a su organizacion: un Owner ve lo que ha pasado en SU
+    empresa. Solo el operador de la plataforma ve el historial completo,
+    incluidas las acciones de plataforma, que no pertenecen a ninguna.
     """
 
-    _, error = require_owner(request)
+    usuario, error = require_owner(request)
 
     if error:
         return error
+
+    ambito = None if is_platform_owner(usuario) else organization_of(usuario)
+
+    if ambito is None and not is_platform_owner(usuario):
+        # Un usuario de organizacion sin organizacion no deberia existir;
+        # si ocurre, no se le ensena nada en vez de ensenarselo todo.
+        return {"status": "ok", "total": 0, "count": 0, "records": []}
 
     registros = list_audit(
         limit=limit,
         device_id=device_id,
         action=action,
-        offset=offset
+        offset=offset,
+        organization_id=ambito
     )
 
     return {
         "status": "ok",
-        "total": count_audit(device_id=device_id, action=action),
+        "total": count_audit(
+            device_id=device_id, action=action, organization_id=ambito
+        ),
         "count": len(registros),
         "records": registros
     }

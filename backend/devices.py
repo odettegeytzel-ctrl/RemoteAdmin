@@ -295,7 +295,8 @@ def get_devices():
              model,
              status,
              last_seen,
-             created_at
+             created_at,
+             organization_id
         FROM devices
         ORDER BY hostname
         """
@@ -444,6 +445,29 @@ def revoke_agent_token(device_id):
     return cursor.rowcount > 0
 
 
+def get_device_organization(device_id):
+    """
+    Organizacion a la que pertenece un equipo.
+
+    La asigna el servidor en el alta y no hay ninguna via por la que el
+    Agent pueda cambiarla: su peticion no lleva organizacion, y si la
+    llevara no se leeria.
+    """
+
+    connection = get_connection()
+
+    try:
+        fila = connection.execute(
+            "SELECT organization_id FROM devices WHERE device_id = ?",
+            (device_id,)
+        ).fetchone()
+
+    finally:
+        connection.close()
+
+    return fila["organization_id"] if fila else None
+
+
 def device_exists(device_id):
     """True si el equipo esta dado de alta."""
 
@@ -474,7 +498,8 @@ def device_has_agent_token(device_id):
     return bool(row and row["agent_token_hash"])
 
 
-def enroll_device(hostname, operating_system, ip_address):
+def enroll_device(hostname, operating_system, ip_address,
+                  organization_id=None):
     """
     Alta de un Agent NUEVO.
 
@@ -512,9 +537,10 @@ def enroll_device(hostname, operating_system, ip_address):
                         last_seen,
                         agent_token_hash,
                         agent_token_issued_at,
-                        agent_token_active
+                        agent_token_active,
+                        organization_id
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
                     """,
                     (
                         device_id,
@@ -524,7 +550,8 @@ def enroll_device(hostname, operating_system, ip_address):
                         "online",
                         now,
                         hash_agent_token(token),
-                        now
+                        now,
+                        organization_id
                     )
                 )
 

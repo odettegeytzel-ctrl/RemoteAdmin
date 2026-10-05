@@ -2376,6 +2376,115 @@
                         </div>
 
 
+                        <!-- Organizaciones: solo para quien opera la
+                             plataforma. Un Owner de empresa no ve esto. -->
+                        <div
+                            id="organizations-section"
+                            class="hidden mt-8 pt-8 border-t border-slate-200"
+                        >
+
+                            <h3 class="font-semibold text-slate-900">
+                                Organizaciones
+                            </h3>
+
+                            <p class="text-sm text-slate-500 mt-1">
+                                Empresas que usan RemoteAdmin. Cada una ve
+                                solamente sus equipos, sus grabaciones y
+                                sus usuarios.
+                            </p>
+
+                            <div class="mt-4 overflow-x-auto">
+
+                                <table class="w-full text-sm">
+
+                                    <thead class="bg-slate-50 border-b border-slate-200">
+
+                                        <tr>
+
+                                            <th class="text-left px-4 py-3 font-semibold text-slate-600">
+                                                Organizaci&oacute;n
+                                            </th>
+
+                                            <th class="text-left px-4 py-3 font-semibold text-slate-600">
+                                                Estado
+                                            </th>
+
+                                            <th class="text-left px-4 py-3 font-semibold text-slate-600">
+                                                Plan
+                                            </th>
+
+                                            <th class="text-left px-4 py-3 font-semibold text-slate-600">
+                                                Facturaci&oacute;n
+                                            </th>
+
+                                            <th class="text-left px-4 py-3 font-semibold text-slate-600">
+                                                Uso
+                                            </th>
+
+                                            <th class="text-left px-4 py-3 font-semibold text-slate-600">
+                                                Acciones
+                                            </th>
+
+                                        </tr>
+
+                                    </thead>
+
+                                    <tbody
+                                        id="organizations-table"
+                                        class="divide-y divide-slate-100"
+                                    ></tbody>
+
+                                </table>
+
+                            </div>
+
+                            <p id="organizations-status" class="hidden text-sm mt-3"></p>
+
+
+                            <div class="mt-6 p-5 bg-slate-50 border border-slate-200 rounded-xl">
+
+                                <h4 class="font-semibold text-slate-800 text-sm">
+                                    Crear organizaci&oacute;n
+                                </h4>
+
+                                <div class="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3">
+
+                                    <input
+                                        id="new-org-name"
+                                        placeholder="Nombre de la empresa"
+                                        class="px-3 py-2 border border-slate-300 rounded-lg text-sm"
+                                    >
+
+                                    <select
+                                        id="new-org-plan"
+                                        class="px-3 py-2 border border-slate-300 rounded-lg text-sm"
+                                    ></select>
+
+                                    <select
+                                        id="new-org-billing"
+                                        class="px-3 py-2 border border-slate-300 rounded-lg text-sm"
+                                    ></select>
+
+                                </div>
+
+                                <div class="mt-4 flex items-center gap-3">
+
+                                    <button
+                                        id="new-org-save"
+                                        class="px-4 py-2 rounded-lg bg-slate-900 text-white text-sm hover:bg-slate-700 transition"
+                                    >
+                                        Crear organizaci&oacute;n
+                                    </button>
+
+                                    <span id="new-org-status" class="hidden text-sm"></span>
+
+                                </div>
+
+                            </div>
+
+                        </div>
+
+
                         <!-- Usuarios: solo para el Owner -->
                         <div
                             id="users-section"

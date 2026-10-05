@@ -28,10 +28,16 @@ import time
 from backend.database import get_connection
 
 
+# Nivel plataforma: quien opera RemoteAdmin. No pertenece a ninguna
+# empresa cliente y por eso su organization_id es NULL. Administra
+# organizaciones, no equipos.
+ROLE_PLATFORM_OWNER = "platform_owner"
+
+# Nivel organizacion: dentro de una empresa cliente.
 ROLE_OWNER = "owner"
 ROLE_SUBADMIN = "subadmin"
 
-ROLES = (ROLE_OWNER, ROLE_SUBADMIN)
+ROLES = (ROLE_PLATFORM_OWNER, ROLE_OWNER, ROLE_SUBADMIN)
 
 
 # Permisos que se pueden conceder a un subadmin. Lista cerrada: conceder
@@ -85,6 +91,7 @@ def _fila_a_usuario(fila, permisos=None):
     usuario = {
         "id": fila["id"],
         "username": fila["username"],
+        "organization_id": fila["organization_id"],
         "email": fila["email"],
         "email_verified": bool(fila["email_verified"]),
         "role": fila["role"],
@@ -154,6 +161,7 @@ def ensure_owner_migrated():
                 password_changed_at, sessions_valid_from
             )
             VALUES (?, ?, NULL, 0, ?, 1, ?, ?, ?, ?)
+            -- organization_id lo rellena ensure_default_organization()
             """,
             (
                 AUTH_USERNAME,
@@ -170,6 +178,21 @@ def ensure_owner_migrated():
 
     finally:
         connection.close()
+
+    # El owner recien creado tiene que pertenecer a una organizacion.
+    #
+    # Al arrancar, la migracion de organizaciones corre justo despues y
+    # lo adjunta. Pero esta funcion tambien se llama en caliente (la
+    # dispara el primer get_user), y entonces la migracion ya habia
+    # pasado: sin esto el owner se quedaria sin organizacion y el
+    # aislamiento lo dejaria sin ver sus propios equipos.
+    try:
+        from backend.organizations import ensure_default_organization
+
+        ensure_default_organization()
+
+    except Exception as error:
+        print(f"[usuarios] No se pudo asociar el owner: {error}")
 
     return AUTH_USERNAME
 
@@ -247,8 +270,14 @@ def get_password_hash(username):
     return fila["password_hash"] if fila else None
 
 
-def list_users():
-    """Todos los usuarios con sus permisos, ordenados por nombre."""
+def list_users(organization_id=None):
+    """
+    Usuarios con sus permisos, ordenados por nombre.
+
+    Con organization_id se devuelven SOLO los de esa empresa. Sin el, se
+    devuelven todos: es la vista de la plataforma, y quien llama debe
+    haber comprobado que tiene derecho a verla.
+    """
 
     ensure_owner_migrated()
 
@@ -256,9 +285,17 @@ def list_users():
 
     try:
 
-        filas = connection.execute(
-            "SELECT * FROM users ORDER BY role = 'owner' DESC, username"
-        ).fetchall()
+        if organization_id is not None:
+            filas = connection.execute(
+                "SELECT * FROM users WHERE organization_id = ? "
+                "ORDER BY role = 'owner' DESC, username",
+                (organization_id,)
+            ).fetchall()
+
+        else:
+            filas = connection.execute(
+                "SELECT * FROM users ORDER BY role = 'owner' DESC, username"
+            ).fetchall()
 
         permisos = {}
 
@@ -276,25 +313,34 @@ def list_users():
     ]
 
 
-def count_active_owners(excluding_id=None):
-    """Cuantos owner activos quedan, sin contar a uno concreto."""
+def count_active_owners(excluding_id=None, organization_id=None):
+    """
+    Cuantos owner activos quedan, sin contar a uno concreto.
+
+    Con organization_id se cuentan solo los de esa empresa: cada
+    organizacion debe conservar su propio Owner, y que otra tenga el
+    suyo no la salva de quedarse sin administrador.
+    """
 
     connection = get_connection()
 
     try:
 
-        if excluding_id is None:
-            fila = connection.execute(
-                "SELECT COUNT(*) FROM users WHERE role = ? AND active = 1",
-                (ROLE_OWNER,)
-            ).fetchone()
+        condiciones = ["role = ?", "active = 1"]
+        parametros = [ROLE_OWNER]
 
-        else:
-            fila = connection.execute(
-                "SELECT COUNT(*) FROM users "
-                "WHERE role = ? AND active = 1 AND id != ?",
-                (ROLE_OWNER, excluding_id)
-            ).fetchone()
+        if excluding_id is not None:
+            condiciones.append("id != ?")
+            parametros.append(excluding_id)
+
+        if organization_id is not None:
+            condiciones.append("organization_id = ?")
+            parametros.append(organization_id)
+
+        fila = connection.execute(
+            "SELECT COUNT(*) FROM users WHERE " + " AND ".join(condiciones),
+            tuple(parametros)
+        ).fetchone()
 
     finally:
         connection.close()
@@ -306,8 +352,50 @@ def count_active_owners(excluding_id=None):
 # AUTORIZACION
 # ==============================
 
+def is_platform_owner(usuario):
+    """True si opera la plataforma, por encima de las organizaciones."""
+
+    return bool(usuario) and usuario.get("role") == ROLE_PLATFORM_OWNER
+
+
 def is_owner(usuario):
-    return bool(usuario) and usuario.get("role") == ROLE_OWNER
+    """
+    True si administra SU organizacion.
+
+    El usuario de plataforma tambien cuenta: puede hacer todo lo que
+    hace un Owner, pero dentro de la organizacion que este mirando. Lo
+    que lo distingue es que puede mirar cualquiera.
+    """
+
+    return bool(usuario) and usuario.get("role") in (
+        ROLE_OWNER, ROLE_PLATFORM_OWNER
+    )
+
+
+def organization_of(usuario):
+    """Organizacion del usuario. None en el usuario de plataforma."""
+
+    return (usuario or {}).get("organization_id")
+
+
+def same_organization(usuario, organization_id):
+    """
+    True si el usuario puede actuar sobre esa organizacion.
+
+    El de plataforma pasa siempre; el resto, solo sobre la suya. Un
+    recurso sin organizacion (datos a medio migrar) queda reservado a la
+    plataforma: ante la duda, no se ensena.
+    """
+
+    if not usuario or not usuario.get("active"):
+        return False
+
+    if is_platform_owner(usuario):
+        return True
+
+    propia = organization_of(usuario)
+
+    return bool(propia) and propia == organization_id
 
 
 def has_permission(usuario, permission):
@@ -321,7 +409,7 @@ def has_permission(usuario, permission):
     if not usuario or not usuario.get("active"):
         return False
 
-    if usuario.get("role") == ROLE_OWNER:
+    if usuario.get("role") in (ROLE_OWNER, ROLE_PLATFORM_OWNER):
         return True
 
     return permission in set(usuario.get("permissions") or ())
@@ -410,13 +498,17 @@ def validate_email(email):
 
 
 def create_user(username, password, email=None, role=ROLE_SUBADMIN,
-                permissions=None, active=True):
+                permissions=None, active=True, organization_id=None):
     """
     Crea un usuario. Devuelve el usuario creado (sin hash).
 
     El rol owner no se puede asignar por esta via: un alta no debe poder
     fabricar un segundo control total. Los owner salen de la migracion de
     la cuenta original.
+
+    organization_id lo decide SIEMPRE quien llama a partir de la sesion,
+    nunca el cuerpo de la peticion: si no, un Owner podria crear
+    usuarios dentro de otra empresa.
     """
 
     from backend.auth import validate_new_password, generate_password_hash
@@ -455,9 +547,10 @@ def create_user(username, password, email=None, role=ROLE_SUBADMIN,
             INSERT INTO users (
                 username, password_hash, email, email_verified,
                 role, active, created_at, updated_at,
-                password_changed_at, sessions_valid_from
+                password_changed_at, sessions_valid_from,
+                organization_id
             )
-            VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, 0)
+            VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, 0, ?)
             """,
             (
                 nombre,
@@ -467,7 +560,8 @@ def create_user(username, password, email=None, role=ROLE_SUBADMIN,
                 1 if active else 0,
                 ahora,
                 ahora,
-                ahora
+                ahora,
+                organization_id
             )
         )
 
@@ -550,9 +644,13 @@ def set_active(username, active):
         raise UserError("El usuario no existe")
 
     if not active and usuario["role"] == ROLE_OWNER:
-        if count_active_owners(excluding_id=usuario["id"]) == 0:
+        if count_active_owners(
+            excluding_id=usuario["id"],
+            organization_id=usuario["organization_id"]
+        ) == 0:
             raise UserError(
-                "No se puede desactivar al ultimo owner activo"
+                "No se puede desactivar al ultimo owner activo "
+                "de la organizacion"
             )
 
     connection = get_connection()
@@ -594,8 +692,14 @@ def delete_user(username):
         raise UserError("El usuario no existe")
 
     if usuario["role"] == ROLE_OWNER:
-        if count_active_owners(excluding_id=usuario["id"]) == 0:
-            raise UserError("No se puede eliminar al ultimo owner activo")
+        if count_active_owners(
+            excluding_id=usuario["id"],
+            organization_id=usuario["organization_id"]
+        ) == 0:
+            raise UserError(
+                "No se puede eliminar al ultimo owner activo "
+                "de la organizacion"
+            )
 
     connection = get_connection()
 
@@ -721,6 +825,102 @@ def set_user_password(username, new_password, invalidate_sessions=True):
         connection.close()
 
     return corte
+
+
+def set_platform_owner(username, enabled=True):
+    """
+    Convierte a un usuario en operador de la plataforma, o lo devuelve a
+    su organizacion.
+
+    No hay endpoint para esto a proposito: quien opera la plataforma se
+    designa desde la consola del servidor. Un ascenso por HTTP seria el
+    camino mas corto para que un Owner se promocione solo.
+
+    Al ascender se desliga de su organizacion (organization_id = NULL):
+    deja de ser de una empresa para estar por encima de todas.
+    """
+
+    usuario = get_user(username)
+
+    if usuario is None:
+        raise UserError("El usuario no existe")
+
+    if not enabled and usuario["role"] != ROLE_PLATFORM_OWNER:
+        return usuario
+
+    # Ascender al unico Owner dejaria a su organizacion sin nadie que la
+    # administre: el ascenso lo desliga de ella. Es la misma proteccion
+    # que impide desactivar o eliminar al ultimo Owner.
+    if enabled and usuario["role"] == ROLE_OWNER             and usuario["organization_id"]:
+
+        if count_active_owners(
+            excluding_id=usuario["id"],
+            organization_id=usuario["organization_id"]
+        ) == 0:
+            raise UserError(
+                "Es el unico owner activo de su organizacion. Nombra "
+                "antes otro owner, o la organizacion se quedaria sin "
+                "quien la administre."
+            )
+
+    connection = get_connection()
+
+    try:
+
+        if enabled:
+            connection.execute(
+                "UPDATE users SET role = ?, organization_id = NULL, "
+                "updated_at = ? WHERE id = ?",
+                (ROLE_PLATFORM_OWNER, _ahora_iso(), usuario["id"])
+            )
+
+        else:
+            connection.execute(
+                "UPDATE users SET role = ?, updated_at = ? WHERE id = ?",
+                (ROLE_OWNER, _ahora_iso(), usuario["id"])
+            )
+
+        connection.commit()
+
+    finally:
+        connection.close()
+
+    return get_user(username)
+
+
+def set_organization(username, organization_id):
+    """
+    Mueve un usuario a una organizacion.
+
+    Reservado a la plataforma. No existe endpoint que lo exponga: el
+    organization_id no se acepta nunca del navegador.
+    """
+
+    usuario = get_user(username)
+
+    if usuario is None:
+        raise UserError("El usuario no existe")
+
+    if usuario["role"] == ROLE_PLATFORM_OWNER:
+        raise UserError(
+            "El operador de la plataforma no pertenece a ninguna "
+            "organizacion"
+        )
+
+    connection = get_connection()
+
+    try:
+        connection.execute(
+            "UPDATE users SET organization_id = ?, updated_at = ? "
+            "WHERE id = ?",
+            (organization_id, _ahora_iso(), usuario["id"])
+        )
+        connection.commit()
+
+    finally:
+        connection.close()
+
+    return get_user(username)
 
 
 def get_sessions_valid_from(username):

@@ -77,14 +77,34 @@ def cliente(username=None):
 
 
 def crear_subadmin(nombre="subadmin1", permisos=None, activo=True,
-                   email=None):
+                   email=None, organization_id=None):
+    """
+    Crea un subadministrador dentro de la organizacion del owner.
+
+    En produccion el endpoint toma la organizacion de la sesion de quien
+    crea; aqui se hace lo mismo a mano. Un usuario sin organizacion no
+    podria ver ni un equipo, porque el aislamiento lo trataria como
+    ajeno a todas.
+    """
+
+    if organization_id is None:
+
+        from backend import organizations
+
+        organization_id = organizations.ensure_default_organization()
+
+        propietario = users.get_user(OWNER)
+
+        if propietario and propietario.get("organization_id"):
+            organization_id = propietario["organization_id"]
 
     return users.create_user(
         nombre,
         CLAVE_SUBADMIN,
         email=email,
         permissions=permisos or [],
-        active=activo
+        active=activo,
+        organization_id=organization_id
     )
 
 
