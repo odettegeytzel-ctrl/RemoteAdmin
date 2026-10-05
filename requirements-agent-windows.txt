@@ -1,0 +1,35 @@
+# Agent de RemoteAdmin. Solo Windows.
+#
+#     pip install -r requirements-agent-windows.txt
+#
+# Los paquetes que unicamente existen o solo tienen sentido en Windows
+# llevan un marcador de plataforma. Asi este archivo no revienta si
+# alguien lo instala por error en Linux: pip se los salta en vez de
+# fallar, que es justo lo que pasaba con pywin32 en el requirements
+# unico anterior.
+
+-r requirements-base.txt
+
+# Llamadas HTTPS al servidor: alta, heartbeat y subida de grabaciones
+requests==2.34.2
+
+# Procesos, servicios, RAM y disco (bloques G2 y G3)
+psutil==7.2.2
+
+# Captura de pantalla para la grabacion y el control remoto
+mss==10.2.0
+
+# Tratamiento de las imagenes capturadas
+pillow==12.3.0
+
+# Teclado y raton del control remoto. Multiplataforma en teoria, pero en
+# Linux necesitaria un servidor grafico; aqui solo se usa en Windows.
+PyAutoGUI==0.9.54; sys_platform == "win32"
+
+# Inventario de hardware del equipo. Interfaz WMI de Windows.
+WMI==1.5.1; sys_platform == "win32"
+
+# API de Windows. La necesita WMI y la usa el Agent para integrarse con
+# el sistema. No existe fuera de Windows: es la dependencia que impedia
+# instalar el requirements unico en Ubuntu.
+pywin32==312; sys_platform == "win32"

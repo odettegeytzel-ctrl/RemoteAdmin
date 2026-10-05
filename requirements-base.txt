@@ -1,0 +1,20 @@
+# Dependencias comunes al servidor y al Agent.
+#
+# Son las tres que ambos lados necesitan de verdad. Van en un archivo
+# aparte para que no puedan quedarse en versiones distintas: websockets
+# habla por los dos extremos del mismo canal, e imageio-ffmpeg produce
+# (Agent) y valida (servidor) los mismos MP4.
+#
+# No instalar este archivo por si solo: usa requirements-server.txt o
+# requirements-agent-windows.txt, que ya lo incluyen.
+
+# Lectura del .env (configuracion y secretos, nunca en el codigo)
+python-dotenv==1.2.3
+
+# WebSocket. En el servidor lo usa uvicorn para atender /ws/agent; en el
+# Agent, para conectarse. Sin el, uvicorn rechaza las conexiones WebSocket.
+websockets==17.1
+
+# ffmpeg empaquetado. El Agent graba con el y el servidor valida con el
+# los MP4 que recibe (F4).
+imageio-ffmpeg==0.6.0

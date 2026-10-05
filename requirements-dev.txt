@@ -1,0 +1,26 @@
+# Ejecutar las pruebas.
+#
+#     pip install -r requirements-dev.txt
+#
+# Funciona tanto en Ubuntu ARM64 como en Windows. Ninguna suite importa
+# agent/agent.py, asi que NO hacen falta pywin32, WMI ni PyAutoGUI para
+# pasarlas: lo que si se necesita son los modulos sueltos del Agent
+# (storage, paths, scheduler, power, inventory, recorder), y sus
+# dependencias son multiplataforma.
+
+-r requirements-server.txt
+
+# Cliente HTTP de TestClient (FastAPI/Starlette)
+httpx==0.28.1
+
+# Las suites de F3 y F4 levantan el servidor de verdad y le hablan por
+# HTTPS, igual que haria el Agent.
+requests==2.34.2
+
+# agent/inventory.py, que prueban las suites de procesos y servicios
+psutil==7.2.2
+
+# agent/recorder.py, que importa la suite de pausa por falta de espacio.
+# En Linux basta con que el paquete se pueda importar: las pruebas no
+# llegan a capturar pantalla.
+mss==10.2.0

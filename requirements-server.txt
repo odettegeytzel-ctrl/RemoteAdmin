@@ -1,0 +1,23 @@
+# Servidor RemoteAdmin: backend, API, WebSocket y panel web.
+#
+# Pensado para Ubuntu 24.04 ARM64 con Python 3.12, y valido igual en
+# Windows para desarrollo. NO incluye nada exclusivo de Windows: el
+# backend no importa pywin32, WMI, pyautogui, mss ni psutil.
+#
+#     pip install -r requirements-server.txt
+
+-r requirements-base.txt
+
+# API y validacion de datos
+fastapi==0.141.1
+pydantic==2.13.5
+
+# Servidor ASGI. Se instala sin el extra [standard] a proposito: ese
+# extra arrastra fastapi-cli, rich, typer, watchfiles y httptools, que
+# sirven para desarrollo y no hacen falta para servir la aplicacion.
+uvicorn==0.52.4
+
+# starlette llega como dependencia de fastapi, pero se fija aqui a la
+# version que ya esta en uso: pip elegiria una mas nueva y el servidor
+# acabaria corriendo una pieza distinta de la que se ha probado.
+starlette==1.6.0
