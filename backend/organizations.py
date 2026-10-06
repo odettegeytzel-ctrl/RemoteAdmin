@@ -127,9 +127,77 @@ BILLING_COURTESY = "courtesy"
 BILLING_MODES = (BILLING_STANDARD, BILLING_COURTESY)
 
 
+# ==============================
+# MODALIDAD DE DESPLIEGUE
+# ==============================
+#
+# Donde corre RemoteAdmin para esta organizacion:
+#
+#   cloud        en la infraestructura del proveedor, compartida con
+#                otras empresas y aislada por organizacion
+#   self_hosted  en infraestructura del propio cliente
+#
+# Es una clasificacion administrativa. El software es el mismo y no se
+# bifurca: cambiarla no mueve datos, no toca equipos y no reconfigura
+# nada.
+
+DEPLOYMENT_CLOUD = "cloud"
+DEPLOYMENT_SELF_HOSTED = "self_hosted"
+
+DEPLOYMENT_TYPES = (DEPLOYMENT_CLOUD, DEPLOYMENT_SELF_HOSTED)
+
+
+# Longitud maxima de la direccion informativa del servidor
+MAX_SERVER_URL_LENGTH = 300
+
+
+def validate_server_url(valor):
+    """
+    Comprueba la direccion informativa del servidor.
+
+    Se exige http o https para que no pueda colarse un 'javascript:' ni
+    una ruta de archivo: este texto acaba en la interfaz y en las
+    instrucciones que se le dan a un cliente.
+
+    NO es un mecanismo de control: el servidor no la usa para decidir
+    nada, no redirige Agents y no toca su configuracion. Un Agent
+    apunta a donde diga su propio REMOTEADMIN_SERVER.
+
+    Devuelve la direccion limpia, o None si viene vacia.
+    """
+
+    if valor is None:
+        return None
+
+    if not isinstance(valor, str):
+        raise OrganizationError("La direccion del servidor no es valida")
+
+    direccion = valor.strip().rstrip("/")
+
+    if not direccion:
+        return None
+
+    if len(direccion) > MAX_SERVER_URL_LENGTH:
+        raise OrganizationError(
+            "La direccion del servidor es demasiado larga"
+        )
+
+    if not direccion.startswith(("http://", "https://")):
+        raise OrganizationError(
+            "La direccion del servidor debe empezar por http:// o https://"
+        )
+
+    return direccion
+
+
 # Nombre de la primera organizacion: la instalacion que ya existe.
 DEFAULT_ORGANIZATION_NAME = "Plastika"
 DEFAULT_ORGANIZATION_SLUG = "plastika"
+
+
+# Centinela para distinguir "no se indica" de "ponlo a NULL". Con None
+# a secas no se podria borrar una direccion ya guardada.
+_SIN_CAMBIO = object()
 
 
 class OrganizationError(ValueError):
@@ -180,6 +248,8 @@ def _fila_a_organizacion(fila):
         "active": bool(fila["active"]),
         "usable": is_usable(fila),
         "suspended_at": fila["suspended_at"],
+        "deployment_type": fila["deployment_type"] or DEPLOYMENT_CLOUD,
+        "server_url": fila["server_url"],
         "created_at": fila["created_at"],
         "updated_at": fila["updated_at"],
         "notes": fila["notes"]
@@ -332,7 +402,8 @@ def organization_usage(organization_id):
 # ==============================
 
 def create_organization(name, plan=PLAN_FREE, billing_mode=BILLING_STANDARD,
-                        subscription_status=STATUS_TRIAL, notes=None):
+                        subscription_status=STATUS_TRIAL, notes=None,
+                        deployment_type=DEPLOYMENT_CLOUD, server_url=None):
     """Crea una organizacion. Solo la plataforma deberia llamar aqui."""
 
     nombre = (name or "").strip()
@@ -351,6 +422,11 @@ def create_organization(name, plan=PLAN_FREE, billing_mode=BILLING_STANDARD,
     if billing_mode not in BILLING_MODES:
         raise OrganizationError("Modalidad de facturacion desconocida")
 
+    if deployment_type not in DEPLOYMENT_TYPES:
+        raise OrganizationError("Modalidad de despliegue desconocida")
+
+    direccion = validate_server_url(server_url)
+
     slug = slugify(nombre)
 
     if not SLUG_PATTERN.match(slug):
@@ -368,12 +444,13 @@ def create_organization(name, plan=PLAN_FREE, billing_mode=BILLING_STANDARD,
             """
             INSERT INTO organizations (
                 name, slug, plan, subscription_status, billing_mode,
-                active, created_at, updated_at, notes
+                active, created_at, updated_at, notes,
+                deployment_type, server_url
             )
-            VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
             """,
             (nombre, slug, plan, subscription_status, billing_mode,
-             ahora, ahora, notes)
+             ahora, ahora, notes, deployment_type, direccion)
         )
 
         connection.commit()
@@ -388,7 +465,8 @@ def create_organization(name, plan=PLAN_FREE, billing_mode=BILLING_STANDARD,
 
 
 def update_organization(organization_id, plan=None, subscription_status=None,
-                        billing_mode=None, active=None, notes=None):
+                        billing_mode=None, active=None, notes=None,
+                        deployment_type=None, server_url=_SIN_CAMBIO):
     """
     Cambia plan, estado o modalidad. Nunca toca los datos de la empresa.
 
@@ -411,6 +489,10 @@ def update_organization(organization_id, plan=None, subscription_status=None,
     if billing_mode is not None and billing_mode not in BILLING_MODES:
         raise OrganizationError("Modalidad de facturacion desconocida")
 
+    if deployment_type is not None \
+            and deployment_type not in DEPLOYMENT_TYPES:
+        raise OrganizationError("Modalidad de despliegue desconocida")
+
     campos = []
     valores = []
 
@@ -418,11 +500,18 @@ def update_organization(organization_id, plan=None, subscription_status=None,
         ("plan", plan),
         ("subscription_status", subscription_status),
         ("billing_mode", billing_mode),
-        ("notes", notes)
+        ("notes", notes),
+        ("deployment_type", deployment_type)
     ):
         if valor is not None:
             campos.append(f"{columna} = ?")
             valores.append(valor)
+
+    # server_url se trata aparte porque None es un valor legitimo
+    # (borrar la direccion), distinto de "no lo cambies".
+    if server_url is not _SIN_CAMBIO:
+        campos.append("server_url = ?")
+        valores.append(validate_server_url(server_url))
 
     if active is not None:
         campos.append("active = ?")

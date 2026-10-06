@@ -7583,6 +7583,14 @@ const ETIQUETA_DE_ESTADO = {
     cancelled: { texto: "Cancelada", clase: "bg-slate-200 text-slate-700" }
 };
 
+// Donde corre RemoteAdmin para cada organizacion. Es una
+// clasificacion administrativa: el software es el mismo en ambas.
+const ETIQUETA_DE_DESPLIEGUE = {
+    cloud: "Cloud",
+    self_hosted: "Self-hosted"
+};
+
+
 const ETIQUETA_DE_FACTURACION = {
     standard: "Estándar",
     courtesy: "Cortesía"
@@ -7725,6 +7733,29 @@ async function cargarOrganizaciones() {
 
             plan.appendChild(selectorPlan);
             fila.appendChild(plan);
+
+            // Despliegue, con su direccion informativa si la tiene.
+            // La direccion no cambia nada: el Agent apunta a donde diga
+            // su propia configuracion.
+            const despliegue = document.createElement("td");
+            despliegue.className = "px-4 py-3 text-slate-700";
+
+            despliegue.textContent =
+                ETIQUETA_DE_DESPLIEGUE[organizacion.deployment_type]
+                || organizacion.deployment_type
+                || "Cloud";
+
+            if (organizacion.server_url) {
+
+                const direccion = document.createElement("p");
+
+                direccion.className = "text-xs text-slate-500 mt-1";
+                direccion.textContent = organizacion.server_url;
+
+                despliegue.appendChild(direccion);
+            }
+
+            fila.appendChild(despliegue);
 
             fila.appendChild(celda(
                 ETIQUETA_DE_FACTURACION[organizacion.billing_mode]

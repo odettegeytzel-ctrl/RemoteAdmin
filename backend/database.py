@@ -141,6 +141,29 @@ def init_db():
         )
     """)
 
+    # Identidad de ESTA instalacion de RemoteAdmin.
+    #
+    # Una instalacion no es una organizacion: es el despliegue entero.
+    # En cloud hay una sola instalacion con muchas empresas dentro; en
+    # self-hosted habra una instalacion por cliente, cada una con su
+    # propia identidad.
+    #
+    # La clave primaria es 'singleton' con CHECK = 1: la base misma
+    # impide que existan dos filas, sin depender de que el codigo se
+    # acuerde de comprobarlo.
+    #
+    # Aqui NO van secretos: ni claves, ni tokens, ni licencias. Es
+    # informacion de identificacion, no de autorizacion.
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS installation (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            id TEXT NOT NULL UNIQUE,
+            mode TEXT NOT NULL DEFAULT 'cloud',
+            licensed_to TEXT,
+            created_at TEXT
+        )
+    """)
+
     # Organizaciones: la empresa cliente es la unidad de aislamiento.
     #
     # El plan dice QUE puede hacer, el estado de suscripcion dice SI
@@ -178,6 +201,36 @@ def init_db():
         connection.execute(
             "ALTER TABLE organizations ADD COLUMN suspended_at TEXT"
         )
+
+    # Modalidad de despliegue: 'cloud' o 'self_hosted'. Aditiva, y las
+    # filas existentes quedan como cloud, que es lo que son hoy.
+    #
+    # Es una CLASIFICACION administrativa. El software es el mismo en
+    # los dos modos: no hay dos versiones ni bifurcaciones de codigo.
+    if "deployment_type" not in columnas_orgs:
+        connection.execute(
+            "ALTER TABLE organizations ADD COLUMN deployment_type TEXT "
+            "NOT NULL DEFAULT 'cloud'"
+        )
+
+    # Direccion publica del servidor que atiende a esta organizacion.
+    #
+    # Es INFORMACION, no un mecanismo de control: sirve para poder
+    # decirle a un cliente a donde apuntar su Agent. El servidor no la
+    # usa para decidir nada, no redirige Agents y no toca su
+    # configuracion. Un Agent apunta a donde diga su REMOTEADMIN_SERVER
+    # y a ningun otro sitio.
+    #
+    # NULL mientras no se sepa. No se inventa ninguna URL.
+    if "server_url" not in columnas_orgs:
+        connection.execute(
+            "ALTER TABLE organizations ADD COLUMN server_url TEXT"
+        )
+
+    connection.execute("""
+        CREATE INDEX IF NOT EXISTS idx_organizations_deployment
+        ON organizations (deployment_type)
+    """)
 
     # Credenciales de alta de Agents, una o varias por organizacion.
     #

@@ -109,6 +109,7 @@ from backend.audit import (
     STATUS_SUCCESS,
     STATUS_ERROR
 )
+from backend import installation
 from backend import organizations
 from backend import enrollment
 from backend.users import (
@@ -525,6 +526,10 @@ def startup():
     # tablas. Si la configuracion es invalida, el arranque falla igual un
     # momento despues; crear tablas vacias no cambia nada.
     init_db()
+    # Identidad de esta instalacion. Se crea una sola vez y su
+    # identificador sobrevive a los reinicios; no se crea ninguna
+    # organizacion por el hecho de existir.
+    installation.ensure_installation()
     # La cuenta unica anterior pasa a ser el owner. Idempotente: si ya hay
     # usuarios, no hace nada.
     ensure_owner_migrated()
@@ -3909,6 +3914,32 @@ def require_platform_owner(request):
     return usuario, None
 
 
+@app.get("/api/installation")
+def installation_info(request: Request):
+    """
+    Identidad de esta instalacion de RemoteAdmin.
+
+    Reservado al operador de la plataforma, por coherencia con el resto
+    de informacion global: la lista de organizaciones y la auditoria
+    completa ya siguen esa regla. Una empresa cliente no tiene por que
+    saber nada del despliegue que la aloja, y menos aun en cloud, donde
+    comparte instalacion con otras.
+
+    Lo que devuelve es identificacion, no autorizacion: no hay claves,
+    tokens ni credenciales que exponer, porque la tabla no los guarda.
+    """
+
+    _, error = require_platform_owner(request)
+
+    if error:
+        return error
+
+    return {
+        "status": "ok",
+        "installation": installation.ensure_installation()
+    }
+
+
 @app.get("/api/organizations")
 def organizations_list(request: Request):
     """Todas las organizaciones, con su plan, estado y uso."""
@@ -3933,7 +3964,8 @@ def organizations_list(request: Request):
             for nombre, datos in organizations.PLANS.items()
         ],
         "subscription_statuses": list(organizations.SUBSCRIPTION_STATUSES),
-        "billing_modes": list(organizations.BILLING_MODES)
+        "billing_modes": list(organizations.BILLING_MODES),
+        "deployment_types": list(organizations.DEPLOYMENT_TYPES)
     }
 
 
@@ -3961,7 +3993,11 @@ def organizations_create(data: dict, request: Request):
             subscription_status=data.get(
                 "subscription_status", organizations.STATUS_TRIAL
             ),
-            notes=data.get("notes")
+            notes=data.get("notes"),
+            deployment_type=data.get(
+                "deployment_type", organizations.DEPLOYMENT_CLOUD
+            ),
+            server_url=data.get("server_url")
         )
 
     except organizations.OrganizationError as problema:
@@ -3981,6 +4017,7 @@ def organizations_create(data: dict, request: Request):
         organization_id=None,
         details={"organization": organizacion["name"],
                  "plan": organizacion["plan"],
+                 "deployment_type": organizacion["deployment_type"],
                  "scope": "platform"}
     )
 
@@ -4003,13 +4040,22 @@ def organizations_update(organization_id: int, data: dict,
         return error
 
     try:
+        # server_url se pasa solo si viene en la peticion: asi se
+        # distingue "no lo cambies" de "dejalo vacio".
+        cambios = {}
+
+        if "server_url" in data:
+            cambios["server_url"] = data.get("server_url")
+
         organizacion = organizations.update_organization(
             organization_id,
             plan=data.get("plan"),
             subscription_status=data.get("subscription_status"),
             billing_mode=data.get("billing_mode"),
             active=data.get("active"),
-            notes=data.get("notes")
+            notes=data.get("notes"),
+            deployment_type=data.get("deployment_type"),
+            **cambios
         )
 
     except organizations.OrganizationError as problema:
@@ -4029,6 +4075,7 @@ def organizations_update(organization_id: int, data: dict,
                  "plan": organizacion["plan"],
                  "subscription_status":
                      organizacion["subscription_status"],
+                 "deployment_type": organizacion["deployment_type"],
                  "active": organizacion["active"],
                  "scope": "platform"}
     )
@@ -4295,6 +4342,10 @@ def users_me(request: Request):
                 "billing_mode": organizacion["billing_mode"],
                 "usable": organizacion["usable"],
                 "suspended_at": organizacion["suspended_at"],
+                # Solo lo de SU organizacion: nada de la instalacion ni
+                # de las demas empresas.
+                "deployment_type": organizacion["deployment_type"],
+                "server_url": organizacion["server_url"],
                 # Solo cuando hace falta: si la organizacion opera con
                 # normalidad no hay nada que explicar.
                 "access_message": (
