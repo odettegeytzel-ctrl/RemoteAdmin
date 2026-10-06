@@ -179,10 +179,45 @@ def _fila_a_organizacion(fila):
         "billing_mode": fila["billing_mode"],
         "active": bool(fila["active"]),
         "usable": is_usable(fila),
+        "suspended_at": fila["suspended_at"],
         "created_at": fila["created_at"],
         "updated_at": fila["updated_at"],
         "notes": fila["notes"]
     }
+
+
+# Texto que se le ensena a quien pertenece a una organizacion que no
+# puede operar. Describe el estado, no inventa condiciones comerciales.
+MENSAJES_SIN_ACCESO = {
+    STATUS_SUSPENDED: (
+        "Esta organizacion esta suspendida. Sus datos, equipos y "
+        "grabaciones se conservan intactos. Ponte en contacto con el "
+        "administrador de RemoteAdmin para restablecer el acceso."
+    ),
+    STATUS_CANCELLED: (
+        "Esta organizacion esta cancelada. Sus datos, equipos y "
+        "grabaciones se conservan. Ponte en contacto con el "
+        "administrador de RemoteAdmin si necesitas recuperarla."
+    )
+}
+
+MENSAJE_SIN_ACCESO_GENERICO = (
+    "Esta organizacion no tiene acceso en este momento. Ponte en "
+    "contacto con el administrador de RemoteAdmin."
+)
+
+
+def access_message(organizacion):
+    """Explicacion de por que una organizacion no puede operar."""
+
+    if organizacion is None:
+        return MENSAJE_SIN_ACCESO_GENERICO
+
+    estado = organizacion.get("subscription_status") \
+        if isinstance(organizacion, dict) \
+        else organizacion["subscription_status"]
+
+    return MENSAJES_SIN_ACCESO.get(estado, MENSAJE_SIN_ACCESO_GENERICO)
 
 
 def is_usable(fila):
@@ -395,6 +430,30 @@ def update_organization(organization_id, plan=None, subscription_status=None,
 
     if not campos:
         return organizacion
+
+    # Se anota cuando deja de poder operar y se limpia cuando vuelve.
+    # Se calcula sobre el estado RESULTANTE, no sobre el que llega: si
+    # la llamada solo cambia el plan, el momento de suspension no debe
+    # moverse.
+    resultante_estado = (
+        subscription_status if subscription_status is not None
+        else organizacion["subscription_status"]
+    )
+
+    resultante_activa = (
+        bool(active) if active is not None else organizacion["active"]
+    )
+
+    podra_operar = (
+        resultante_activa and resultante_estado in USABLE_STATUSES
+    )
+
+    if podra_operar:
+        campos.append("suspended_at = NULL")
+
+    elif organizacion["suspended_at"] is None:
+        campos.append("suspended_at = ?")
+        valores.append(_ahora())
 
     campos.append("updated_at = ?")
     valores.append(_ahora())

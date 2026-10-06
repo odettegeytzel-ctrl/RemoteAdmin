@@ -202,6 +202,14 @@ async def require_authentication(request: Request, call_next):
                 }
             )
 
+        # Suspension: una organizacion que no puede operar pierde el
+        # panel entero, no endpoint por endpoint. Se comprueba antes
+        # que el aislamiento porque es una condicion mas general.
+        sin_acceso = _suspension_bloquea(request, path)
+
+        if sin_acceso is not None:
+            return sin_acceso
+
         # Aislamiento: si la ruta apunta a un equipo o a una grabacion,
         # tiene que ser de la organizacion de quien pide. Aqui, una sola
         # vez, para todas las rutas presentes y futuras.
@@ -217,6 +225,72 @@ async def require_authentication(request: Request, call_next):
 # propio Agent con su token individual, que ya ata la peticion a su
 # equipo. Comprobar aqui la organizacion no aportaria nada.
 RUTAS_DE_AGENT = ("/recordings/upload",)
+
+
+# Lo unico que sigue disponible cuando una organizacion no puede operar.
+#
+# Son las rutas que permiten ENTENDER la situacion y salir de ella: el
+# panel necesita saber quien eres y en que estado esta tu empresa para
+# poder ensenar el aviso, y nadie debe quedarse sin poder cerrar sesion.
+# Todo lo demas se bloquea.
+#
+# El resto de rutas de sesion (login, logout, me) ni siquiera llegan
+# aqui: estan en OPEN_API_PATHS y no pasan por esta comprobacion.
+RUTAS_PERMITIDAS_SIN_ACCESO = (
+    "/api/users/me",
+)
+
+
+def _suspension_bloquea(request, path):
+    """
+    Devuelve una respuesta de rechazo si la organizacion no puede operar.
+
+    La suspension es una politica de acceso al PANEL, no una orden para
+    apagar la infraestructura del cliente. Por eso vive aqui, en el
+    camino de la sesion: los Agents entran por otro sitio —token
+    individual, WebSocket, subida de grabaciones— y siguen funcionando
+    con normalidad. Castigar al cliente dejando sus equipos sin vigilar
+    por un asunto administrativo seria desproporcionado.
+
+    Nada se borra. Al reactivar, el acceso vuelve tal cual estaba.
+
+    El operador de la plataforma no se ve afectado: es quien tiene que
+    poder mirar y reactivar una organizacion suspendida.
+    """
+
+    if path in RUTAS_PERMITIDAS_SIN_ACCESO:
+        return None
+
+    usuario = current_user(request)
+
+    if usuario is None:
+        return None
+
+    if is_platform_owner(usuario):
+        return None
+
+    organizacion_id = organization_of(usuario)
+
+    if organizacion_id is None:
+        return None
+
+    organizacion = organizations.get_organization(organizacion_id)
+
+    if organizacion is None or organizacion["usable"]:
+        return None
+
+    return JSONResponse(
+        status_code=403,
+        content={
+            "status": "error",
+            # Marca estable para que el panel distinga esto de un
+            # "no tienes permiso" corriente y pueda ensenar su aviso.
+            "code": "organization_suspended",
+            "organization_status": organizacion["subscription_status"],
+            "suspended_at": organizacion["suspended_at"],
+            "message": organizations.access_message(organizacion)
+        }
+    )
 
 
 def _organizacion_bloquea(request, path):
@@ -4219,7 +4293,14 @@ def users_me(request: Request):
                 "plan_label": organizacion["plan_label"],
                 "subscription_status": organizacion["subscription_status"],
                 "billing_mode": organizacion["billing_mode"],
-                "usable": organizacion["usable"]
+                "usable": organizacion["usable"],
+                "suspended_at": organizacion["suspended_at"],
+                # Solo cuando hace falta: si la organizacion opera con
+                # normalidad no hay nada que explicar.
+                "access_message": (
+                    None if organizacion["usable"]
+                    else organizations.access_message(organizacion)
+                )
             }
             if organizacion else None
         ),

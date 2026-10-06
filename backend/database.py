@@ -164,6 +164,21 @@ def init_db():
         )
     """)
 
+    # Momento en que la organizacion dejo de poder operar. Aditiva.
+    #
+    # Es informativo: quien decide el acceso es subscription_status.
+    # Sirve para poder decir "suspendida desde el 6 de octubre" en vez
+    # de solo "suspendida", y para que quede rastro de cuando ocurrio.
+    columnas_orgs = {
+        column["name"]
+        for column in connection.execute("PRAGMA table_info(organizations)")
+    }
+
+    if "suspended_at" not in columnas_orgs:
+        connection.execute(
+            "ALTER TABLE organizations ADD COLUMN suspended_at TEXT"
+        )
+
     # Credenciales de alta de Agents, una o varias por organizacion.
     #
     # Sustituyen al AGENT_TOKEN compartido para decidir a que empresa

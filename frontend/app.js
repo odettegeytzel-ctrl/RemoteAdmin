@@ -3872,6 +3872,48 @@ function etiquetaDeRol(rol) {
 }
 
 
+function mostrarAvisoDeSuspension(organizacion) {
+
+    const aviso = document.getElementById("suspension-banner");
+
+    if (!aviso) {
+        return;
+    }
+
+    // usable lo calcula el servidor a partir del estado de suscripcion
+    const sinAcceso = Boolean(organizacion) && organizacion.usable === false;
+
+    aviso.classList.toggle("hidden", !sinAcceso);
+
+    if (!sinAcceso) {
+        return;
+    }
+
+    const mensaje = document.getElementById("suspension-message");
+
+    if (mensaje) {
+        mensaje.textContent =
+            organizacion.access_message
+            || "Esta organización no tiene acceso en este momento.";
+    }
+
+    const desde = document.getElementById("suspension-since");
+
+    if (desde) {
+
+        if (organizacion.suspended_at) {
+            desde.textContent =
+                "Sin acceso desde el "
+                + new Date(organizacion.suspended_at).toLocaleString();
+            desde.classList.remove("hidden");
+
+        } else {
+            desde.classList.add("hidden");
+        }
+    }
+}
+
+
 function puede(permiso) {
 
     return sesionActual.is_owner
@@ -3918,6 +3960,11 @@ async function cargarSesionActual() {
         if (correo) {
             correo.value = sesionActual.email || "";
         }
+
+        // Organizacion sin acceso: se avisa con lo que diga el servidor.
+        // El panel no decide nada; si intentara operar igualmente, cada
+        // peticion seria rechazada de todos modos.
+        mostrarAvisoDeSuspension(sesionActual.organization);
 
         const seccion = document.getElementById("users-section");
 
