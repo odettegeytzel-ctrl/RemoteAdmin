@@ -314,6 +314,20 @@
 
 
                 <button
+                    id="nav-install"
+                    data-view="install"
+                    class="nav-button w-full flex items-center gap-3 px-3 py-3 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition text-sm mt-1"
+                >
+                    <span>⬇</span>
+
+                    <span>
+                        Instalar equipo
+                    </span>
+
+                </button>
+
+
+                <button
                     id="nav-settings"
                     data-view="settings"
                     class="nav-button w-full flex items-center gap-3 px-3 py-3 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition text-sm"
@@ -2064,6 +2078,154 @@
                             id="recording-player-error"
                             class="hidden text-sm text-red-600 mt-3"
                         ></p>
+
+                    </div>
+
+                </section>
+
+
+                <section
+                    id="install-section"
+                    class="hidden bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden max-w-3xl"
+                >
+
+                    <div class="px-6 py-5 border-b border-slate-200">
+
+                        <h3 class="text-lg font-semibold">
+                            Conecta un nuevo equipo
+                        </h3>
+
+                        <p class="text-sm text-slate-500 mt-1">
+                            Descarga el instalador de RemoteAdmin para
+                            Windows y ejecútalo en el equipo que deseas
+                            administrar.
+                        </p>
+
+                    </div>
+
+
+                    <div class="p-6 flex flex-col gap-6">
+
+                        <ol class="text-sm text-slate-600 space-y-2 list-decimal list-inside">
+
+                            <li>
+                                Descarga el instalador y cópialo al equipo.
+                            </li>
+
+                            <li>
+                                Descomprímelo y ejecuta
+                                <code class="px-1 py-0.5 bg-slate-100 rounded text-xs">installer\install-agent.ps1</code>
+                                en PowerShell como administrador.
+                            </li>
+
+                            <li>
+                                Pega la credencial de instalación cuando
+                                te la pida.
+                            </li>
+
+                            <li>
+                                Espera a que el equipo aparezca en
+                                Dispositivos.
+                            </li>
+
+                        </ol>
+
+
+                        <div>
+
+                            <button
+                                id="install-download"
+                                class="px-4 py-2.5 bg-slate-900 text-white rounded-lg text-sm font-medium hover:bg-slate-800 transition"
+                            >
+                                Descargar Agent para Windows
+                            </button>
+
+                            <p id="install-download-status" class="hidden text-sm mt-2"></p>
+
+                        </div>
+
+
+                        <div class="border-t border-slate-200 pt-6">
+
+                            <h4 class="text-sm font-semibold text-slate-800">
+                                Credencial de instalación
+                            </h4>
+
+                            <p class="text-sm text-slate-500 mt-1">
+                                Autoriza el alta de un equipo en tu
+                                organización. Se muestra una sola vez: el
+                                servidor guarda únicamente su huella y no
+                                puede volver a enseñarla. En cuanto el
+                                equipo aparezca, puedes revocarla.
+                            </p>
+
+                            <div class="flex flex-wrap gap-3 mt-4">
+
+                                <input
+                                    id="install-label"
+                                    type="text"
+                                    maxlength="60"
+                                    placeholder="Etiqueta (ej. PC recepción)"
+                                    class="flex-1 min-w-[12rem] px-3 py-2 border border-slate-300 rounded-lg text-sm"
+                                />
+
+                                <select
+                                    id="install-expires"
+                                    class="px-3 py-2 border border-slate-300 rounded-lg text-sm"
+                                >
+                                    <option value="1">Caduca en 1 día</option>
+                                    <option value="7">Caduca en 7 días</option>
+                                    <option value="30">Caduca en 30 días</option>
+                                </select>
+
+                                <button
+                                    id="install-create-token"
+                                    class="px-4 py-2 border border-slate-300 rounded-lg text-sm font-medium hover:bg-slate-50 transition"
+                                >
+                                    Crear credencial
+                                </button>
+
+                            </div>
+
+                            <div id="install-token-box" class="hidden mt-4 p-4 bg-amber-50 border border-amber-200 rounded-lg">
+
+                                <p class="text-xs font-medium text-amber-900">
+                                    Cópiala ahora. No se puede volver a
+                                    consultar.
+                                </p>
+
+                                <div class="flex gap-2 mt-2">
+
+                                    <code
+                                        id="install-token-value"
+                                        class="flex-1 px-3 py-2 bg-white border border-amber-200 rounded text-xs break-all"
+                                    ></code>
+
+                                    <button
+                                        id="install-copy-token"
+                                        class="px-3 py-2 bg-amber-600 text-white rounded text-xs font-medium hover:bg-amber-700 transition whitespace-nowrap"
+                                    >
+                                        Copiar
+                                    </button>
+
+                                </div>
+
+                            </div>
+
+                            <p id="install-token-status" class="hidden text-sm mt-2"></p>
+
+
+                            <div class="mt-5">
+
+                                <p class="text-xs font-medium text-slate-500 uppercase tracking-wide">
+                                    Credenciales activas
+                                </p>
+
+                                <div id="install-token-list" class="mt-2 text-sm text-slate-600"></div>
+
+                            </div>
+
+                        </div>
 
                     </div>
 

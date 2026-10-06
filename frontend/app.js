@@ -6640,6 +6640,11 @@ const recordings =
         "recordings-section"
     );
 
+const install =
+    document.getElementById(
+        "install-section"
+    );
+
 const dashboardPanels =
     document.getElementById("dashboard-panels");
 
@@ -6648,6 +6653,10 @@ devices.classList.add("hidden");
 alerts.classList.add("hidden");
 settings.classList.add("hidden");
 recordings.classList.add("hidden");
+
+if (install) {
+    install.classList.add("hidden");
+}
 
 if (dashboardPanels) {
     dashboardPanels.classList.add("hidden");
@@ -6688,6 +6697,13 @@ if (view === "dashboard") {
     );
 
     loadRecordings();
+
+} else if (view === "install") {
+
+    if (install) {
+        install.classList.remove("hidden");
+        cargarCredencialesDeInstalacion();
+    }
 
 } else if (view === "settings") {
 
@@ -8890,3 +8906,276 @@ initVisibilityRefresh();
 }
 
 initAuth();
+
+
+// ==============================
+// INSTALAR UN EQUIPO
+// ==============================
+//
+// Dos cosas separadas a proposito:
+//
+//   el PAQUETE, que no lleva ningun secreto y se puede descargar las
+//   veces que haga falta;
+//
+//   la CREDENCIAL de alta, que se ve una sola vez y se teclea en el
+//   equipo en el momento de instalar.
+//
+// Juntarlas -meter la credencial dentro del ZIP- seria mas comodo y
+// bastante peor: un archivo descargado se reenvia por correo y se
+// queda para siempre en la carpeta de Descargas.
+
+function mensajeDeInstalacion(elemento, texto, error) {
+
+    if (!elemento) {
+        return;
+    }
+
+    elemento.textContent = texto;
+
+    elemento.className =
+        "text-sm mt-2 " + (error ? "text-red-600" : "text-slate-600");
+
+    elemento.classList.remove("hidden");
+}
+
+
+async function descargarInstalador() {
+
+    const boton =
+        document.getElementById("install-download");
+
+    const estado =
+        document.getElementById("install-download-status");
+
+    boton.disabled = true;
+    boton.textContent = "Preparando...";
+
+    try {
+
+        const respuesta =
+            await fetch("/api/agent-package");
+
+        if (!respuesta.ok) {
+
+            // El servidor explica el motivo (por ejemplo, que falta
+            // configurar su direccion publica)
+            let motivo = "No se pudo generar el instalador.";
+
+            try {
+                const datos = await respuesta.json();
+                motivo = datos.message || motivo;
+            } catch (error) {
+                // Respuesta sin JSON: se deja el mensaje generico
+            }
+
+            mensajeDeInstalacion(estado, motivo, true);
+            return;
+        }
+
+        const contenido = await respuesta.blob();
+
+        // El nombre lo fija el servidor; aqui solo se repite para que
+        // el navegador no invente uno a partir de la URL.
+        const enlace = document.createElement("a");
+
+        enlace.href = URL.createObjectURL(contenido);
+        enlace.download = "RemoteAdmin-Agent-Windows.zip";
+
+        document.body.appendChild(enlace);
+        enlace.click();
+        document.body.removeChild(enlace);
+
+        URL.revokeObjectURL(enlace.href);
+
+        mensajeDeInstalacion(
+            estado,
+            "Instalador descargado. Copialo al equipo que quieres administrar.",
+            false
+        );
+
+    } catch (error) {
+
+        mensajeDeInstalacion(
+            estado,
+            "No se pudo contactar con el servidor.",
+            true
+        );
+
+    } finally {
+
+        boton.disabled = false;
+        boton.textContent = "Descargar Agent para Windows";
+    }
+}
+
+
+async function crearCredencialDeInstalacion() {
+
+    const etiqueta =
+        document.getElementById("install-label");
+
+    const caducidad =
+        document.getElementById("install-expires");
+
+    const estado =
+        document.getElementById("install-token-status");
+
+    const caja =
+        document.getElementById("install-token-box");
+
+    const valor =
+        document.getElementById("install-token-value");
+
+    estado.classList.add("hidden");
+
+    try {
+
+        const respuesta = await fetch("/api/enrollment-tokens", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                label: etiqueta.value.trim() || null,
+                expires_in_days: Number(caducidad.value)
+            })
+        });
+
+        const datos = await respuesta.json();
+
+        if (!respuesta.ok) {
+
+            mensajeDeInstalacion(
+                estado,
+                datos.message || "No se pudo crear la credencial.",
+                true
+            );
+
+            return;
+        }
+
+        // Unica vez que el valor existe en el navegador. No se guarda
+        // en ningun sitio: ni localStorage, ni variable global.
+        valor.textContent = datos.value;
+        caja.classList.remove("hidden");
+
+        etiqueta.value = "";
+
+        cargarCredencialesDeInstalacion();
+
+    } catch (error) {
+
+        mensajeDeInstalacion(
+            estado,
+            "No se pudo contactar con el servidor.",
+            true
+        );
+    }
+}
+
+
+async function copiarCredencialDeInstalacion() {
+
+    const valor =
+        document.getElementById("install-token-value");
+
+    const boton =
+        document.getElementById("install-copy-token");
+
+    try {
+
+        await navigator.clipboard.writeText(valor.textContent);
+
+        boton.textContent = "Copiada";
+
+        setTimeout(() => {
+            boton.textContent = "Copiar";
+        }, 2000);
+
+    } catch (error) {
+
+        // Sin permiso de portapapeles queda la opcion de seleccionar
+        // el texto a mano, que sigue estando a la vista.
+        boton.textContent = "Copiala a mano";
+    }
+}
+
+
+async function cargarCredencialesDeInstalacion() {
+
+    const lista =
+        document.getElementById("install-token-list");
+
+    if (!lista) {
+        return;
+    }
+
+    try {
+
+        const respuesta =
+            await fetch("/api/enrollment-tokens");
+
+        if (!respuesta.ok) {
+            lista.textContent = "No se pudieron consultar.";
+            return;
+        }
+
+        const datos = await respuesta.json();
+
+        const activas =
+            (datos.tokens || []).filter(t => t.active && !t.expired);
+
+        if (!activas.length) {
+            lista.textContent =
+                "Ninguna. Crea una para dar de alta un equipo.";
+            return;
+        }
+
+        // Solo etiqueta y uso. El valor no esta aqui: el servidor
+        // guarda unicamente su huella y no puede devolverlo.
+        //
+        // Se construye con textContent y no con innerHTML: la
+        // etiqueta la escribe una persona y podria traer < o >.
+        lista.replaceChildren();
+
+        activas.forEach(credencial => {
+
+            const fila = document.createElement("div");
+
+            fila.className =
+                "flex items-center justify-between py-1.5 "
+                + "border-b border-slate-100";
+
+            const nombre = document.createElement("span");
+
+            nombre.textContent =
+                credencial.label || "Sin etiqueta";
+
+            const usos = document.createElement("span");
+
+            usos.className = "text-xs text-slate-400";
+
+            usos.textContent =
+                (credencial.uses || 0) + " uso(s)";
+
+            fila.appendChild(nombre);
+            fila.appendChild(usos);
+
+            lista.appendChild(fila);
+        });
+
+    } catch (error) {
+        lista.textContent = "No se pudieron consultar.";
+    }
+}
+
+
+document
+    .getElementById("install-download")
+    ?.addEventListener("click", descargarInstalador);
+
+document
+    .getElementById("install-create-token")
+    ?.addEventListener("click", crearCredencialDeInstalacion);
+
+document
+    .getElementById("install-copy-token")
+    ?.addEventListener("click", copiarCredencialDeInstalacion);

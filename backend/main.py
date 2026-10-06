@@ -5,7 +5,12 @@ import uuid
 
 from fastapi import FastAPI, Header, Request, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    JSONResponse,
+    Response,
+    StreamingResponse
+)
 
 from backend.database import init_db, get_connection
 from backend.models import DeviceRegister, DeviceHeartbeat
@@ -110,6 +115,7 @@ from backend.audit import (
     STATUS_ERROR
 )
 from backend import installation
+from backend import packaging
 from backend import organizations
 from backend import enrollment
 from backend.users import (
@@ -4136,6 +4142,60 @@ def _organizacion_de_credenciales(request, organization_id=None):
         )
 
     return propia, None
+
+
+@app.get("/api/agent-package")
+def agent_package(request: Request, organization_id: int = None):
+    """
+    Descarga del instalador del Agent para Windows.
+
+    La organizacion sale SIEMPRE de la sesion. El organization_id del
+    parametro solo lo puede usar el operador de plataforma, que no
+    tiene organizacion propia; para un Owner se ignora por completo,
+    asi que pedir el paquete de otra empresa no lleva a ninguna parte.
+
+    Lo que se entrega es un ZIP armado en memoria desde una lista fija
+    de archivos (ver backend/packaging.py). No contiene credenciales:
+    solo el Agent, sus dependencias, el instalador y la direccion del
+    servidor.
+    """
+
+    organizacion, error = _organizacion_de_credenciales(
+        request, organization_id
+    )
+
+    if error:
+        return error
+
+    try:
+        contenido = packaging.build_agent_package(organizacion)
+
+    except packaging.PackagingError as problema:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "error", "message": str(problema)}
+        )
+
+    # Solo se anota QUE se descargo y por quien. El paquete no lleva
+    # secretos, pero la descarga es el principio de un alta y conviene
+    # que quede rastro.
+    log_audit(
+        "agent_package.download", request=request,
+        status=STATUS_SUCCESS,
+        organization_id=organizacion,
+        details={"bytes": len(contenido)}
+    )
+
+    # El nombre es una constante del servidor: nunca se construye con
+    # el nombre de la organizacion ni con nada que venga del usuario.
+    return Response(
+        content=contenido,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition":
+                f'attachment; filename="{packaging.PACKAGE_FILENAME}"'
+        }
+    )
 
 
 @app.get("/api/enrollment-tokens")
