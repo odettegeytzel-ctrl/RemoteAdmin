@@ -33,3 +33,19 @@ WMI==1.5.1; sys_platform == "win32"
 # el sistema. No existe fuera de Windows: es la dependencia que impedia
 # instalar el requirements unico en Ubuntu.
 pywin32==312; sys_platform == "win32"
+
+# Comprobacion de la firma de las actualizaciones (Ed25519).
+#
+# La necesita el Agent para VERIFICAR, nunca para firmar: sin ella no
+# podria comprobar que una actualizacion viene de quien dice venir, y
+# una actualizacion es ejecutar codigo nuevo en el equipo.
+#
+# El SERVIDOR no la necesita: solo guarda y entrega la release ya
+# firmada, y backend/agent_releases.py no importa nada de
+# criptografia. Por eso no esta en requirements-base.txt, que es
+# comun a los dos: ahi obligaria al servidor a compilar una
+# dependencia que no usa.
+#
+# El equipo de quien PUBLICA tambien la necesita, para
+# tools/sign_agent_release.py.
+cryptography==46.0.3

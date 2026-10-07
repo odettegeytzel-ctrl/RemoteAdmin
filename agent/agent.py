@@ -324,6 +324,9 @@ from paths import (
 
 import commands
 import ipc
+import release
+import updater
+import version as versionado
 import storage
 import inventory
 
@@ -1172,6 +1175,98 @@ def _atender_al_ayudante():
 
             print(f"[ipc] Error inesperado: {error}")
             time.sleep(1)
+
+
+# ==============================
+# ACTUALIZACION AUTOMATICA
+# ==============================
+#
+# Solo el SERVICIO actualiza. El ayudante corre en la sesion del
+# usuario y no debe poder cambiar el programa que corre como SYSTEM.
+
+# Carpeta donde esta instalado el Agent: la superior a agent\.
+INSTALL_DIR = os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__))
+)
+
+
+def reiniciar_el_servicio():
+    """
+    Pide a Windows que reinicie la tarea del servicio.
+
+    Se usa la tarea programada y no un re-exec del proceso: la tarea
+    ya sabe arrancarlo bien (sin ventana, como SYSTEM, en su carpeta),
+    y si el reinicio fallara a medias, su propia politica de reinicio
+    lo levanta igualmente.
+    """
+
+    import subprocess
+
+    # Lista de argumentos, nunca una cadena para el interprete de
+    # ordenes: aqui no se construye ningun comando con texto de fuera.
+    subprocess.run(
+        ["schtasks", "/End", "/TN", "RemoteAdminAgent"],
+        capture_output=True, timeout=30
+    )
+
+    subprocess.run(
+        ["schtasks", "/Run", "/TN", "RemoteAdminAgent"],
+        capture_output=True, timeout=30
+    )
+
+
+def _bucle_de_actualizacion():
+    """
+    Comprueba cada tanto si hay version nueva.
+
+    Respeta el mismo criterio de espera que el resto del Agent: si el
+    servidor no esta, no se insiste en balde. Un fallo aqui nunca
+    interrumpe el latido ni el WebSocket, que corren por su cuenta.
+    """
+
+    # Un primer margen para no competir con el alta y la conexion
+    # inicial, que es lo que de verdad importa al arrancar.
+    time.sleep(60)
+
+    intentos = 0
+
+    while True:
+
+        try:
+
+            token = get_agent_device_token()
+
+            if not token:
+                # Todavia sin identidad: no hay nada que actualizar
+                time.sleep(updater.CHECK_INTERVAL_SECONDS)
+                continue
+
+            resultado = updater.check_and_update(
+                SERVER_URL,
+                {"X-Agent-Token": token},
+                REQUESTS_VERIFY,
+                INSTALL_DIR,
+                instalada=versionado.AGENT_VERSION,
+                registrar=print,
+                reiniciar=reiniciar_el_servicio
+            )
+
+            intentos = 0
+
+            if resultado:
+                # Se actualizo y se pidio el reinicio: este proceso
+                # esta a punto de terminar.
+                return
+
+            time.sleep(updater.CHECK_INTERVAL_SECONDS)
+
+        except Exception as error:
+
+            intentos += 1
+
+            print(f"[update] Error en la comprobacion: {error}")
+
+            time.sleep(siguiente_espera(intentos))
 
 
 def reenviar_al_ayudante(mensaje):
@@ -2835,6 +2930,7 @@ async def main():
         "RemoteAdmin Agent"
     )
 
+    print(f"Version: {versionado.AGENT_VERSION}")
     print(f"Papel: {AGENT_ROLE}")
 
     if destino:
@@ -2871,6 +2967,13 @@ async def main():
         threading.Thread(
             target=_atender_al_ayudante,
             name="InteractiveHelperChannel",
+            daemon=True
+        ).start()
+
+        # La actualizacion tambien es cosa del servicio
+        threading.Thread(
+            target=_bucle_de_actualizacion,
+            name="AgentUpdate",
             daemon=True
         ).start()
 

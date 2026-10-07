@@ -703,18 +703,42 @@ def test_varias_sesiones_no_crean_varios_equipos():
 
 def test_el_token_no_pasa_por_el_canal_local():
 
-    bloque = AGENTE.split("def _atender_al_ayudante", 1)[1].split(
-        chr(10) + "def reenviar", 1
+    # Las DOS funciones del canal, cada una acotada a si misma. No se
+    # toma el trozo entre ambas porque entre medias vive el hilo de
+    # actualizacion, que si usa el token: para hablar con el
+    # SERVIDOR, no con el ayudante.
+    atiende = AGENTE.split("def _atender_al_ayudante", 1)[1].split(
+        chr(10) + "def ", 1
     )[0]
 
-    comprobar("El servicio no manda el token al ayudante",
-              "agent_token" not in bloque and "token" not in bloque)
+    reenvia = AGENTE.split("def reenviar_al_ayudante", 1)[1].split(
+        chr(10) + "def ", 1
+    )[0]
+
+    comprobar("Recibir del ayudante no toca ningun token",
+              "token" not in atiende.lower(), atiende[:200])
+
+    # Lo que de verdad importa: QUE viaja por el canal.
+    comprobar("Hacia el ayudante solo va la orden",
+              '_canal_ayudante.enviar({"command": mensaje})' in reenvia)
+
+    comprobar("Y nada mas se le envia",
+              reenvia.count(".enviar(") == 1, str(reenvia.count(".enviar(")))
 
     comprobar("Solo acepta del ayudante lo que va al WebSocket",
-              'mensaje.get("ws")' in bloque)
+              'mensaje.get("ws")' in atiende)
 
     comprobar("Y comprueba que sea texto antes de usarlo",
-              "isinstance(carga, str)" in bloque)
+              "isinstance(carga, str)" in atiende)
+
+    # El token SI se usa, pero contra el servidor y desde otro hilo
+    actualiza = AGENTE.split("def _bucle_de_actualizacion", 1)[1].split(
+        chr(10) + "def ", 1
+    )[0]
+
+    comprobar("El token solo se usa para hablar con el servidor",
+              "get_agent_device_token()" in actualiza
+              and "_canal_ayudante" not in actualiza)
 
 
 # ==============================

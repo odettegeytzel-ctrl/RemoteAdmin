@@ -20,3 +20,11 @@ server_recordings/
 *.cer
 *.pfx
 *.p12
+
+# Paquetes firmados del Agent. Son artefactos de publicacion: se
+# generan con tools/sign_agent_release.py y se copian al servidor,
+# no se versionan.
+releases/
+
+# Clave privada de firma de las actualizaciones. Nunca en el repositorio.
+agent-signing.pem

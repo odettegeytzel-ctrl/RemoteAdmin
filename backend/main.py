@@ -115,6 +115,7 @@ from backend.audit import (
     STATUS_ERROR
 )
 from backend import installation
+from backend import agent_releases
 from backend import packaging
 from backend import organizations
 from backend import enrollment
@@ -166,6 +167,11 @@ OPEN_API_PATHS = {
     "/api/auth/me",
     "/api/devices/register",
     "/api/devices/heartbeat",
+    # Actualizacion del Agent: igual que el latido, lo pide el propio
+    # Agent con su token individual, no una persona con sesion
+    # abierta. Cada endpoint comprueba ese token por su cuenta.
+    "/api/agent/version",
+    "/api/agent/package",
     # Recuperacion: por definicion se usa SIN sesion. Ambos endpoints
     # tienen su propio limite de intentos y responden siempre lo mismo.
     "/api/auth/forgot",
@@ -4142,6 +4148,96 @@ def _organizacion_de_credenciales(request, organization_id=None):
         )
 
     return propia, None
+
+
+@app.get("/api/agent/version")
+def agent_version(x_agent_token: str = Header(default=None)):
+    """
+    Version publicada del Agent, para que un Agent sepa si actualizar.
+
+    Se autentica con el token INDIVIDUAL del equipo, igual que el
+    latido: es el Agent quien pregunta, no una persona desde el panel.
+    Se exige token para no publicar a cualquiera que pase que version
+    corre en los equipos administrados.
+
+    Lo que se devuelve es el manifiesto tal cual se publico, con su
+    firma. El servidor no firma nada ni comprueba la firma: eso lo
+    hace el Agent con su clave publica, y asi tiene que ser, porque
+    una comprobacion hecha aqui no protegeria de este mismo servidor.
+    """
+
+    if get_device_id_for_token(x_agent_token) is None:
+        return _agent_unauthorized()
+
+    try:
+        manifiesto, firma = agent_releases.load_published()
+
+    except agent_releases.ReleaseNotPublished:
+
+        # No publicar nada es normal, no un error: los Agents siguen
+        # con la version que tengan.
+        return {"status": "ok", "manifest": None, "signature": None}
+
+    return {
+        "status": "ok",
+        "manifest": manifiesto,
+        "signature": firma
+    }
+
+
+@app.get("/api/agent/package")
+def agent_package_download(
+    version: str = None,
+    x_agent_token: str = Header(default=None)
+):
+    """
+    Paquete de actualizacion del Agent.
+
+    La version que se sirve es SIEMPRE la del manifiesto publicado, no
+    la que pida el cliente: el parametro solo se usa para avisar de
+    que se pide otra cosa. Construir la ruta con texto del cliente
+    seria dejarle elegir que archivo se lee del servidor.
+
+    Que vaya firmado es lo que permite servirlo sin mas ceremonia: aun
+    si alguien cambiara el archivo en disco, el Agent lo rechazaria al
+    comprobar la firma del manifiesto y el hash.
+    """
+
+    if get_device_id_for_token(x_agent_token) is None:
+        return _agent_unauthorized()
+
+    try:
+        manifiesto, _ = agent_releases.load_published()
+
+        publicada = manifiesto.get("version")
+
+        if version is not None and version != publicada:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "status": "error",
+                    "message": (
+                        f"La version publicada es {publicada}"
+                    )
+                }
+            )
+
+        contenido = agent_releases.load_package(publicada)
+
+    except agent_releases.ReleaseNotPublished as problema:
+        return JSONResponse(
+            status_code=404,
+            content={"status": "error", "message": str(problema)}
+        )
+
+    return Response(
+        content=contenido,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition":
+                f'attachment; filename="agent-{publicada}.zip"'
+        }
+    )
 
 
 @app.get("/api/agent-package")
