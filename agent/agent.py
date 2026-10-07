@@ -1,7 +1,9 @@
 import asyncio
 import hashlib
 import platform
+import random
 import socket
+import sys
 import ssl
 import getpass
 import os
@@ -114,7 +116,157 @@ def build_ssl_context():
     return ssl.create_default_context(cafile=CA_CERT)
 
 
+# ==============================
+# REGISTRO EN ARCHIVO
+# ==============================
+#
+# El Agent se ejecuta con pythonw.exe, que no tiene consola. Sin
+# redirigir la salida, todo lo que imprime se pierde: una averia en un
+# equipo remoto no deja ni una linea que leer.
+#
+# Se redirige la salida estandar entera en vez de cambiar las ~50
+# llamadas a print() por un logger: el efecto es el mismo y no hay que
+# tocar codigo que ya funciona.
+#
+# El archivo rota por tamano para que no crezca sin limite en un equipo
+# que lleve meses encendido.
+
+LOG_MAX_BYTES = 2 * 1024 * 1024
+LOG_BACKUPS = 3
+
+
+def _abrir_registro():
+    """
+    Redirige la salida a logs\agent.log. Si no se puede (permisos,
+    disco lleno), el Agent sigue funcionando sin registro: perder los
+    logs es malo, pero no arrancar es peor.
+    """
+
+    try:
+
+        import logging
+        import logging.handlers
+
+        nombre = (
+            "agent.log" if AGENT_ROLE == ROLE_STANDALONE
+            else f"agent-{AGENT_ROLE}.log"
+        )
+
+        destino = os.path.join(get_logs_dir(), nombre)
+
+        manejador = logging.handlers.RotatingFileHandler(
+            destino,
+            maxBytes=LOG_MAX_BYTES,
+            backupCount=LOG_BACKUPS,
+            encoding="utf-8"
+        )
+
+        manejador.setFormatter(
+            logging.Formatter("%(asctime)s %(message)s")
+        )
+
+        registro = logging.getLogger("remoteadmin.agent")
+        registro.setLevel(logging.INFO)
+        registro.handlers = [manejador]
+
+        class _SalidaAlRegistro:
+            """Hace pasar por archivo lo que el Agent imprime."""
+
+            def write(self, texto):
+                texto = texto.rstrip()
+                if texto:
+                    registro.info(texto)
+
+            def flush(self):
+                pass
+
+        salida = _SalidaAlRegistro()
+
+        sys.stdout = salida
+        sys.stderr = salida
+
+        return destino
+
+    except Exception:
+        return None
+
+
+# ==============================
+# PAPEL DE ESTE PROCESO
+# ==============================
+#
+# Windows aisla los servicios en la Sesion 0, donde no hay escritorio:
+# la captura de pantalla sale en negro y el raton y el teclado no
+# llegan a ninguna parte. Pero el latido, el inventario, los procesos,
+# los servicios y el apagado no necesitan escritorio, y deberian
+# funcionar desde que arranca el equipo aunque nadie haya iniciado
+# sesion.
+#
+# De ahi los tres papeles:
+#
+#   service      Sesion 0. Habla con el servidor, guarda la identidad
+#                y reenvia al ayudante lo que necesite escritorio.
+#
+#   helper       sesion del usuario. No habla con el servidor y no
+#                conoce el token: solo obedece ordenes de escritorio.
+#
+#   standalone   los dos a la vez, en un proceso. Es el
+#                comportamiento de siempre y sigue siendo el valor por
+#                defecto, para no cambiar nada en una instalacion que
+#                ya funciona.
+
+ROLE_SERVICE = "service"
+ROLE_HELPER = "helper"
+ROLE_STANDALONE = "standalone"
+
+
+def _papel_pedido():
+    """Papel indicado en la linea de ordenes. Por defecto, el de siempre."""
+
+    for argumento in sys.argv[1:]:
+
+        if argumento.startswith("--role="):
+
+            valor = argumento.split("=", 1)[1].strip().lower()
+
+            if valor in (ROLE_SERVICE, ROLE_HELPER, ROLE_STANDALONE):
+                return valor
+
+    return ROLE_STANDALONE
+
+
+AGENT_ROLE = _papel_pedido()
+
+
 HEARTBEAT_INTERVAL = 10
+
+# --- Reintentos ---
+#
+# Espera creciente en vez de un intervalo fijo: si el servidor esta
+# caido o sin internet durante horas, un reintento cada 5 segundos son
+# miles de peticiones inutiles y CPU gastada en todos los equipos a la
+# vez. Crece hasta un tope para que la reconexion siga siendo rapida
+# cuando el servicio vuelva.
+RETRY_BASE_SECONDS = 5
+RETRY_MAX_SECONDS = 300
+
+
+def siguiente_espera(intento):
+    """
+    Segundos a esperar antes del intento numero `intento` (desde 1).
+
+    Duplica la espera hasta el tope y le suma algo de azar: sin ese
+    azar, cien equipos que pierden la conexion a la vez la recuperan
+    tambien a la vez y le caen encima al servidor justo cuando acaba
+    de levantarse.
+    """
+
+    espera = min(
+        RETRY_BASE_SECONDS * (2 ** max(0, intento - 1)),
+        RETRY_MAX_SECONDS
+    )
+
+    return espera + random.uniform(0, espera * 0.25)
 
 # Token de este Agent: se configura en el .env, nunca en el código.
 AGENT_TOKEN = os.getenv("AGENT_TOKEN", "")
@@ -131,7 +283,15 @@ if not AGENT_TOKEN:
 # - Cada segmento cerrado se encola y se sube; si el servidor está caído queda
 #   pendiente y se reintenta. El MP4 local NUNCA se borra hasta confirmarse.
 from recorder import ScreenRecorder
-from paths import get_data_dir, get_config_dir, get_recordings_dir
+from paths import (
+    get_data_dir,
+    get_config_dir,
+    get_logs_dir,
+    get_recordings_dir
+)
+
+import commands
+import ipc
 import storage
 import inventory
 
@@ -911,6 +1071,102 @@ screen_stream_task = None
 
 
 # ==============================
+# CANAL CON EL AYUDANTE INTERACTIVO
+# ==============================
+#
+# Solo lo usa el papel 'service'. En 'standalone' no hay ayudante
+# porque el mismo proceso tiene escritorio.
+
+_canal_ayudante = None
+
+
+def _atender_al_ayudante():
+    """
+    Acepta al ayudante y reenvia al servidor lo que mande.
+
+    Corre en su propio hilo porque esperar una conexion bloquea, y el
+    latido no puede pararse por eso.
+
+    Un ayudante a la vez: hay un escritorio activo cada vez. Cuando un
+    usuario cierra sesion y entra otro, el ayudante nuevo ocupa el
+    sitio del anterior.
+    """
+
+    global _canal_ayudante
+
+    canal = ipc.CanalDeServicio()
+
+    if not canal.abrir():
+        print("[ipc] No se pudo crear el canal local")
+        return
+
+    _canal_ayudante = canal
+
+    print("[ipc] Esperando al ayudante interactivo")
+
+    while True:
+
+        try:
+
+            pid = canal.esperar_ayudante()
+
+            print(f"[ipc] Ayudante conectado (pid {pid})")
+
+            while True:
+
+                mensaje = canal.recibir()
+
+                # Lo unico que el ayudante puede provocar es que se
+                # mande por el WebSocket algo que el ya ha preparado
+                # (marcos de pantalla, estado del grabador). No puede
+                # pedir nada al servidor ni leer la identidad.
+                carga = mensaje.get("ws")
+
+                if isinstance(carga, str):
+                    send_ws_threadsafe(carga)
+
+        except ipc.HelperUnavailable:
+
+            # Cierre de sesion o cuelgue del ayudante. El servicio
+            # sigue: se vuelve a esperar a que entre otro.
+            print("[ipc] Ayudante desconectado")
+
+        except ipc.IPCError as problema:
+
+            # Incluye el rechazo por origen no autorizado
+            print(f"[ipc] {problema}")
+
+        except Exception as error:
+
+            print(f"[ipc] Error inesperado: {error}")
+            time.sleep(1)
+
+
+def reenviar_al_ayudante(mensaje):
+    """
+    Pasa una orden de escritorio al ayudante.
+
+    Devuelve True si se entrego. Si no hay nadie con la sesion
+    iniciada, devuelve False y el servicio contesta al servidor en vez
+    de callarse: asi el panel puede explicar por que no pasa nada.
+    """
+
+    if _canal_ayudante is None:
+        return False
+
+    try:
+        _canal_ayudante.enviar({"command": mensaje})
+        return True
+
+    except ipc.HelperUnavailable:
+        return False
+
+    except ipc.IPCError as problema:
+        print(f"[ipc] No se pudo reenviar: {problema}")
+        return False
+
+
+# ==============================
 # IDENTIDAD PERSISTENTE DEL AGENT
 # ==============================
 #
@@ -980,6 +1236,55 @@ def save_identity(device_id, agent_token):
     _identity = data
 
     return data
+
+
+def retirar_credencial_de_alta():
+    """
+    Borra AGENT_TOKEN del .env una vez que el equipo ya tiene identidad.
+
+    La credencial de alta es de la ORGANIZACION: con ella se pueden dar
+    de alta mas equipos. Una vez usada, este equipo no la necesita para
+    nada —se autentica con su token individual—, asi que dejarla en el
+    disco es regalar una llave que ya no abre nada que nos interese.
+
+    Si falla (archivo de solo lectura, permisos), no se interrumpe nada:
+    el Agent ya esta enrolado y funcionando.
+    """
+
+    try:
+
+        if not os.path.isfile(ENV_PATH):
+            return False
+
+        with open(ENV_PATH, "r", encoding="utf-8") as handle:
+            lineas = handle.readlines()
+
+        # Si ya esta vacia no hay nada que hacer: reescribir el
+        # archivo en cada arranque seria escribir por escribir.
+        if any(linea.strip() == "AGENT_TOKEN=" for linea in lineas):
+            return False
+
+        limpias = [
+            linea for linea in lineas
+            if not linea.strip().startswith("AGENT_TOKEN=")
+        ]
+
+        if len(limpias) == len(lineas):
+            return False
+
+        limpias.append("AGENT_TOKEN=\n")
+
+        temporal = ENV_PATH + ".tmp"
+
+        with open(temporal, "w", encoding="utf-8") as handle:
+            handle.writelines(limpias)
+
+        os.replace(temporal, ENV_PATH)
+
+        return True
+
+    except OSError:
+        return False
 
 
 def get_device_id():
@@ -1074,6 +1379,10 @@ def register_device():
 
         print(f"Agent dado de alta con device_id: {result['device_id']}")
         print(f"Identidad guardada en: {IDENTITY_FILE}")
+
+        # Ya no hace falta: a partir de aqui manda el token individual
+        if retirar_credencial_de_alta():
+            print("Credencial de alta retirada del .env")
 
     else:
         print(f"Device registered: {device_id}")
@@ -1951,6 +2260,8 @@ async def websocket_connection():
 
     global screen_stream_task, _event_loop, _ws
 
+    intentos = 0
+
     while True:
 
         try:
@@ -1979,6 +2290,10 @@ async def websocket_connection():
                 await websocket.send(
                     f"Agent connected: {get_device_id()}"
                 )
+
+                # Conexion buena: la cuenta de reintentos vuelve a cero
+                # para que la siguiente caida se recupere rapido.
+                intentos = 0
 
                 # Referencia para que los hilos (grabador/reintentos) reporten estado
                 _event_loop = asyncio.get_running_loop()
@@ -2026,6 +2341,26 @@ async def websocket_connection():
                     print(
                         f"Server message: {message}"
                     )
+
+                    # --- Reparto entre fondo y escritorio ---
+                    #
+                    # En el papel 'service' no hay escritorio, asi que
+                    # lo que lo necesite va al ayudante. Lo demas
+                    # sigue por el camino de siempre, unas lineas mas
+                    # abajo.
+                    if (AGENT_ROLE == ROLE_SERVICE
+                            and commands.requires_desktop(message)):
+
+                        if not reenviar_al_ayudante(message):
+
+                            await websocket.send(
+                                "interactive_unavailable:"
+                                + json.dumps(
+                                    commands.respuesta_sin_sesion(message)
+                                )
+                            )
+
+                        continue
 
                     if message == "ping":
 
@@ -2417,12 +2752,16 @@ async def websocket_connection():
                 f"WebSocket error: {error}"
             )
 
+            intentos += 1
+
+            espera = siguiente_espera(intentos)
+
             print(
-                "Retrying WebSocket connection in 5 seconds..."
+                f"Retrying WebSocket connection in {espera:.0f} seconds..."
             )
 
             await asyncio.sleep(
-                5
+                espera
             )
 
 
@@ -2447,9 +2786,16 @@ async def heartbeat_loop():
 
 async def main():
 
+    destino = _abrir_registro()
+
     print(
         "RemoteAdmin Agent"
     )
+
+    print(f"Papel: {AGENT_ROLE}")
+
+    if destino:
+        print(f"Registro: {destino}")
 
     print(
         "------------------"
@@ -2464,11 +2810,26 @@ async def main():
 
     # Hilo del horario: independiente tambien, para que la programacion se
     # siga cumpliendo aunque se pierda la conexion con el servidor.
-    threading.Thread(
-        target=_schedule_loop,
-        name="RecordingSchedule",
-        daemon=True
-    ).start()
+    #
+    # NO en el papel 'service': programar una grabacion ahi acabaria
+    # capturando la Sesion 0, que es una pantalla negra. El horario lo
+    # cumple el ayudante, que si tiene escritorio.
+    if AGENT_ROLE != ROLE_SERVICE:
+
+        threading.Thread(
+            target=_schedule_loop,
+            name="RecordingSchedule",
+            daemon=True
+        ).start()
+
+    # Canal con el ayudante, solo en el papel 'service'
+    if AGENT_ROLE == ROLE_SERVICE:
+
+        threading.Thread(
+            target=_atender_al_ayudante,
+            name="InteractiveHelperChannel",
+            daemon=True
+        ).start()
 
     # Hilo de la retencion local: retira las grabaciones que ya han
     # cumplido los dias configurados.
@@ -2477,6 +2838,8 @@ async def main():
         name="LocalRetention",
         daemon=True
     ).start()
+
+    intentos = 0
 
     while True:
 
@@ -2488,16 +2851,30 @@ async def main():
 
         except requests.RequestException as error:
 
-            print(
-                f"Server unavailable: {error}"
-            )
+            intentos += 1
 
-            print(
-                "Retrying in 5 seconds..."
-            )
+            # El motivo mas comun de un rechazo es una credencial de
+            # alta mal copiada. Se dice con todas las letras, porque
+            # sin esto el Agent reintenta en silencio para siempre.
+            respuesta = getattr(error, "response", None)
+
+            if respuesta is not None and respuesta.status_code in (401, 403):
+                print(
+                    "El servidor rechazo el alta. Revisa la credencial "
+                    "de instalacion (AGENT_TOKEN) en el .env: debe ser "
+                    "una credencial de la organizacion, sin usar y sin "
+                    "caducar."
+                )
+
+            else:
+                print(f"Server unavailable: {error}")
+
+            espera = siguiente_espera(intentos)
+
+            print(f"Retrying in {espera:.0f} seconds...")
 
             await asyncio.sleep(
-                5
+                espera
             )
 
     # Cada equipo graba en su propia carpeta. El identificador lo asigna

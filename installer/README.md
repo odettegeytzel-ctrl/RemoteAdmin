@@ -46,16 +46,38 @@ Por eso la credencial de instalacion **no viene dentro del ZIP**: un archivo
 descargado se reenvia y se olvida en la carpeta de Descargas. Se teclea en el
 momento de instalar y se revoca despues.
 
-## Por que una tarea programada y no un servicio
+## Dos piezas, y por que
 
-El Agent captura la pantalla e inyecta mouse y teclado. Un servicio clasico de
-Windows corre en la Sesion 0, aislada del escritorio del usuario: ahi la
-captura sale en negro y el mouse y el teclado no llegan a la sesion real. Una
-tarea programada en la sesion interactiva cumple lo mismo —arranque
-automatico, sin ventana, reinicio ante fallos— sin ese problema.
+Windows aisla los servicios en la **Sesion 0**, donde no hay escritorio: la
+captura de pantalla sale en negro y el raton y el teclado no llegan a ninguna
+parte. Pero el latido, el inventario y el apagado no necesitan escritorio y
+deberian funcionar desde que arranca el equipo.
 
-La consecuencia a tener presente: tras reiniciar Windows, el Agent arranca
-cuando alguien **inicia sesion**, no antes.
+Por eso la instalacion crea **dos tareas**:
+
+| Tarea | Cuando arranca | Como | Que hace |
+|---|---|---|---|
+| `RemoteAdminAgent` | al **arrancar Windows** | SYSTEM | habla con el servidor |
+| `RemoteAdminAgentHelper` | al **iniciar sesion** | el usuario | toca el escritorio |
+
+Lo que funciona **sin que nadie inicie sesion**: aparecer en el panel, latido,
+inventario, procesos, servicios, alertas, apagar, reiniciar, bloquear, cerrar
+sesion, archivar grabaciones ya hechas y cambiar ajustes.
+
+Lo que **necesita una sesion abierta**: ver la pantalla en vivo, grabar y el
+control remoto de raton y teclado. Si se pide una de estas y no hay nadie con
+la sesion iniciada, el panel lo dice en vez de quedarse esperando.
+
+### Como se hablan
+
+Por un canal local de Windows (*named pipe*), que no es alcanzable desde la
+red. El ayudante **no conoce el token del equipo** y no habla con el servidor:
+solo recibe ordenes de escritorio y devuelve lo que produce. Todo lo que
+importa —la identidad, los comandos administrativos— se queda en el servicio.
+
+Si el ayudante se cae o el usuario cierra sesion, el servicio **sigue**. Cuando
+alguien vuelve a entrar, se conecta un ayudante nuevo. El equipo no cambia de
+identidad ni aparece duplicado.
 
 ## Reinstalar o actualizar
 
@@ -66,19 +88,32 @@ ya esta dado de alta, no vuelve a pedir credencial.
 ## Desinstalar
 
 ```powershell
-.\installer\uninstall-agent.ps1
+.\installer\uninstall-agent.ps1              # quita el programa
+.\installer\uninstall-agent.ps1 -PurgeData   # borra ademas los datos
 ```
 
-Quita la tarea programada. No borra las grabaciones ni la identidad: si
-quieres eliminarlas, borra a mano `C:\ProgramData\RemoteAdmin`.
+Sin `-PurgeData` se quitan las dos tareas y el programa, pero se conservan la
+identidad, las grabaciones locales y los registros: asi una reinstalacion
+mantiene el mismo equipo en el panel.
+
+`-PurgeData` es irreversible y borra tambien las grabaciones que no se hayan
+archivado en el servidor. Despues de usarlo, reinstalar da de alta un equipo
+**nuevo** y hace falta otra credencial.
 
 ## Comandos utiles
 
 ```powershell
-Get-ScheduledTask -TaskName RemoteAdminAgent | Get-ScheduledTaskInfo   # estado
-Stop-ScheduledTask  -TaskName RemoteAdminAgent                          # detener
-Start-ScheduledTask -TaskName RemoteAdminAgent                          # iniciar
+# Estado de las dos
+Get-ScheduledTask -TaskName RemoteAdminAgent* | Get-ScheduledTaskInfo
+
+Stop-ScheduledTask  -TaskName RemoteAdminAgent          # detener el servicio
+Start-ScheduledTask -TaskName RemoteAdminAgent          # iniciarlo
+Start-ScheduledTask -TaskName RemoteAdminAgentHelper    # el ayudante
 ```
+
+Cada pieza escribe su propio registro, en
+`C:\ProgramData\RemoteAdmin\logs\`: `agent-service.log` y
+`agent-helper.log`.
 
 Para ver por que algo no funciona, arranca el Agent a mano y deja la ventana
 abierta:

@@ -44,7 +44,10 @@ PROJECT_DIR = os.path.dirname(
 PACKAGE_FILES = (
     "agent/__init__.py",
     "agent/agent.py",
+    "agent/commands.py",
+    "agent/helper.py",
     "agent/inventory.py",
+    "agent/ipc.py",
     "agent/paths.py",
     "agent/power.py",
     "agent/recorder.py",

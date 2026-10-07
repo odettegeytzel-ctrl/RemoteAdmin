@@ -30,7 +30,14 @@
 param(
     [string]$Server = "",
     [string]$EnrollmentToken = "",
-    [string]$TaskName = "RemoteAdminAgent"
+
+    # Tarea del servicio de fondo. Conserva el nombre de siempre para
+    # que una reinstalacion sobre un equipo ya instalado reemplace la
+    # tarea anterior en vez de dejar dos.
+    [string]$TaskName = "RemoteAdminAgent",
+
+    # Tarea del ayudante interactivo
+    [string]$HelperTaskName = "RemoteAdminAgentHelper"
 )
 
 $ErrorActionPreference = "Stop"
@@ -45,7 +52,9 @@ $InstallDir = Join-Path $env:ProgramData "RemoteAdmin"
 
 $EnvFile = Join-Path $InstallDir ".env"
 $AgentScript = Join-Path $InstallDir "agent\agent.py"
+$HelperScript = Join-Path $InstallDir "agent\helper.py"
 $IdentityFile = Join-Path $InstallDir "config\identity.json"
+$LogFile = Join-Path $InstallDir "logs\agent.log"
 
 Write-Host ""
 Write-Host "RemoteAdmin - Instalacion del Agent"
@@ -127,6 +136,17 @@ Write-Host "Copiando el Agent..."
 # Solo el programa y sus dependencias. NO se copia config\, recordings\
 # ni logs\: son los datos del equipo y deben sobrevivir a una
 # reinstalacion.
+#
+# Si el Agent estaba corriendo, se para antes de sobrescribir sus
+# archivos: en Windows no se puede reemplazar lo que esta en uso.
+foreach ($tarea in @($TaskName, $HelperTaskName)) {
+    if (Get-ScheduledTask -TaskName $tarea -ErrorAction SilentlyContinue) {
+        Stop-ScheduledTask -TaskName $tarea -ErrorAction SilentlyContinue
+    }
+}
+
+Start-Sleep -Seconds 2
+
 Copy-Item -Path (Join-Path $SourceDir "agent") -Destination $InstallDir -Recurse -Force
 
 foreach ($req in @("requirements-base.txt", "requirements-agent-windows.txt")) {
@@ -189,6 +209,19 @@ $tokenLinea = "AGENT_TOKEN=$EnrollmentToken"
 # de alta equipos en la organizacion.
 icacls $EnvFile /inheritance:r /grant:r "SYSTEM:(R)" "Administrators:(F)" | Out-Null
 
+# La carpeta config\ guarda identity.json, que lleva el token
+# individual de este equipo. Se protege igual: ese token ES la
+# identidad del dispositivo ante el servidor.
+#
+# Se crea aqui, antes de que arranque el Agent, para que el archivo
+# nazca ya con los permisos puestos y no exista ni un instante legible
+# por cualquiera.
+$ConfigDir = Join-Path $InstallDir "config"
+
+New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
+
+icacls $ConfigDir /inheritance:r /grant:r "SYSTEM:(F)" "Administrators:(F)" | Out-Null
+
 # --------------------------------------------------------------
 # 5. Dependencias
 # --------------------------------------------------------------
@@ -204,31 +237,26 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # --------------------------------------------------------------
-# 6. Tarea programada
+# 6. Las dos tareas
 # --------------------------------------------------------------
 #
-# Tarea programada en la sesion del usuario, y no un servicio clasico,
-# porque el Agent captura la pantalla e inyecta mouse y teclado. Un
-# servicio corre en la Sesion 0, aislado del escritorio: ahi la captura
-# sale en negro y el mouse no llega a ninguna parte.
+# El Agent se parte en dos porque Windows aisla los servicios en la
+# Sesion 0, donde no hay escritorio: ahi la captura de pantalla sale
+# en negro y el raton y el teclado no llegan a ninguna parte. Pero el
+# latido, el inventario, los procesos y el apagado no necesitan
+# escritorio y deben funcionar desde que arranca el equipo.
+#
+#   RemoteAdminAgent         al ARRANQUE, como SYSTEM. Habla con el
+#                            servidor. No toca la pantalla.
+#
+#   RemoteAdminAgentHelper   al INICIAR SESION, como el usuario. Es
+#                            el unico que toca el escritorio.
 
 $Pythonw = (Get-Command pythonw.exe -ErrorAction SilentlyContinue).Source
 
 if (-not $Pythonw) {
     $Pythonw = $Python
 }
-
-$Action = New-ScheduledTaskAction `
-    -Execute $Pythonw `
-    -Argument "`"$AgentScript`"" `
-    -WorkingDirectory $InstallDir
-
-$Trigger = New-ScheduledTaskTrigger -AtLogOn
-
-$Principal = New-ScheduledTaskPrincipal `
-    -UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) `
-    -LogonType Interactive `
-    -RunLevel Highest
 
 $Settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
@@ -239,20 +267,68 @@ $Settings = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit ([TimeSpan]::Zero) `
     -MultipleInstances IgnoreNew
 
+# --- Servicio de fondo ---
+#
+# -AtStartup y SYSTEM: arranca con Windows, sin esperar a que nadie
+# inicie sesion. Es el cambio que hace que un equipo recien reiniciado
+# aparezca en el panel aunque nadie lo haya tocado.
+
+$AccionServicio = New-ScheduledTaskAction `
+    -Execute $Pythonw `
+    -Argument "`"$AgentScript`" --role=service" `
+    -WorkingDirectory $InstallDir
+
+$DisparadorServicio = New-ScheduledTaskTrigger -AtStartup
+
+$PrincipalServicio = New-ScheduledTaskPrincipal `
+    -UserId "SYSTEM" `
+    -LogonType ServiceAccount `
+    -RunLevel Highest
+
 if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
-    Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
 }
 
 Register-ScheduledTask `
     -TaskName $TaskName `
-    -Action $Action `
-    -Trigger $Trigger `
-    -Principal $Principal `
+    -Action $AccionServicio `
+    -Trigger $DisparadorServicio `
+    -Principal $PrincipalServicio `
     -Settings $Settings `
-    -Description "RemoteAdmin Agent" | Out-Null
+    -Description "RemoteAdmin Agent (servicio de fondo)" | Out-Null
 
-Write-Host "Tarea '$TaskName' registrada."
+Write-Host "Tarea '$TaskName' registrada (arranque del sistema)."
+
+# --- Ayudante interactivo ---
+#
+# -AtLogOn y sesion interactiva: aqui SI hace falta el escritorio.
+# -GroupId con los usuarios del equipo para que valga para cualquiera
+# que inicie sesion, no solo para quien instalo.
+
+$AccionAyudante = New-ScheduledTaskAction `
+    -Execute $Pythonw `
+    -Argument "`"$HelperScript`"" `
+    -WorkingDirectory $InstallDir
+
+$DisparadorAyudante = New-ScheduledTaskTrigger -AtLogOn
+
+$PrincipalAyudante = New-ScheduledTaskPrincipal `
+    -GroupId "S-1-5-32-545" `
+    -RunLevel Limited
+
+if (Get-ScheduledTask -TaskName $HelperTaskName -ErrorAction SilentlyContinue) {
+    Unregister-ScheduledTask -TaskName $HelperTaskName -Confirm:$false
+}
+
+Register-ScheduledTask `
+    -TaskName $HelperTaskName `
+    -Action $AccionAyudante `
+    -Trigger $DisparadorAyudante `
+    -Principal $PrincipalAyudante `
+    -Settings $Settings `
+    -Description "RemoteAdmin Agent (ayudante interactivo)" | Out-Null
+
+Write-Host "Tarea '$HelperTaskName' registrada (inicio de sesion)."
 
 # --------------------------------------------------------------
 # 7. Arranque
@@ -260,12 +336,60 @@ Write-Host "Tarea '$TaskName' registrada."
 
 Start-ScheduledTask -TaskName $TaskName
 
+# El ayudante solo arranca si quien instala tiene sesion abierta, que
+# es lo normal. Si no, entrara solo en el proximo inicio de sesion.
+Start-ScheduledTask -TaskName $HelperTaskName -ErrorAction SilentlyContinue
+
+# --------------------------------------------------------------
+# 8. Confirmacion
+# --------------------------------------------------------------
+#
+# La instalacion no termina cuando arranca el proceso, sino cuando el
+# equipo esta REALMENTE dado de alta. Esperar aqui evita que alguien se
+# marche creyendo que quedo instalado y descubra manana que no.
+
 Write-Host ""
-Write-Host "Agent instalado e iniciado."
+Write-Host "Esperando el alta en el servidor..."
+
+$limite = (Get-Date).AddSeconds(90)
+$alta = $false
+
+while ((Get-Date) -lt $limite) {
+
+    if (Test-Path $IdentityFile) {
+        $alta = $true
+        break
+    }
+
+    Start-Sleep -Seconds 3
+}
+
 Write-Host ""
-Write-Host "El equipo deberia aparecer en el panel, en Dispositivos,"
-Write-Host "en menos de un minuto."
-Write-Host ""
-Write-Host "Si no aparece, ejecuta esto para ver el motivo:"
-Write-Host "  & '$Python' '$AgentScript'"
+
+if ($alta) {
+
+    $identidad = Get-Content $IdentityFile -Raw | ConvertFrom-Json
+
+    # Se muestra el device_id, que es un identificador. El token
+    # individual que hay en el mismo archivo NO se imprime nunca.
+    Write-Host "Agent instalado y dado de alta."
+    Write-Host "Identificador del equipo: $($identidad.device_id)"
+    Write-Host ""
+    Write-Host "Ya aparece en el panel, en Dispositivos."
+    Write-Host "No hace falta ningun otro comando."
+    Write-Host ""
+    Write-Host "El servicio de fondo arranca con Windows, sin que nadie"
+    Write-Host "tenga que iniciar sesion. La grabacion y el control"
+    Write-Host "remoto necesitan una sesion abierta."
+
+} else {
+
+    Write-Host "El Agent esta instalado y corriendo, pero todavia no se"
+    Write-Host "ha confirmado el alta."
+    Write-Host ""
+    Write-Host "Sigue reintentando solo; si en unos minutos no aparece en"
+    Write-Host "el panel, el motivo estara aqui:"
+    Write-Host "  $LogFile"
+}
+
 Write-Host ""
