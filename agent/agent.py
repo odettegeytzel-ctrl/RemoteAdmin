@@ -101,19 +101,51 @@ if CA_CERT and not os.path.isfile(CA_CERT):
 REQUESTS_VERIFY = CA_CERT or True
 
 
+def usa_tls():
+    """True si al servidor se llega por TLS (https:// y por tanto wss://)."""
+
+    return SERVER_URL.startswith("https://")
+
+
 def build_ssl_context():
     """
-    Contexto TLS para el WebSocket (wss://).
+    Contexto TLS para el WebSocket.
 
-    Devuelve None si no hay CA propia configurada, para que websockets use su
-    contexto seguro por defecto. Con CA configurada se mantiene la verificación
-    completa de certificado y nombre de host.
+    Devuelve None SOLO para ws://, donde no hay TLS que configurar. Para
+    wss:// devuelve siempre un contexto de verdad.
+
+    Esa distincion es el motivo de esta funcion. Antes devolvia None
+    cuando no habia CA propia, contando con que la libreria pusiera su
+    contexto por defecto; pero pasar ssl=None junto a una URL wss://
+    es un error explicito ("ssl=None is incompatible with a wss://
+    URI") y el Agent no llegaba a conectar nunca contra el servidor
+    publico. Omitir el argumento y pasarlo en None no son lo mismo.
+
+    Los dos caminos de wss:// validan igual de estricto; lo unico que
+    cambia es en quien se confia:
+
+      con CA propia     se confia en esa autoridad, y solo en ella.
+                        Hace falta en desarrollo porque el modulo ssl
+                        no consulta el almacen de certificados de
+                        Windows, asi que una CA local instalada en el
+                        sistema no se reconoceria.
+
+      sin CA propia     se confia en las autoridades estandar del
+                        sistema. Es el caso de produccion detras de
+                        Cloudflare, cuyo certificado es publico.
+
+    En ambos quedan activados, por ser lo que trae create_default_context:
+    verificacion del certificado (CERT_REQUIRED) y comprobacion del
+    nombre de host (check_hostname). No se desactiva ninguna.
     """
 
-    if not CA_CERT:
+    if not usa_tls():
         return None
 
-    return ssl.create_default_context(cafile=CA_CERT)
+    if CA_CERT:
+        return ssl.create_default_context(cafile=CA_CERT)
+
+    return ssl.create_default_context()
 
 
 # ==============================
@@ -2273,14 +2305,25 @@ async def websocket_connection():
             # El token individual va en una CABECERA del handshake, no en la
             # URL: una query string acaba en logs de servidor, proxies e
             # historiales, y ahí el token quedaría expuesto.
-            # ssl=None con ws:// y para wss:// sin CA propia: websockets aplica
-            # su contexto seguro por defecto. Con CA configurada se usa esa.
+            #
+            # El contexto TLS solo se pasa cuando hay TLS. Con ws:// no
+            # se pasa en absoluto: ni el argumento. Pasar ssl=None
+            # junto a una URL wss:// es un error, asi que la decision
+            # se toma aqui y no dentro de la llamada.
+            contexto = build_ssl_context()
+
+            parametros = {
+                "additional_headers": {
+                    "X-Agent-Token": get_agent_device_token() or ""
+                }
+            }
+
+            if contexto is not None:
+                parametros["ssl"] = contexto
+
             async with websockets.connect(
                 WEBSOCKET_URL,
-                additional_headers={
-                    "X-Agent-Token": get_agent_device_token() or ""
-                },
-                ssl=build_ssl_context()
+                **parametros
             ) as websocket:
 
                 print(
