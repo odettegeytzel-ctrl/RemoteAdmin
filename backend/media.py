@@ -53,6 +53,25 @@ DURATION_TOLERANCE_RATIO = 0.35
 # 1,4 s, y ahí un solo fotograma perdido ya desviaría demasiado.
 DURATION_TOLERANCE_MIN_SECONDS = 3
 
+# En el protocolo de subida, una duración declarada de CERO significa
+# "no la sé", no "dura cero segundos".
+#
+# Son dos caminos los que la producen, y ninguno es un archivo defectuoso:
+#
+#   - el Agent construye la ficha escaneando la carpeta, y el sistema de
+#     archivos solo sabe tamaño y fecha de modificación;
+#   - el parámetro duration_sec del endpoint tiene 0 por defecto, así que un
+#     Agent que no lo mande llega indistinguible de uno que mande 0.
+#
+# Tratarlo como "dura cero" rechazaba grabaciones perfectamente buenas. No se
+# pierde ninguna protección al tratarlo como desconocido: la duración REAL la
+# mide ffmpeg por su cuenta en el paso 7, y una grabación vacía o sin duración
+# legible se rechaza allí sin mirar lo declarado.
+#
+# Un valor NEGATIVO es otra cosa: ninguno de los dos caminos lo produce, así
+# que sigue siendo un dato malformado y se rechaza.
+DECLARED_DURATION_UNKNOWN = 0
+
 # Marca de contenedor MP4/ISO-BMFF: los bytes 4 a 8 de un MP4 son 'ftyp'.
 FTYP_OFFSET = 4
 FTYP_MARK = b"ftyp"
@@ -187,6 +206,48 @@ def _parse_video_stream(texto):
     return encontrado.group(1), encontrado.group(2)
 
 
+def declared_duration_is_known(declared):
+    """
+    True si el Agent dijo de verdad cuánto dura la grabación.
+
+    Ausente y cero son ambos "no lo sé", por los motivos de arriba. Un
+    negativo no es desconocido, es incorrecto, y no se declara conocido para
+    que no entre en la comparación: validate_recording lo rechaza aparte.
+    """
+
+    if declared is None:
+        return False
+
+    return declared > DECLARED_DURATION_UNKNOWN
+
+
+def duration_for_storage(validation, declared=None):
+    """
+    Duración en segundos que debe quedar guardada, o None si no se sabe.
+
+    La columna duration_sec es INTEGER y en este esquema el 0 significa
+    "desconocida", así que una grabación que SÍ tiene duración nunca debe
+    guardarse como 0: por eso un resultado positivo se redondea con un
+    suelo de 1 segundo en vez de dejar que un 0,4 se convierta en cero.
+
+    El orden de preferencia es deliberado: ffmpeg mide el archivo que de
+    verdad está en el servidor, mientras que lo declarado es lo que dijo un
+    equipo remoto. Cuando hay medición, gana la medición.
+    """
+
+    medida = getattr(validation, "duration", None) if validation else None
+
+    if medida is not None and medida > 0:
+        return max(1, int(round(medida)))
+
+    # Sin medición utilizable se conserva lo declarado, pero solo si el Agent
+    # lo sabía. Si no, None: quien llama deja el valor que ya hubiera.
+    if declared_duration_is_known(declared):
+        return max(1, int(round(declared)))
+
+    return None
+
+
 def duration_within_tolerance(declared, actual):
     """
     True si la duración real encaja con la declarada.
@@ -198,9 +259,11 @@ def duration_within_tolerance(declared, actual):
     if actual is None:
         return False
 
-    if declared is None or declared <= 0:
-        # Sin una duración declarada válida no hay nada que contrastar; la
-        # decisión de rechazarla se toma antes, en validate_recording.
+    if not declared_duration_is_known(declared):
+        # Sin una duración declarada que contrastar, esta función no puede
+        # afirmar que encaje. Quien llama comprueba primero con
+        # declared_duration_is_known si la comparación tiene sentido; devolver
+        # False aquí evita que un uso descuidado la dé por buena.
         return False
 
     tolerancia = max(
@@ -318,9 +381,14 @@ def validate_recording(path, declared_duration=None):
         )
 
     # --- 8. ¿Coincide con lo declarado? ---
+    #
+    # Llegados aquí el archivo ya está validado por sí mismo: es un MP4 que
+    # ffmpeg abre, con vídeo y con una duración real mayor que cero. Esta
+    # comprobación solo contrasta ese dato con lo que dijo el Agent, así que
+    # cuando el Agent no lo sabe simplemente no hay nada que contrastar.
     if declared_duration is not None:
 
-        if declared_duration <= 0:
+        if declared_duration < DECLARED_DURATION_UNKNOWN:
             return ValidationResult(
                 False,
                 "duracion_declarada_invalida",
@@ -331,7 +399,10 @@ def validate_recording(path, declared_duration=None):
                 detail=f"el Agent declaró {declared_duration} s"
             )
 
-        if not duration_within_tolerance(declared_duration, duracion):
+        contrastable = declared_duration_is_known(declared_duration)
+
+        if contrastable and not duration_within_tolerance(
+                declared_duration, duracion):
             return ValidationResult(
                 False,
                 "duracion_no_coincide",

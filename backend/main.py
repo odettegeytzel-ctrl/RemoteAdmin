@@ -85,7 +85,7 @@ from backend.devices import (
     device_exists,
     get_device_organization
 )
-from backend.media import validate_recording
+from backend.media import duration_for_storage, validate_recording
 from backend import mailer
 from backend import recovery
 from backend import schedule as recording_schedule
@@ -2827,6 +2827,15 @@ async def upload_recording(
             "El archivo publicado no coincide con lo recibido"
         )
 
+    # Duración que se guarda. ffmpeg acaba de medir el archivo que está en
+    # el servidor, así que esa medida es mejor dato que lo que declaró un
+    # equipo remoto —y es la única que existe cuando el Agent manda 0, que es
+    # lo que hace al construir la ficha escaneando su carpeta.
+    #
+    # None significa "no se sabe"; en ese caso no se escribe nada y la fila
+    # conserva el valor que ya tuviera.
+    duracion_guardada = duration_for_storage(validacion, duration_sec)
+
     try:
 
         if ficha_previa is not None:
@@ -2834,10 +2843,14 @@ async def upload_recording(
             # Ya habia ficha: se completa en lugar de crear otra fila. Asi
             # el panel conserva la misma grabacion, con su historial y su
             # marca de conservar, y no aparece duplicada.
+            #
+            # La ficha venia del catalogo del Agent, con duracion 0 por no
+            # poder saberla. Pasar la medida aqui es lo que evita que el
+            # COALESCE conserve ese cero.
             mark_stored(
                 ficha_previa,
                 size_bytes=received,
-                duration_sec=duration_sec or None
+                duration_sec=duracion_guardada
             )
 
             recording_id = ficha_previa
@@ -2849,7 +2862,11 @@ async def upload_recording(
                 path=rel_path,
                 started_at=started_at or when.isoformat(),
                 ended_at=ended_at,
-                duration_sec=duration_sec,
+                duration_sec=(
+                    duracion_guardada
+                    if duracion_guardada is not None
+                    else duration_sec
+                ),
                 size_bytes=received
             )
 

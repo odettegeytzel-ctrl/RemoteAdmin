@@ -146,8 +146,14 @@ def pruebas_modulo():
         comprobar(f"duración negativa -> inválido ({r.reason})",
                   not r.valid and r.reason == "duracion_declarada_invalida")
 
+        # Cero es el "no lo sé" del protocolo, no "dura cero": el Agent
+        # construye la ficha escaneando el disco, y el endpoint recibe 0
+        # cuando el Agent omite el dato. La duración real la mide ffmpeg
+        # aparte, así que no se pierde ninguna comprobación.
         r = validate_recording(valido, 0)
-        comprobar(f"duración 0 -> inválido ({r.reason})", not r.valid)
+        comprobar("duración 0 -> válido (desconocida, no nula)", r.valid)
+        comprobar("y se queda con la duración real medida",
+                  r.duration is not None and r.duration > 0)
 
         r = validate_recording(valido, None)
         comprobar("sin duración declarada -> válido (no hay nada que contrastar)",
