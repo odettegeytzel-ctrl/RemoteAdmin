@@ -3921,6 +3921,42 @@ function puede(permiso) {
 }
 
 
+// Peticion de la sesion en curso, para que dos vistas que la pidan a
+// la vez compartan una sola. Se guarda la PROMESA, no un booleano: con
+// un booleano, la segunda llamada seguiria adelante mientras la
+// primera aun esta en vuelo.
+//
+// Solo se conserva si la carga fue bien. Si fallo, se descarta para
+// que el siguiente intento vuelva a pedirla: dejar cacheada una
+// promesa rechazada —o una que resolvio sin datos— condenaria la
+// sesion a estar vacia el resto de la visita.
+let sesionPedida = null;
+
+
+async function asegurarSesion() {
+
+    if (!sesionPedida) {
+
+        sesionPedida = cargarSesionActual().then(cargada => {
+
+            if (!cargada) {
+                sesionPedida = null;
+            }
+
+            return cargada;
+
+        }).catch(error => {
+
+            sesionPedida = null;
+
+            return false;
+        });
+    }
+
+    return sesionPedida;
+}
+
+
 async function cargarSesionActual() {
 
     try {
@@ -3928,7 +3964,12 @@ async function cargarSesionActual() {
         const response = await fetch("/api/users/me");
 
         if (!response.ok) {
-            return;
+
+            // No se conceden permisos por defecto: sesionActual se
+            // queda como esta, sin ninguno. El panel mostrara menos
+            // de lo que podria, que es el lado correcto en el que
+            // equivocarse.
+            return false;
         }
 
         sesionActual = await response.json();
@@ -3990,8 +4031,14 @@ async function cargarSesionActual() {
             await cargarOrganizaciones();
         }
 
+        return true;
+
     } catch (error) {
+
+        // La sesion se queda sin permisos. Se avisa de que no cargo
+        // para que quien llame pueda reintentarlo.
         console.error("No se pudo cargar la sesion:", error);
+        return false;
     }
 }
 
@@ -7361,6 +7408,12 @@ populateRecordingsDeviceFilter();
 
 table.innerHTML = recordingsMessageRow("Cargando...");
 
+// Las acciones de cada fila dependen de los permisos de la sesion, y
+// hasta aqui la sesion solo se cargaba al abrir Configuracion. Quien
+// entraba directo a Grabaciones no veia el boton de guardar, porque
+// puede() consultaba una sesion vacia.
+await asegurarSesion();
+
 const query =
     buildRecordingsQuery();
 
@@ -7425,19 +7478,7 @@ try {
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap">${keepCell}</td>
                 <td class="px-6 py-4 whitespace-nowrap">
-                    <button
-                        onclick="playRecording(${rec.id})"
-                        class="px-3 py-1.5 rounded-lg bg-slate-900 text-white text-xs hover:bg-slate-700 transition"
-                    >
-                        Ver grabación
-                    </button>
-                    <a
-                        href="/api/recordings/${rec.id}/download"
-                        class="ml-2 inline-block px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs hover:bg-blue-500 transition"
-                    >
-                        Descargar
-                    </a>
-                    ${botonGuardarEnServidor(rec)}
+                    ${accionesDeGrabacion(rec)}
                 </td>
             </tr>
         `;
@@ -7459,26 +7500,42 @@ GUARDAR UNA GRABACION EN EL SERVIDOR
 
 // Las grabaciones se quedan en el equipo que las genera. Esta es la unica
 // via por la que una llega al servidor, y siempre porque alguien la elige.
+//
+// sePuedeAbrir: si el archivo esta EN EL SERVIDOR, que es el unico
+// sitio del que leen "Ver grabacion" y "Descargar". Mientras la
+// grabacion solo exista en el equipo, esas dos acciones no pueden
+// funcionar, asi que no se ofrecen: un boton que siempre falla
+// confunde mas que su ausencia.
 const ESTADOS_DE_ALMACENAMIENTO = {
     local_only: {
         etiqueta: "\uD83D\uDCCD Solo local",
         clase: "bg-slate-100 text-slate-600",
-        sePuedeGuardar: true
+        sePuedeGuardar: true,
+        sePuedeAbrir: false,
+        porQueNoSeAbre: "Esta grabacion solo esta en el equipo. "
+            + "Guardala en el servidor para poder verla o descargarla."
     },
     server_pending: {
         etiqueta: "\u23F3 Guardando...",
         clase: "bg-blue-100 text-blue-700",
-        sePuedeGuardar: false
+        sePuedeGuardar: false,
+        sePuedeAbrir: false,
+        porQueNoSeAbre: "Se esta transfiriendo al servidor."
     },
     server_stored: {
         etiqueta: "\u2601 En el servidor",
         clase: "bg-emerald-100 text-emerald-700",
-        sePuedeGuardar: false
+        sePuedeGuardar: false,
+        sePuedeAbrir: true,
+        porQueNoSeAbre: ""
     },
     server_error: {
         etiqueta: "\u26A0 Error al guardar",
         clase: "bg-red-100 text-red-700",
-        sePuedeGuardar: true
+        sePuedeGuardar: true,
+        sePuedeAbrir: false,
+        porQueNoSeAbre: "No se pudo guardar en el servidor. "
+            + "La copia del equipo sigue intacta."
     }
 };
 
@@ -7505,6 +7562,37 @@ function insigniaDeAlmacenamiento(rec) {
 // mande otra. La barrera de verdad esta en el servidor, que rechaza una
 // segunda peticion mientras la primera sigue en curso.
 const guardadosEnCurso = new Set();
+
+
+function accionesDeGrabacion(rec) {
+
+    const estado = estadoDeAlmacenamiento(rec);
+
+    // Ver y descargar leen del SERVIDOR. Si el archivo no esta ahi,
+    // en vez de dos botones que devolverian un error se explica por
+    // que, que es lo que de verdad necesita saber quien mira.
+    if (!estado.sePuedeAbrir) {
+
+        return `<span class="text-xs text-slate-500">`
+            + `${estado.porQueNoSeAbre}</span>`
+            + botonGuardarEnServidor(rec);
+    }
+
+    return `
+        <button
+            onclick="playRecording(${rec.id})"
+            class="px-3 py-1.5 rounded-lg bg-slate-900 text-white text-xs hover:bg-slate-700 transition"
+        >
+            Ver grabación
+        </button>
+        <a
+            href="/api/recordings/${rec.id}/download"
+            class="ml-2 inline-block px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs hover:bg-blue-500 transition"
+        >
+            Descargar
+        </a>
+    ` + botonGuardarEnServidor(rec);
+}
 
 
 function botonGuardarEnServidor(rec) {
