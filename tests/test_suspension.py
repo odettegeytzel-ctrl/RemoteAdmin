@@ -417,7 +417,9 @@ def test_al_reactivar_vuelve_el_acceso():
               len(respuesta.json()) == antes)
 
     comprobar("Y sus grabaciones siguen ahi",
-              len(cliente.get("/api/recordings").json()) == 1)
+              len(cliente.get(
+                  "/api/recordings"
+              ).json()["recordings"]) == 1)
 
     comprobar("La marca de suspension se limpia",
               orgs.get_organization(escenario["alfa"]["id"])["suspended_at"]

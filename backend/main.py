@@ -2908,14 +2908,24 @@ def recordings_list(request: Request, device_id: str = None,
 
         # Filtrar por un equipo ajeno no da error: devuelve vacio, como
         # si no hubiera nada. No se confirma que ese equipo exista.
+        #
+        # La forma de la respuesta es la MISMA que la de abajo, y no es
+        # un detalle: el panel lee data.recordings. Devolver aqui una
+        # lista desnuda dejaba ese campo en undefined, asi que quien
+        # entraba como Owner de una empresa veia la seccion vacia
+        # aunque hubiera grabaciones, mientras el operador de la
+        # plataforma —que pasa por la rama de abajo— las veia todas.
         if device_id is not None and device_id not in equipos:
-            return []
+            return {"status": "ok", "recordings": []}
 
-        return [
-            grabacion
-            for grabacion in query_recordings(device_id, start, end)
-            if grabacion["device_id"] in equipos
-        ]
+        return {
+            "status": "ok",
+            "recordings": [
+                grabacion
+                for grabacion in query_recordings(device_id, start, end)
+                if grabacion["device_id"] in equipos
+            ]
+        }
 
 
     # Protegido por sesión (el middleware exige token en /api/* salvo rutas abiertas).

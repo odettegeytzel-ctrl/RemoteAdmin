@@ -381,8 +381,16 @@ def test_cada_organizacion_ve_solo_sus_grabaciones():
 
     preparar()
 
-    de_alfa = h.cliente(h.OWNER).get("/api/recordings").json()
-    de_beta = h.cliente("beta_admin").get("/api/recordings").json()
+    # El endpoint responde {"status","recordings"}: el panel lee
+    # data.recordings. Antes estas pruebas leian la respuesta como si
+    # fuera una lista, que era justo la forma equivocada.
+    de_alfa = h.cliente(h.OWNER).get(
+        "/api/recordings"
+    ).json()["recordings"]
+
+    de_beta = h.cliente("beta_admin").get(
+        "/api/recordings"
+    ).json()["recordings"]
 
     comprobar("Alfa ve una grabacion", len(de_alfa) == 1,
               str(len(de_alfa)))
@@ -426,7 +434,8 @@ def test_filtrar_por_un_equipo_ajeno_no_revela_nada():
     )
 
     comprobar("Filtrar por un equipo ajeno devuelve vacio",
-              respuesta.status_code == 200 and respuesta.json() == [],
+              respuesta.status_code == 200
+              and respuesta.json()["recordings"] == [],
               respuesta.text[:60])
 
 
@@ -812,7 +821,9 @@ def test_reactivar_devuelve_el_acceso():
               len(h.cliente(h.OWNER).get("/api/devices").json()) == 1)
 
     comprobar("Ni grabaciones",
-              len(h.cliente(h.OWNER).get("/api/recordings").json()) == 1)
+              len(h.cliente(h.OWNER).get(
+                  "/api/recordings"
+              ).json()["recordings"]) == 1)
 
 
 # ==============================
