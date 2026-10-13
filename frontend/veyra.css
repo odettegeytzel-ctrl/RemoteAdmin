@@ -1,0 +1,1529 @@
+/* ==========================================================
+IDENTIDAD VISUAL DE VEYRA
+
+El panel se construyo con Tailwind por CDN y las clases de color
+escritas a mano en el marcado: bg-white, text-slate-500,
+border-slate-200... Hay mas de seiscientas repartidas por 2800 lineas
+de HTML y 9200 de JavaScript.
+
+Reescribirlas una por una seria un cambio enorme y arriesgado, y
+cualquier descuido dejaria un trozo de pantalla con el fondo del tema
+contrario. Asi que este archivo hace dos cosas distintas:
+
+  1. Define la identidad en variables CSS y un puñado de componentes
+     propios (.vy-*), que es lo que se usa en las partes rehechas:
+     barra lateral, cabecera, tarjetas de resumen.
+
+  2. Reasigna las utilidades neutras de Tailwind a esas mismas
+     variables. Asi una pantalla que todavia diga bg-white obedece al
+     tema igualmente, sin haberla tocado.
+
+El (2) usa !important porque compite con utilidades de Tailwind que
+tienen la misma especificidad y se cargan despues. Es deliberado y
+esta acotado a color: ni una regla toca tamaños, posiciones o
+espaciado, para no mover nada de sitio.
+
+Los colores de intencion (verde conectado, rojo error, azul accion) se
+dejan en paz: significan algo y funcionan en ambos temas.
+========================================================== */
+
+
+/* ==============================
+PALETA
+============================== */
+
+/*
+El tema se elige con el atributo data-theme en <html>. Se fija antes
+de pintar nada (hay un script en el <head>) para que no haya un
+parpadeo claro al cargar en modo oscuro.
+*/
+
+:root,
+:root[data-theme="dark"] {
+
+    /* Fondos, del mas hondo al mas cercano */
+    --vy-fondo: #070C17;
+    --vy-lateral: #0A1120;
+    --vy-superficie: #111A2E;
+    --vy-superficie-alta: #16203A;
+    --vy-superficie-suave: #0E1626;
+
+    /* Lineas: muy discretas, casi insinuadas */
+    --vy-borde: #1F2A44;
+    --vy-borde-suave: #172238;
+
+    /* Texto */
+    --vy-texto: #E7EDF9;
+    --vy-texto-medio: #A9B7D0;
+    --vy-texto-tenue: #7486A3;
+
+    /* Azul electrico: el acento. Se usa poco y por eso destaca */
+    --vy-acento: #2F7BFF;
+    --vy-acento-claro: #5B9BFF;
+    --vy-acento-hundido: #1C5FD6;
+    --vy-acento-tenue: rgba(47, 123, 255, 0.14);
+    --vy-acento-borde: rgba(47, 123, 255, 0.35);
+
+    /* Sombras: en oscuro apenas se ven, asi que son sutiles */
+    --vy-sombra: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --vy-sombra-alta: 0 12px 32px rgba(0, 0, 0, 0.45);
+
+    --vy-anillo: rgba(91, 155, 255, 0.55);
+
+    color-scheme: dark;
+}
+
+
+:root[data-theme="light"] {
+
+    /*
+    El modo claro NO es el oscuro invertido. Es un tema propio: fondo
+    gris muy claro, tarjetas blancas que se despegan de el, y el mismo
+    azul de VEYRA algo mas profundo para que mantenga contraste sobre
+    blanco.
+    */
+
+    --vy-fondo: #F4F6FB;
+    --vy-lateral: #0C1324;
+    --vy-superficie: #FFFFFF;
+    --vy-superficie-alta: #FFFFFF;
+    --vy-superficie-suave: #F8FAFD;
+
+    --vy-borde: #E2E8F2;
+    --vy-borde-suave: #EDF1F7;
+
+    --vy-texto: #0F1B2E;
+    --vy-texto-medio: #4A5A73;
+    --vy-texto-tenue: #6B7B94;
+
+    --vy-acento: #1D63E6;
+    --vy-acento-claro: #2F7BFF;
+    --vy-acento-hundido: #1850BE;
+    --vy-acento-tenue: rgba(29, 99, 230, 0.09);
+    --vy-acento-borde: rgba(29, 99, 230, 0.28);
+
+    --vy-sombra: 0 1px 2px rgba(15, 27, 46, 0.06);
+    --vy-sombra-alta: 0 12px 32px rgba(15, 27, 46, 0.12);
+
+    --vy-anillo: rgba(29, 99, 230, 0.45);
+
+    color-scheme: light;
+}
+
+
+/*
+La barra lateral se queda azul marino en los dos temas, como en la
+referencia: es la firma visual del producto. Por eso tiene su propio
+juego de variables, que NO cambian con el tema.
+*/
+:root {
+    --vy-lateral-texto: #E7EDF9;
+    --vy-lateral-tenue: #7D8DA8;
+    --vy-lateral-borde: #1B2439;
+    --vy-lateral-activo: rgba(47, 123, 255, 0.16);
+}
+
+
+/* ==============================
+BASE
+============================== */
+
+html {
+    background: var(--vy-fondo);
+}
+
+body {
+    background: var(--vy-fondo);
+    color: var(--vy-texto);
+
+    font-family: "Inter", "Segoe UI", system-ui, -apple-system,
+        "Helvetica Neue", Arial, sans-serif;
+
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+/*
+Nada de transiciones en todo: al cambiar de tema se nota raro y las
+tablas grandes parpadean. Solo las superficies, y rapido.
+*/
+body,
+.vy-card,
+.vy-nav-item,
+.vy-btn {
+    transition: background-color 0.15s ease, border-color 0.15s ease,
+        color 0.15s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    * {
+        transition: none !important;
+        animation: none !important;
+    }
+}
+
+
+/* Nunca una barra horizontal en toda la pagina */
+html,
+body {
+    max-width: 100%;
+    overflow-x: hidden;
+}
+
+
+/* ==============================
+FOCO VISIBLE
+
+Se conserva en los dos temas y en todos los controles. Es lo unico
+que ve quien navega con teclado.
+============================== */
+
+:focus-visible {
+    outline: 2px solid var(--vy-anillo);
+    outline-offset: 2px;
+    border-radius: 6px;
+}
+
+/* El foco por raton no dibuja el anillo, pero el de teclado si */
+:focus:not(:focus-visible) {
+    outline: none;
+}
+
+
+/* ==============================
+ICONOS
+
+Un unico tamaño y grosor para todos. Heredan el color del texto, asi
+que obedecen al tema sin reglas adicionales.
+============================== */
+
+.vy-icon {
+    width: 20px;
+    height: 20px;
+    flex: 0 0 auto;
+
+    stroke: currentColor;
+    stroke-width: 1.75;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    fill: none;
+}
+
+.vy-icon-sm {
+    width: 16px;
+    height: 16px;
+}
+
+.vy-icon-lg {
+    width: 24px;
+    height: 24px;
+}
+
+.vy-icon-xl {
+    width: 28px;
+    height: 28px;
+}
+
+
+/* ==============================
+MARCA
+============================== */
+
+.vy-marca {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    line-height: 1;
+}
+
+.vy-marca-nombre {
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    color: var(--vy-lateral-texto);
+}
+
+/* La Y en azul, como en la identidad */
+.vy-marca-y {
+    color: var(--vy-acento-claro);
+}
+
+.vy-marca-por {
+    font-size: 9px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--vy-lateral-tenue);
+    margin-top: 3px;
+}
+
+
+/* ==============================
+BARRA LATERAL
+============================== */
+
+.vy-sidebar {
+    background: var(--vy-lateral);
+    border-right: 1px solid var(--vy-lateral-borde);
+    color: var(--vy-lateral-texto);
+
+    width: 248px;
+    flex: 0 0 248px;
+
+    display: flex;
+    flex-direction: column;
+}
+
+.vy-sidebar-cabecera {
+    height: 76px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 20px;
+    border-bottom: 1px solid var(--vy-lateral-borde);
+}
+
+.vy-sidebar-nav {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    padding: 18px 12px;
+}
+
+.vy-sidebar-pie {
+    border-top: 1px solid var(--vy-lateral-borde);
+    padding: 14px 12px;
+}
+
+.vy-nav-grupo {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--vy-lateral-tenue);
+    padding: 0 12px;
+    margin: 18px 0 8px;
+}
+
+.vy-nav-grupo:first-child {
+    margin-top: 0;
+}
+
+.vy-nav-item {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+
+    padding: 10px 12px;
+    margin-bottom: 2px;
+    border-radius: 9px;
+    border: 1px solid transparent;
+
+    font-size: 14px;
+    font-weight: 500;
+    text-align: left;
+
+    color: var(--vy-lateral-tenue);
+    background: transparent;
+    cursor: pointer;
+}
+
+.vy-nav-item:hover {
+    background: rgba(255, 255, 255, 0.045);
+    color: var(--vy-lateral-texto);
+}
+
+/*
+El elemento activo: fondo azul muy diluido, borde apenas visible y el
+icono en azul. En la referencia se distingue sin gritar.
+*/
+.vy-nav-item.is-activa {
+    background: var(--vy-lateral-activo);
+    border-color: var(--vy-acento-borde);
+    color: #FFFFFF;
+}
+
+.vy-nav-item.is-activa .vy-icon {
+    color: var(--vy-acento-claro);
+}
+
+.vy-nav-texto {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+
+/* --- Version compacta: solo iconos --- */
+
+.vy-sidebar.is-compacta {
+    width: 72px;
+    flex: 0 0 72px;
+}
+
+.vy-sidebar.is-compacta .vy-nav-texto,
+.vy-sidebar.is-compacta .vy-nav-grupo,
+.vy-sidebar.is-compacta .vy-marca-texto,
+.vy-sidebar.is-compacta .vy-solo-ancha {
+    display: none;
+}
+
+.vy-sidebar.is-compacta .vy-nav-item {
+    justify-content: center;
+    padding: 11px 0;
+}
+
+.vy-sidebar.is-compacta .vy-sidebar-cabecera {
+    justify-content: center;
+    padding: 0;
+}
+
+/* La insignia de alertas no cabe al lado del texto; se posa encima */
+.vy-sidebar.is-compacta .vy-nav-item {
+    position: relative;
+}
+
+.vy-sidebar.is-compacta .vy-nav-insignia {
+    position: absolute;
+    top: 5px;
+    right: 12px;
+    margin: 0;
+}
+
+
+/* ==============================
+CABECERA
+============================== */
+
+.vy-header {
+    min-height: 76px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+
+    padding: 14px 24px;
+
+    background: var(--vy-superficie);
+    border-bottom: 1px solid var(--vy-borde);
+}
+
+.vy-header-titulo {
+    font-size: 19px;
+    font-weight: 650;
+    color: var(--vy-texto);
+    line-height: 1.25;
+}
+
+.vy-header-sub {
+    font-size: 13px;
+    color: var(--vy-texto-tenue);
+    margin-top: 2px;
+}
+
+.vy-header-acciones {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+}
+
+/* Identidad del usuario, a la derecha como en la referencia */
+.vy-usuario {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 10px;
+    border-radius: 10px;
+    border: 1px solid var(--vy-borde);
+    background: var(--vy-superficie-suave);
+}
+
+.vy-usuario-avatar {
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    flex: 0 0 auto;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    background: var(--vy-acento-tenue);
+    border: 1px solid var(--vy-acento-borde);
+    color: var(--vy-acento-claro);
+}
+
+.vy-usuario-nombre {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--vy-texto);
+    line-height: 1.2;
+}
+
+.vy-usuario-rol {
+    font-size: 11px;
+    color: var(--vy-texto-tenue);
+}
+
+
+/* ==============================
+TARJETAS
+============================== */
+
+.vy-card {
+    background: var(--vy-superficie);
+    border: 1px solid var(--vy-borde);
+    border-radius: 14px;
+    box-shadow: var(--vy-sombra);
+}
+
+.vy-card-cabecera {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 16px 18px;
+    border-bottom: 1px solid var(--vy-borde-suave);
+}
+
+.vy-card-titulo {
+    font-size: 14px;
+    font-weight: 650;
+    color: var(--vy-texto);
+}
+
+.vy-card-cuerpo {
+    padding: 18px;
+}
+
+/* --- Tarjeta de metrica: el numero grande del Resumen --- */
+
+.vy-metrica-etiqueta {
+    font-size: 13px;
+    color: var(--vy-texto-medio);
+    font-weight: 500;
+}
+
+.vy-metrica-valor {
+    font-size: 34px;
+    font-weight: 700;
+    line-height: 1.1;
+    color: var(--vy-texto);
+    margin-top: 6px;
+    font-variant-numeric: tabular-nums;
+}
+
+.vy-metrica-unidad {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--vy-texto-tenue);
+    margin-left: 4px;
+}
+
+.vy-metrica-pie {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 14px;
+    margin-top: 14px;
+}
+
+
+/* ==============================
+PUNTOS DE ESTADO
+
+Un circulo y una palabra. El color NO es lo unico que distingue los
+estados: cada uno lleva su texto, porque un daltonico no deberia
+depender del verde y el rojo.
+============================== */
+
+.vy-punto {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--vy-texto-medio);
+    white-space: nowrap;
+}
+
+.vy-punto::before {
+    content: "";
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: currentColor;
+    flex: 0 0 auto;
+}
+
+.vy-punto-ok { color: #34D399; }
+.vy-punto-mal { color: #F87171; }
+.vy-punto-aviso { color: #FBBF24; }
+.vy-punto-info { color: var(--vy-acento-claro); }
+.vy-punto-neutro { color: var(--vy-texto-tenue); }
+
+:root[data-theme="light"] .vy-punto-ok { color: #059669; }
+:root[data-theme="light"] .vy-punto-mal { color: #DC2626; }
+:root[data-theme="light"] .vy-punto-aviso { color: #D97706; }
+
+
+/* ==============================
+BOTONES
+============================== */
+
+.vy-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+
+    padding: 9px 16px;
+    border-radius: 10px;
+    border: 1px solid transparent;
+
+    font-size: 13.5px;
+    font-weight: 600;
+    line-height: 1.2;
+
+    cursor: pointer;
+    white-space: nowrap;
+
+    /* Nunca mas pequeño que un dedo */
+    min-height: 40px;
+}
+
+.vy-btn:disabled,
+.vy-btn[disabled] {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+/* Primario: el azul. Uno por pantalla, idealmente */
+.vy-btn-primario {
+    background: var(--vy-acento);
+    color: #FFFFFF;
+    border-color: var(--vy-acento);
+}
+
+.vy-btn-primario:hover:not(:disabled) {
+    background: var(--vy-acento-claro);
+    border-color: var(--vy-acento-claro);
+}
+
+.vy-btn-primario:active:not(:disabled) {
+    background: var(--vy-acento-hundido);
+    border-color: var(--vy-acento-hundido);
+}
+
+/* Secundario: el borde lleva el peso */
+.vy-btn-secundario {
+    background: var(--vy-superficie-suave);
+    color: var(--vy-texto);
+    border-color: var(--vy-borde);
+}
+
+.vy-btn-secundario:hover:not(:disabled) {
+    border-color: var(--vy-acento-borde);
+    color: var(--vy-acento-claro);
+}
+
+.vy-btn-secundario:active:not(:disabled) {
+    background: var(--vy-acento-tenue);
+}
+
+/* Fantasma: para iconos sueltos de la cabecera */
+.vy-btn-icono {
+    width: 40px;
+    height: 40px;
+    min-height: 40px;
+    padding: 0;
+
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+
+    border-radius: 10px;
+    border: 1px solid var(--vy-borde);
+    background: var(--vy-superficie-suave);
+    color: var(--vy-texto-medio);
+    cursor: pointer;
+
+    position: relative;
+}
+
+.vy-btn-icono:hover {
+    color: var(--vy-acento-claro);
+    border-color: var(--vy-acento-borde);
+}
+
+
+/* ==============================
+MENU DESPLEGABLE DEL USUARIO
+============================== */
+
+.vy-menu {
+    position: absolute;
+    right: 0;
+    top: calc(100% + 8px);
+    z-index: 60;
+
+    min-width: 220px;
+    padding: 6px;
+
+    background: var(--vy-superficie-alta);
+    border: 1px solid var(--vy-borde);
+    border-radius: 12px;
+    box-shadow: var(--vy-sombra-alta);
+}
+
+.vy-menu[hidden] {
+    display: none;
+}
+
+.vy-menu-item {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+
+    padding: 9px 10px;
+    border-radius: 8px;
+    border: none;
+    background: transparent;
+
+    font-size: 13.5px;
+    color: var(--vy-texto);
+    text-align: left;
+    cursor: pointer;
+}
+
+.vy-menu-item:hover {
+    background: var(--vy-acento-tenue);
+    color: var(--vy-acento-claro);
+}
+
+.vy-menu-sep {
+    height: 1px;
+    background: var(--vy-borde-suave);
+    margin: 5px 2px;
+}
+
+.vy-menu-grupo {
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--vy-texto-tenue);
+    padding: 8px 10px 4px;
+}
+
+
+/* ==============================
+NAVEGACION ADAPTABLE
+
+Tres comportamientos segun el ancho:
+
+  >= 1024px   barra lateral entera
+  768-1023px  barra compacta de iconos, ampliable con el boton
+  < 768px     cajon lateral que se abre desde el boton de menu
+
+El fallo que habia: la barra era "hidden md:flex", asi que por debajo
+de 768px desaparecia y no quedaba NINGUNA forma de navegar.
+============================== */
+
+.vy-capa {
+    position: fixed;
+    inset: 0;
+    z-index: 70;
+    background: rgba(4, 8, 16, 0.6);
+    backdrop-filter: blur(2px);
+}
+
+.vy-capa[hidden] {
+    display: none;
+}
+
+/* El boton de menu solo existe donde hace falta */
+.vy-btn-menu {
+    display: none;
+}
+
+
+@media (max-width: 1023px) {
+
+    /* Tabletas: compacta por defecto, pero ampliable */
+    .vy-sidebar:not(.is-cajon) {
+        width: 72px;
+        flex: 0 0 72px;
+    }
+
+    .vy-sidebar:not(.is-cajon):not(.is-expandida) .vy-nav-texto,
+    .vy-sidebar:not(.is-cajon):not(.is-expandida) .vy-nav-grupo,
+    .vy-sidebar:not(.is-cajon):not(.is-expandida) .vy-marca-texto,
+    .vy-sidebar:not(.is-cajon):not(.is-expandida) .vy-solo-ancha {
+        display: none;
+    }
+
+    .vy-sidebar:not(.is-cajon):not(.is-expandida) .vy-nav-item {
+        justify-content: center;
+        padding: 11px 0;
+        position: relative;
+    }
+
+    .vy-sidebar:not(.is-cajon):not(.is-expandida) .vy-nav-insignia {
+        position: absolute;
+        top: 5px;
+        right: 12px;
+        margin: 0;
+    }
+
+    /*
+    Expandida sobre el contenido, no empujandolo: en una tableta no
+    sobra ancho, y reflowear la tabla entera al abrir el menu marea.
+    */
+    .vy-sidebar.is-expandida {
+        position: fixed;
+        top: 0;
+        bottom: 0;
+        left: 0;
+        width: 248px;
+        flex-basis: 248px;
+        z-index: 80;
+        box-shadow: var(--vy-sombra-alta);
+    }
+}
+
+
+@media (max-width: 767px) {
+
+    /* Movil: fuera de la vista hasta que se pide */
+    .vy-sidebar {
+        position: fixed;
+        top: 0;
+        bottom: 0;
+        left: 0;
+        z-index: 80;
+
+        width: 272px;
+        flex-basis: 272px;
+
+        transform: translateX(-100%);
+        transition: transform 0.22s ease;
+
+        box-shadow: var(--vy-sombra-alta);
+    }
+
+    .vy-sidebar.is-abierta {
+        transform: translateX(0);
+    }
+
+    /* En movil el cajon siempre va completo: iconos solos no ayudan */
+    .vy-sidebar .vy-nav-texto,
+    .vy-sidebar .vy-nav-grupo,
+    .vy-sidebar .vy-marca-texto {
+        display: revert;
+    }
+
+    .vy-sidebar .vy-nav-item {
+        justify-content: flex-start;
+        padding: 12px;
+    }
+
+    .vy-btn-menu {
+        display: inline-flex;
+    }
+
+    .vy-header {
+        padding: 12px 14px;
+        min-height: 64px;
+    }
+
+    /* El nombre del usuario se va; el avatar se queda */
+    .vy-usuario-texto {
+        display: none;
+    }
+
+    .vy-usuario {
+        padding: 4px;
+        border: none;
+        background: transparent;
+    }
+}
+
+
+/* El boton de cerrar el cajon solo en movil */
+.vy-cerrar-cajon {
+    display: none;
+}
+
+@media (max-width: 767px) {
+    .vy-cerrar-cajon {
+        display: inline-flex;
+    }
+}
+
+
+/* ==============================
+TABLAS
+
+Las tablas del panel tienen muchas columnas y en un movil no caben.
+Se desplazan en horizontal DENTRO de su tarjeta, nunca arrastrando la
+pagina entera, y conservan todas sus columnas y acciones.
+============================== */
+
+.vy-tabla-scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+/* Que se vea que hay mas a los lados */
+.vy-tabla-scroll::-webkit-scrollbar {
+    height: 8px;
+}
+
+.vy-tabla-scroll::-webkit-scrollbar-thumb {
+    background: var(--vy-borde);
+    border-radius: 4px;
+}
+
+.vy-tabla-scroll::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+
+/* ==============================
+PISTA PARA LECTORES DE PANTALLA
+============================== */
+
+.vy-solo-lectores {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+
+/* ==========================================================
+CAPA DE COMPATIBILIDAD
+
+Lo explicado arriba: las utilidades neutras de Tailwind que ya estan
+escritas en el marcado pasan a leer las variables del tema. Solo
+color; ni una regla cambia la caja.
+========================================================== */
+
+/* --- Superficies --- */
+
+.bg-white,
+.bg-slate-50 {
+    background-color: var(--vy-superficie) !important;
+}
+
+.bg-slate-100,
+.bg-slate-200 {
+    background-color: var(--vy-superficie-suave) !important;
+}
+
+/* Los oscuros ya eran oscuros: en claro tienen que aclararse */
+:root[data-theme="light"] .bg-slate-700,
+:root[data-theme="light"] .bg-slate-800,
+:root[data-theme="light"] .bg-slate-900,
+:root[data-theme="light"] .bg-slate-950 {
+    background-color: var(--vy-superficie-suave) !important;
+}
+
+:root[data-theme="dark"] .bg-slate-700,
+:root[data-theme="dark"] .bg-slate-800 {
+    background-color: var(--vy-superficie-alta) !important;
+}
+
+:root[data-theme="dark"] .bg-slate-900,
+:root[data-theme="dark"] .bg-slate-950 {
+    background-color: var(--vy-lateral) !important;
+}
+
+
+/* --- Texto --- */
+
+.text-slate-900,
+.text-slate-800 {
+    color: var(--vy-texto) !important;
+}
+
+.text-slate-700,
+.text-slate-600 {
+    color: var(--vy-texto-medio) !important;
+}
+
+.text-slate-500,
+.text-slate-400 {
+    color: var(--vy-texto-tenue) !important;
+}
+
+/*
+text-white sobre un fondo que en modo claro ahora es claro dejaria el
+texto invisible. Se respeta donde el fondo sigue siendo oscuro (la
+barra lateral y los botones de color), y se corrige en el resto.
+*/
+:root[data-theme="light"] .bg-slate-700.text-white,
+:root[data-theme="light"] .bg-slate-800.text-white,
+:root[data-theme="light"] .bg-slate-900.text-white {
+    color: var(--vy-texto) !important;
+}
+
+:root[data-theme="light"] .text-slate-300 {
+    color: var(--vy-texto-medio) !important;
+}
+
+:root[data-theme="dark"] .text-slate-300 {
+    color: var(--vy-texto-medio) !important;
+}
+
+
+/* --- Bordes --- */
+
+.border-slate-200,
+.border-slate-300,
+.border-slate-100 {
+    border-color: var(--vy-borde) !important;
+}
+
+.divide-slate-100 > :not([hidden]) ~ :not([hidden]) {
+    border-color: var(--vy-borde-suave) !important;
+}
+
+:root[data-theme="light"] .border-slate-700,
+:root[data-theme="light"] .border-slate-800 {
+    border-color: var(--vy-borde) !important;
+}
+
+
+/* --- Campos de formulario ---
+
+Los input heredan el fondo del navegador, no el de Tailwind, asi que
+en modo oscuro salian blancos. Esto es lo que mas se nota.
+*/
+
+input,
+select,
+textarea {
+    background-color: var(--vy-superficie-suave);
+    color: var(--vy-texto);
+    border-color: var(--vy-borde);
+}
+
+input::placeholder,
+textarea::placeholder {
+    color: var(--vy-texto-tenue);
+    opacity: 1;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+    border-color: var(--vy-acento-borde);
+}
+
+/* El autorrelleno de Chrome pinta su propio amarillo */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+    -webkit-text-fill-color: var(--vy-texto);
+    -webkit-box-shadow: 0 0 0 1000px var(--vy-superficie-suave) inset;
+}
+
+/* El calendario y las flechas nativas, visibles en oscuro */
+:root[data-theme="dark"] input[type="date"]::-webkit-calendar-picker-indicator,
+:root[data-theme="dark"] input[type="time"]::-webkit-calendar-picker-indicator,
+:root[data-theme="dark"] input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+    filter: invert(0.75);
+}
+
+
+/* --- Tarjetas ya existentes del marcado ---
+
+Las pantallas sin rehacer usan rounded-xl/2xl con bg-white y borde.
+Se les da la misma sombra y redondeo que a las .vy-card para que no
+canten al lado de las nuevas.
+*/
+
+.bg-white.rounded-xl,
+.bg-white.rounded-2xl,
+.bg-slate-50.rounded-xl,
+.bg-slate-50.rounded-2xl {
+    box-shadow: var(--vy-sombra);
+}
+
+
+/* --- Sombras de Tailwind en oscuro ---
+
+shadow-xl sobre fondo oscuro no se ve y deja la tarjeta plana.
+*/
+:root[data-theme="dark"] .shadow,
+:root[data-theme="dark"] .shadow-md,
+:root[data-theme="dark"] .shadow-lg,
+:root[data-theme="dark"] .shadow-xl {
+    box-shadow: var(--vy-sombra-alta) !important;
+}
+
+
+/* --- Franjas de tabla --- */
+
+tbody tr:hover {
+    background-color: var(--vy-superficie-suave);
+}
+
+
+/* ==============================
+PAGINA PUBLICA
+============================== */
+
+.vy-publico {
+    background:
+        radial-gradient(
+            1100px 520px at 72% -8%,
+            rgba(47, 123, 255, 0.16),
+            transparent 60%
+        ),
+        var(--vy-fondo);
+    min-height: 100vh;
+}
+
+:root[data-theme="light"] .vy-publico {
+    background:
+        radial-gradient(
+            1100px 520px at 72% -8%,
+            rgba(29, 99, 230, 0.09),
+            transparent 60%
+        ),
+        var(--vy-fondo);
+}
+
+.vy-publico-nav {
+    position: sticky;
+    top: 0;
+    z-index: 40;
+
+    display: flex;
+    align-items: center;
+    gap: 18px;
+
+    padding: 14px 28px;
+
+    /*
+    El respaldo va primero: un navegador que no entienda color-mix se
+    queda con el fondo solido, que es perfectamente legible. El
+    desenfoque es un adorno, no una necesidad.
+    */
+    background: var(--vy-fondo);
+    background: color-mix(in srgb, var(--vy-fondo) 86%, transparent);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--vy-borde);
+}
+
+.vy-publico-enlaces {
+    display: flex;
+    align-items: center;
+    gap: 26px;
+    margin: 0 auto;
+}
+
+.vy-publico-enlace {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--vy-texto-medio);
+    text-decoration: none;
+    padding: 6px 2px;
+    border-bottom: 2px solid transparent;
+}
+
+.vy-publico-enlace:hover {
+    color: var(--vy-texto);
+}
+
+.vy-publico-enlace.is-activa {
+    color: var(--vy-acento-claro);
+    border-bottom-color: var(--vy-acento);
+}
+
+.vy-pildora {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+
+    padding: 7px 16px;
+    border-radius: 999px;
+    border: 1px solid var(--vy-borde);
+    background: var(--vy-superficie-suave);
+
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--vy-texto-medio);
+}
+
+.vy-titular {
+    font-size: clamp(2.1rem, 5.2vw, 3.7rem);
+    font-weight: 750;
+    line-height: 1.08;
+    letter-spacing: -0.02em;
+    color: var(--vy-texto);
+}
+
+.vy-titular-azul {
+    color: var(--vy-acento-claro);
+    display: block;
+}
+
+.vy-entradilla {
+    font-size: clamp(1rem, 1.5vw, 1.12rem);
+    line-height: 1.65;
+    color: var(--vy-texto-medio);
+    max-width: 34rem;
+}
+
+
+/* --- La maqueta del panel ---
+
+Una ilustracion de la interfaz hecha con los mismos componentes que
+el panel de verdad: las mismas variables, las mismas tarjetas, los
+mismos iconos. Asi se parece porque ESTA hecha igual, no porque se
+haya copiado a mano un dibujo.
+
+Lo que no es real son las cifras, y el pie lo dice.
+*/
+
+.vy-maqueta {
+    background: var(--vy-superficie);
+    border: 1px solid var(--vy-borde);
+    border-radius: 16px;
+    box-shadow: var(--vy-sombra-alta);
+    overflow: hidden;
+    user-select: none;
+}
+
+.vy-maqueta-barra {
+    background: var(--vy-lateral);
+    border-right: 1px solid var(--vy-lateral-borde);
+}
+
+/* El fondo del area de contenido, como en el panel */
+.vy-maqueta-area {
+    background: var(--vy-fondo);
+}
+
+:root[data-theme="light"] .vy-maqueta-area {
+    background: #F4F6FB;
+}
+
+/* Las tarjetas de la maqueta, mas pequeñas que las de verdad */
+.vy-maqueta-tarjeta {
+    background: var(--vy-superficie);
+    border: 1px solid var(--vy-borde);
+    border-radius: 10px;
+    padding: 10px 11px;
+}
+
+.vy-maqueta-etiqueta {
+    font-size: 10px;
+    color: var(--vy-texto-medio);
+    line-height: 1.2;
+}
+
+.vy-maqueta-cifra {
+    font-size: 21px;
+    font-weight: 700;
+    color: var(--vy-texto);
+    line-height: 1.15;
+    margin-top: 3px;
+    font-variant-numeric: tabular-nums;
+}
+
+.vy-maqueta-pie {
+    font-size: 9px;
+    margin-top: 5px;
+}
+
+/* El recuadro del icono, como en las tarjetas reales */
+.vy-maqueta-icono {
+    width: 26px;
+    height: 26px;
+    border-radius: 7px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--vy-acento-tenue);
+    border: 1px solid var(--vy-acento-borde);
+    color: var(--vy-acento-claro);
+    flex: 0 0 auto;
+}
+
+.vy-maqueta-icono .vy-icon {
+    width: 13px;
+    height: 13px;
+}
+
+/* Los renglones de navegacion */
+.vy-maqueta-nav {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 6px 8px;
+    border-radius: 7px;
+    border: 1px solid transparent;
+    font-size: 10.5px;
+    color: var(--vy-lateral-tenue);
+    margin-bottom: 1px;
+}
+
+.vy-maqueta-nav.is-activa {
+    background: var(--vy-lateral-activo);
+    border-color: var(--vy-acento-borde);
+    color: #FFFFFF;
+}
+
+.vy-maqueta-nav.is-activa .vy-icon {
+    color: var(--vy-acento-claro);
+}
+
+.vy-maqueta-nav .vy-icon {
+    width: 13px;
+    height: 13px;
+}
+
+.vy-maqueta-grupo {
+    font-size: 8px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--vy-lateral-tenue);
+    padding: 0 8px;
+    margin: 10px 0 5px;
+}
+
+.vy-maqueta-grupo:first-child {
+    margin-top: 0;
+}
+
+/* La insignia roja de Alertas */
+.vy-maqueta-insignia {
+    margin-left: auto;
+    background: #EF4444;
+    color: #FFFFFF;
+    font-size: 8px;
+    font-weight: 700;
+    padding: 1px 5px;
+    border-radius: 999px;
+}
+
+
+
+
+
+@media (max-width: 900px) {
+
+    .vy-publico-enlaces {
+        display: none;
+    }
+
+    .vy-publico-nav {
+        padding: 12px 16px;
+        gap: 10px;
+    }
+}
+
+
+/* ==============================
+ESTADOS VACIOS
+
+Cuando no hay datos se dice que no hay datos. Nunca un cero inventado
+ni una grafica de relleno.
+============================== */
+
+.vy-vacio {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+
+    padding: 40px 20px;
+    text-align: center;
+    color: var(--vy-texto-tenue);
+}
+
+.vy-vacio .vy-icon {
+    width: 30px;
+    height: 30px;
+    opacity: 0.5;
+}
+
+.vy-vacio-titulo {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--vy-texto-medio);
+}
+
+.vy-vacio-texto {
+    font-size: 13px;
+    max-width: 30rem;
+    line-height: 1.55;
+}
+
+
+/* ==============================
+COLORES DE INTENCION EN MODO OSCURO
+
+Verde, ambar, rojo y azul significan algo (bien, aviso, error,
+informacion) y por eso no se tocan en modo claro.
+
+Pero los fondos muy claros de Tailwind —bg-red-50, bg-emerald-50 y
+compañia— sobre un panel oscuro quedan como parches pastel
+encendidos. Aqui se convierten en un velo del mismo tono: se sigue
+leyendo el significado, sin el fogonazo.
+
+El texto a juego (text-red-700 y similares) se aclara, porque un tono
+oscuro sobre un velo oscuro no se lee.
+============================== */
+
+:root[data-theme="dark"] .bg-emerald-50,
+:root[data-theme="dark"] .bg-emerald-100 {
+    background-color: rgba(52, 211, 153, 0.12) !important;
+}
+
+:root[data-theme="dark"] .bg-red-50,
+:root[data-theme="dark"] .bg-red-100 {
+    background-color: rgba(248, 113, 113, 0.12) !important;
+}
+
+:root[data-theme="dark"] .bg-amber-50,
+:root[data-theme="dark"] .bg-amber-100,
+:root[data-theme="dark"] .bg-orange-50,
+:root[data-theme="dark"] .bg-yellow-50 {
+    background-color: rgba(251, 191, 36, 0.12) !important;
+}
+
+:root[data-theme="dark"] .bg-blue-50,
+:root[data-theme="dark"] .bg-blue-100 {
+    background-color: var(--vy-acento-tenue) !important;
+}
+
+
+/* El texto que acompaña a esos fondos */
+
+:root[data-theme="dark"] .text-emerald-600,
+:root[data-theme="dark"] .text-emerald-700,
+:root[data-theme="dark"] .text-green-600,
+:root[data-theme="dark"] .text-green-700 {
+    color: #34D399 !important;
+}
+
+:root[data-theme="dark"] .text-red-600,
+:root[data-theme="dark"] .text-red-700,
+:root[data-theme="dark"] .text-red-800 {
+    color: #F87171 !important;
+}
+
+:root[data-theme="dark"] .text-amber-600,
+:root[data-theme="dark"] .text-amber-700,
+:root[data-theme="dark"] .text-orange-600,
+:root[data-theme="dark"] .text-yellow-700 {
+    color: #FBBF24 !important;
+}
+
+:root[data-theme="dark"] .text-blue-600,
+:root[data-theme="dark"] .text-blue-700,
+:root[data-theme="dark"] .text-blue-800 {
+    color: var(--vy-acento-claro) !important;
+}
+
+
+/*
+Los botones SOLIDOS de color (bg-emerald-600 y compañia) se dejan tal
+cual en los dos temas: ya llevan texto blanco encima y su contraste
+no depende del fondo de la pagina.
+*/
+
+
+/* ==============================
+EL LOGOTIPO
+
+La palabra VEYRA del logotipo es azul marino casi negro. Sobre un
+fondo oscuro desaparece, asi que hay dos archivos: el original para
+superficies claras y una variante con la tipografia aclarada para las
+oscuras. El dibujo es el mismo en ambos; solo cambia la letra.
+
+Donde el fondo depende del tema se ponen los dos y se enseña el que
+toca. Son unos 30 KB cada uno y el navegador los cachea; a cambio, el
+cambio de tema es instantaneo y no hay un parpadeo mientras se
+descarga el otro.
+
+La barra lateral es azul marino en LOS DOS temas, asi que alli va
+siempre la variante clara y basta con una imagen.
+============================== */
+
+.vy-logo {
+    display: block;
+    height: auto;
+    object-fit: contain;
+}
+
+/* Se enseña sobre fondo oscuro */
+.vy-logo-sobre-oscuro {
+    display: none;
+}
+
+:root[data-theme="dark"] .vy-logo-sobre-oscuro {
+    display: block;
+}
+
+:root[data-theme="dark"] .vy-logo-sobre-claro {
+    display: none;
+}
+
+
+/*
+En la barra compacta no cabe la palabra: queda el dibujo solo, que es
+lo que sigue identificando a VEYRA a 40 pixeles.
+*/
+.vy-sidebar.is-compacta .vy-logo-ancho,
+.vy-sidebar.is-compacta .vy-marca-texto {
+    display: none;
+}
+
+.vy-logo-icono {
+    display: none;
+}
+
+.vy-sidebar.is-compacta .vy-logo-icono {
+    display: block;
+}
+
+
+@media (max-width: 1023px) {
+
+    .vy-sidebar:not(.is-cajon):not(.is-expandida) .vy-logo-ancho {
+        display: none;
+    }
+
+    .vy-sidebar:not(.is-cajon):not(.is-expandida) .vy-logo-icono {
+        display: block;
+    }
+}
+
+
+@media (max-width: 767px) {
+
+    /* En el cajon vuelve a caber entero */
+    .vy-sidebar .vy-logo-ancho {
+        display: block;
+    }
+
+    .vy-sidebar .vy-logo-icono {
+        display: none;
+    }
+}

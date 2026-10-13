@@ -6,30 +6,412 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-    <title>RemoteAdmin</title>
+    <title>VEYRA | Administracion remota</title>
+
+    <meta
+        name="description"
+        content="VEYRA by NYRA. Supervisa equipos, consulta grabaciones y
+            gestiona tu organizacion desde una plataforma centralizada."
+    >
+
+    <meta name="theme-color" content="#070C17">
+
+    <!--
+    LA MARCA
+
+    El .ico lleva dentro 16, 32, 48 y 64 pixeles: cada navegador coge
+    el que le conviene en vez de reducir por su cuenta una imagen
+    grande, que es cuando se emborrona.
+
+    Los PNG van detras para quien prefiera ese formato. El original
+    media 1254px y pesaba 1 MB; aqui se sirven los tamaños que se
+    pintan de verdad, recortados al contenido para que el dibujo
+    ocupe todo el cuadro.
+    -->
+    <link rel="icon" href="/frontend/marca/veyra.ico" sizes="any">
+    <link rel="icon" type="image/png" sizes="32x32"
+        href="/frontend/marca/veyra-32.png">
+    <link rel="icon" type="image/png" sizes="48x48"
+        href="/frontend/marca/veyra-48.png">
+    <link rel="apple-touch-icon" href="/frontend/marca/veyra-180.png">
 
     <script src="https://cdn.tailwindcss.com"></script>
+
+    <link rel="stylesheet" href="/frontend/veyra.css">
+
+    <script>
+        /*
+        El tema se aplica ANTES de pintar nada. Si esperase a que
+        cargue app.js, quien tiene el modo oscuro veria un fogonazo
+        blanco en cada carga.
+
+        Por eso va aqui, en linea y sin defer: es la unica forma de
+        que el atributo este puesto cuando el navegador calcula los
+        primeros estilos.
+
+        La preferencia se guarda por usuario (ver app.js). Aqui solo
+        se lee la ultima activa, que es la que corresponde a quien
+        tiene la sesion abierta en este navegador.
+        */
+        (function () {
+
+            var tema = "dark";
+
+            try {
+                var guardado = window.localStorage.getItem("veyra-tema");
+
+                if (guardado === "light" || guardado === "dark") {
+                    tema = guardado;
+                }
+
+            } catch (error) {
+                /*
+                En navegacion privada o con el almacenamiento
+                bloqueado, leer localStorage lanza. No es motivo para
+                romper la pagina: se sigue con el tema oscuro, que es
+                el predeterminado.
+                */
+            }
+
+            document.documentElement.setAttribute("data-theme", tema);
+        })();
+    </script>
 
 </head>
 
 
-<body class="bg-slate-100 text-slate-900">
+<body>
+
+    <!--
+    ICONOS DE VEYRA
+
+    Un solo juego, de trazo uniforme sobre una reticula de 24x24. Se
+    define una vez aqui y cada uso es un <use href="#i-...">, asi que
+    el mismo icono repetido cien veces pesa una.
+
+    No se añade ninguna biblioteca ni CDN: son trazados escritos en el
+    propio archivo. Asi el panel sigue funcionando sin internet, que
+    importa en una herramienta de administracion.
+
+    El color NO se fija aqui: todos usan stroke="currentColor" a
+    traves de .vy-icon, de modo que heredan el color del texto y
+    obedecen al tema sin una sola regla extra.
+    -->
+    <svg
+        width="0"
+        height="0"
+        style="position:absolute"
+        aria-hidden="true"
+        focusable="false"
+    >
+        <defs>
+
+            <!-- Navegacion -->
+
+            <symbol id="i-panel" viewBox="0 0 24 24">
+                <rect x="3" y="3" width="7" height="9" rx="1"/>
+                <rect x="14" y="3" width="7" height="5" rx="1"/>
+                <rect x="14" y="12" width="7" height="9" rx="1"/>
+                <rect x="3" y="16" width="7" height="5" rx="1"/>
+            </symbol>
+
+            <symbol id="i-equipo" viewBox="0 0 24 24">
+                <rect x="2" y="3" width="20" height="14" rx="2"/>
+                <path d="M8 21h8"/>
+                <path d="M12 17v4"/>
+            </symbol>
+
+            <symbol id="i-grabacion" viewBox="0 0 24 24">
+                <path d="m22 8-6 4 6 4V8Z"/>
+                <rect x="2" y="6" width="14" height="12" rx="2"/>
+            </symbol>
+
+            <symbol id="i-usuarios" viewBox="0 0 24 24">
+                <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
+                <circle cx="9" cy="7" r="4"/>
+                <path d="M22 21v-2a4 4 0 0 0-3-3.87"/>
+                <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+            </symbol>
+
+            <symbol id="i-organizacion" viewBox="0 0 24 24">
+                <path d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z"/>
+                <path d="M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"/>
+                <path d="M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2"/>
+                <path d="M10 6h4"/>
+                <path d="M10 10h4"/>
+                <path d="M10 14h4"/>
+                <path d="M10 18h4"/>
+            </symbol>
+
+            <symbol id="i-configuracion" viewBox="0 0 24 24">
+                <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
+                <circle cx="12" cy="12" r="3"/>
+            </symbol>
+
+            <symbol id="i-instalar" viewBox="0 0 24 24">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <path d="m7 10 5 5 5-5"/>
+                <path d="M12 15V3"/>
+            </symbol>
+
+            <symbol id="i-alerta" viewBox="0 0 24 24">
+                <path d="M10.268 21a2 2 0 0 0 3.464 0"/>
+                <path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"/>
+            </symbol>
+
+            <!-- Estados y avisos -->
+
+            <symbol id="i-aviso" viewBox="0 0 24 24">
+                <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/>
+                <path d="M12 9v4"/>
+                <path d="M12 17h.01"/>
+            </symbol>
+
+            <symbol id="i-correcto" viewBox="0 0 24 24">
+                <path d="M21.8 10A10 10 0 1 1 17 3.34"/>
+                <path d="m9 11 3 3L22 4"/>
+            </symbol>
+
+            <symbol id="i-info" viewBox="0 0 24 24">
+                <circle cx="12" cy="12" r="10"/>
+                <path d="M12 16v-4"/>
+                <path d="M12 8h.01"/>
+            </symbol>
+
+            <symbol id="i-reloj" viewBox="0 0 24 24">
+                <circle cx="12" cy="12" r="10"/>
+                <path d="M12 6v6l4 2"/>
+            </symbol>
+
+            <symbol id="i-actividad" viewBox="0 0 24 24">
+                <path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/>
+            </symbol>
+
+            <symbol id="i-grabando" viewBox="0 0 24 24">
+                <circle cx="12" cy="12" r="10"/>
+                <circle cx="12" cy="12" r="3.5" fill="currentColor" stroke="none"/>
+            </symbol>
+
+            <!-- Almacenamiento -->
+
+            <symbol id="i-nube" viewBox="0 0 24 24">
+                <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>
+            </symbol>
+
+            <symbol id="i-disco" viewBox="0 0 24 24">
+                <path d="M22 12H2"/>
+                <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>
+                <path d="M6 16h.01"/>
+                <path d="M10 16h.01"/>
+            </symbol>
+
+            <symbol id="i-ubicacion" viewBox="0 0 24 24">
+                <path d="M20 10c0 4.99-5.54 10.19-7.4 11.8a1 1 0 0 1-1.2 0C9.54 20.19 4 14.99 4 10a8 8 0 0 1 16 0"/>
+                <circle cx="12" cy="10" r="3"/>
+            </symbol>
+
+            <symbol id="i-servidor" viewBox="0 0 24 24">
+                <rect x="2" y="2" width="20" height="8" rx="2"/>
+                <rect x="2" y="14" width="20" height="8" rx="2"/>
+                <path d="M6 6h.01"/>
+                <path d="M6 18h.01"/>
+            </symbol>
+
+            <!-- Acciones -->
+
+            <symbol id="i-reproducir" viewBox="0 0 24 24">
+                <path d="m6 3 14 9-14 9Z"/>
+            </symbol>
+
+            <symbol id="i-pausa" viewBox="0 0 24 24">
+                <rect x="14" y="4" width="4" height="16" rx="1"/>
+                <rect x="6" y="4" width="4" height="16" rx="1"/>
+            </symbol>
+
+            <symbol id="i-descargar" viewBox="0 0 24 24">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <path d="m7 10 5 5 5-5"/>
+                <path d="M12 15V3"/>
+            </symbol>
+
+            <symbol id="i-buscar" viewBox="0 0 24 24">
+                <circle cx="11" cy="11" r="8"/>
+                <path d="m21 21-4.3-4.3"/>
+            </symbol>
+
+            <symbol id="i-editar" viewBox="0 0 24 24">
+                <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                <path d="M18.37 2.63a1.9 1.9 0 0 1 2.7 2.7L11.5 14.9l-3.6 1 1-3.6z"/>
+            </symbol>
+
+            <symbol id="i-eliminar" viewBox="0 0 24 24">
+                <path d="M3 6h18"/>
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/>
+                <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                <path d="M10 11v6"/>
+                <path d="M14 11v6"/>
+            </symbol>
+
+            <symbol id="i-actualizar" viewBox="0 0 24 24">
+                <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
+                <path d="M21 3v5h-5"/>
+                <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
+                <path d="M8 16H3v5"/>
+            </symbol>
+
+            <symbol id="i-mas" viewBox="0 0 24 24">
+                <path d="M5 12h14"/>
+                <path d="M12 5v14"/>
+            </symbol>
+
+            <symbol id="i-filtro" viewBox="0 0 24 24">
+                <path d="M22 3H2l8 9.46V19l4 2v-8.54Z"/>
+            </symbol>
+
+            <symbol id="i-calendario" viewBox="0 0 24 24">
+                <rect x="3" y="4" width="18" height="18" rx="2"/>
+                <path d="M16 2v4"/>
+                <path d="M8 2v4"/>
+                <path d="M3 10h18"/>
+            </symbol>
+
+            <symbol id="i-encender" viewBox="0 0 24 24">
+                <path d="M12 2v10"/>
+                <path d="M18.4 6.6a9 9 0 1 1-12.77.04"/>
+            </symbol>
+
+            <symbol id="i-salir" viewBox="0 0 24 24">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+                <path d="m16 17 5-5-5-5"/>
+                <path d="M21 12H9"/>
+            </symbol>
+
+            <!-- Seguridad -->
+
+            <symbol id="i-escudo" viewBox="0 0 24 24">
+                <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>
+                <path d="m9 12 2 2 4-4"/>
+            </symbol>
+
+            <symbol id="i-candado" viewBox="0 0 24 24">
+                <rect x="3" y="11" width="18" height="11" rx="2"/>
+                <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+            </symbol>
+
+            <symbol id="i-correo" viewBox="0 0 24 24">
+                <rect x="2" y="4" width="20" height="16" rx="2"/>
+                <path d="m22 7-9 5.7a2 2 0 0 1-2 0L2 7"/>
+            </symbol>
+
+            <!-- Interfaz -->
+
+            <symbol id="i-menu" viewBox="0 0 24 24">
+                <path d="M4 6h16"/>
+                <path d="M4 12h16"/>
+                <path d="M4 18h16"/>
+            </symbol>
+
+            <symbol id="i-cerrar" viewBox="0 0 24 24">
+                <path d="M18 6 6 18"/>
+                <path d="m6 6 12 12"/>
+            </symbol>
+
+            <symbol id="i-abajo" viewBox="0 0 24 24">
+                <path d="m6 9 6 6 6-6"/>
+            </symbol>
+
+            <symbol id="i-derecha" viewBox="0 0 24 24">
+                <path d="m9 18 6-6-6-6"/>
+            </symbol>
+
+            <symbol id="i-flecha-derecha" viewBox="0 0 24 24">
+                <path d="M5 12h14"/>
+                <path d="m12 5 7 7-7 7"/>
+            </symbol>
+
+            <symbol id="i-lateral" viewBox="0 0 24 24">
+                <rect x="3" y="3" width="18" height="18" rx="2"/>
+                <path d="M9 3v18"/>
+            </symbol>
+
+            <symbol id="i-sol" viewBox="0 0 24 24">
+                <circle cx="12" cy="12" r="4"/>
+                <path d="M12 2v2"/>
+                <path d="M12 20v2"/>
+                <path d="m4.93 4.93 1.41 1.41"/>
+                <path d="m17.66 17.66 1.41 1.41"/>
+                <path d="M2 12h2"/>
+                <path d="M20 12h2"/>
+                <path d="m6.34 17.66-1.41 1.41"/>
+                <path d="m19.07 4.93-1.41 1.41"/>
+            </symbol>
+
+            <symbol id="i-luna" viewBox="0 0 24 24">
+                <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>
+            </symbol>
+
+            <symbol id="i-persona" viewBox="0 0 24 24">
+                <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/>
+                <circle cx="12" cy="7" r="4"/>
+            </symbol>
+
+            <symbol id="i-guia" viewBox="0 0 24 24">
+                <path d="M12 7v14"/>
+                <path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/>
+            </symbol>
+
+            <symbol id="i-ayuda" viewBox="0 0 24 24">
+                <path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>
+            </symbol>
+
+            <symbol id="i-camara" viewBox="0 0 24 24">
+                <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3z"/>
+                <circle cx="12" cy="13" r="3"/>
+            </symbol>
+
+            <symbol id="i-ojo" viewBox="0 0 24 24">
+                <path d="M2.06 12.35a1 1 0 0 1 0-.7 10.75 10.75 0 0 1 19.88 0 1 1 0 0 1 0 .7 10.75 10.75 0 0 1-19.88 0"/>
+                <circle cx="12" cy="12" r="3"/>
+            </symbol>
+
+        </defs>
+    </svg>
+
 
 
     <div
         id="login-screen"
-        class="hidden fixed inset-0 z-50 bg-slate-900 flex items-center justify-center p-6"
+        class="hidden fixed inset-0 z-50 vy-publico flex items-center justify-center p-6 overflow-y-auto"
     >
 
-        <div class="w-full max-w-sm bg-white rounded-2xl shadow-xl p-8">
+        <div class="w-full max-w-sm vy-card" style="padding:32px">
 
-            <div class="text-center mb-6">
+            <div class="text-center mb-7">
 
-                <h1 class="text-2xl font-bold">
-                    RemoteAdmin
-                </h1>
+                <!--
+                La tarjeta es blanca en tema claro y oscura en tema
+                oscuro: se ponen los dos y CSS enseña el que toca.
+                -->
+                <img
+                    class="vy-logo vy-logo-sobre-claro"
+                    src="/frontend/marca/veyra-logo-320.png"
+                    alt="VEYRA"
+                    width="320"
+                    height="93"
+                    style="width:210px;height:auto;margin:0 auto"
+                >
 
-                <p class="text-sm text-slate-500 mt-1">
+                <img
+                    class="vy-logo vy-logo-sobre-oscuro"
+                    src="/frontend/marca/veyra-logo-claro-320.png"
+                    alt=""
+                    aria-hidden="true"
+                    width="320"
+                    height="93"
+                    style="width:210px;height:auto;margin:0 auto"
+                >
+
+                <p class="text-sm text-slate-500 mt-4">
                     Inicia sesión para continuar
                 </p>
 
@@ -77,7 +459,7 @@
                 <button
                     id="login-button"
                     type="submit"
-                    class="w-full px-4 py-2 rounded-lg bg-slate-900 text-white text-sm hover:bg-slate-700 transition disabled:opacity-50"
+                    class="vy-btn vy-btn-primario w-full"
                 >
                     Iniciar sesi&oacute;n
                 </button>
@@ -85,10 +467,21 @@
                 <button
                     id="forgot-link"
                     type="button"
-                    class="w-full text-sm text-slate-500 hover:text-slate-800 underline"
+                    class="w-full text-sm text-slate-500 hover:underline"
+                    style="background:none;border:none;cursor:pointer;
+                        padding:4px"
                 >
                     &iquest;Olvidaste tu contrase&ntilde;a?
                 </button>
+
+                <!-- Vuelta a la presentacion publica del producto -->
+                <a
+                    href="/inicio"
+                    class="w-full text-center text-sm"
+                    style="color:var(--vy-texto-tenue);text-decoration:none"
+                >
+                    Conocer VEYRA
+                </a>
 
             </form>
 
@@ -219,28 +612,68 @@
     <div id="app-shell" class="hidden min-h-screen flex">
 
 
-        <aside class="w-64 bg-slate-900 text-white hidden md:flex flex-col">
+        <!--
+        Fondo oscuro del cajon en movil. Cubre el contenido mientras
+        el menu esta abierto y se cierra al tocarlo, que es lo que
+        todo el mundo intenta primero.
+        -->
+        <div id="vy-capa" class="vy-capa" hidden></div>
 
-            <div class="h-20 flex items-center px-6 border-b border-slate-800">
 
-                <div>
+        <!--
+        La barra lateral. Antes era "hidden md:flex": por debajo de
+        768px desaparecia y no quedaba NINGUNA forma de navegar. Ahora
+        se comporta de tres maneras segun el ancho (ver veyra.css):
+        entera, compacta de iconos, o cajon desplegable en movil.
+        -->
+        <aside
+            id="vy-sidebar"
+            class="vy-sidebar"
+            aria-label="Navegacion principal"
+        >
 
-                    <h1 class="text-xl font-bold">
-                        RemoteAdmin
-                    </h1>
+            <div class="vy-sidebar-cabecera">
 
-                    <p class="text-xs text-slate-400 mt-1">
-                        Administración remota
-                    </p>
+                <!--
+                El logotipo ya trae la palabra, asi que no se repite
+                debajo en texto. La barra es oscura en los dos temas,
+                de ahi la variante clara sin alternancia.
+                -->
+                <img
+                    class="vy-logo vy-logo-ancho"
+                    src="/frontend/marca/veyra-logo-claro-320.png"
+                    alt="VEYRA"
+                    width="320"
+                    height="93"
+                    style="width:188px;height:auto"
+                >
 
-                </div>
+                <img
+                    class="vy-logo vy-logo-icono"
+                    src="/frontend/marca/veyra-256.png"
+                    alt="VEYRA"
+                    width="256"
+                    height="256"
+                    style="width:34px;height:34px"
+                >
+
+                <!-- Solo en movil: cerrar el cajon -->
+                <button
+                    id="vy-cerrar-cajon"
+                    type="button"
+                    class="vy-cerrar-cajon vy-nav-item"
+                    style="width:auto;margin:0 0 0 auto;padding:8px"
+                    aria-label="Cerrar el menu"
+                >
+                    <svg class="vy-icon"><use href="#i-cerrar"></use></svg>
+                </button>
 
             </div>
 
 
-            <nav class="flex-1 px-4 py-6">
+            <nav class="vy-sidebar-nav">
 
-                <p class="text-xs uppercase tracking-wider text-slate-500 px-3 mb-3">
+                <p class="vy-nav-grupo">
                     Principal
                 </p>
 
@@ -248,11 +681,12 @@
                 <button
                     id="nav-dashboard"
                     data-view="dashboard"
-                    class="nav-button w-full flex items-center gap-3 px-3 py-3 rounded-lg bg-slate-800 text-white text-sm font-medium"
+                    type="button"
+                    class="nav-button vy-nav-item is-activa"
                 >
-                    <span>▦</span>
+                    <svg class="vy-icon"><use href="#i-panel"></use></svg>
 
-                    <span>
+                    <span class="vy-nav-texto">
                         Dashboard
                     </span>
 
@@ -262,11 +696,12 @@
                 <button
                     id="nav-devices"
                     data-view="devices"
-                    class="nav-button w-full flex items-center gap-3 px-3 py-3 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition text-sm mt-1"
+                    type="button"
+                    class="nav-button vy-nav-item"
                 >
-                    <span>▣</span>
+                    <svg class="vy-icon"><use href="#i-equipo"></use></svg>
 
-                    <span>
+                    <span class="vy-nav-texto">
                         Dispositivos
                     </span>
 
@@ -276,11 +711,12 @@
                 <button
                     id="nav-recordings"
                     data-view="recordings"
-                    class="nav-button w-full flex items-center gap-3 px-3 py-3 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition text-sm mt-1"
+                    type="button"
+                    class="nav-button vy-nav-item"
                 >
-                    <span>⏺</span>
+                    <svg class="vy-icon"><use href="#i-grabacion"></use></svg>
 
-                    <span>
+                    <span class="vy-nav-texto">
                         Grabaciones
                     </span>
 
@@ -290,17 +726,18 @@
                 <button
                     id="nav-alerts"
                     data-view="alerts"
-                    class="nav-button w-full flex items-center gap-3 px-3 py-3 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition text-sm mt-1"
+                    type="button"
+                    class="nav-button vy-nav-item"
                 >
-                    <span>⚠</span>
+                    <svg class="vy-icon"><use href="#i-alerta"></use></svg>
 
-                    <span>
+                    <span class="vy-nav-texto">
                         Alertas
                     </span>
 
                     <span
                         id="alerts-badge"
-                        class="hidden ml-auto px-2 py-0.5 rounded-full bg-red-500 text-white text-xs"
+                        class="vy-nav-insignia hidden ml-auto px-2 py-0.5 rounded-full bg-red-500 text-white text-xs"
                     >
                         0
                     </span>
@@ -308,7 +745,7 @@
                 </button>
 
 
-                <p class="text-xs uppercase tracking-wider text-slate-500 px-3 mb-3 mt-8">
+                <p class="vy-nav-grupo">
                     Sistema
                 </p>
 
@@ -316,11 +753,12 @@
                 <button
                     id="nav-install"
                     data-view="install"
-                    class="nav-button w-full flex items-center gap-3 px-3 py-3 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition text-sm mt-1"
+                    type="button"
+                    class="nav-button vy-nav-item"
                 >
-                    <span>⬇</span>
+                    <svg class="vy-icon"><use href="#i-instalar"></use></svg>
 
-                    <span>
+                    <span class="vy-nav-texto">
                         Instalar equipo
                     </span>
 
@@ -330,11 +768,12 @@
                 <button
                     id="nav-settings"
                     data-view="settings"
-                    class="nav-button w-full flex items-center gap-3 px-3 py-3 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition text-sm"
+                    type="button"
+                    class="nav-button vy-nav-item"
                 >
-                    <span>⚙</span>
+                    <svg class="vy-icon"><use href="#i-configuracion"></use></svg>
 
-                    <span>
+                    <span class="vy-nav-texto">
                         Configuración
                     </span>
 
@@ -343,41 +782,19 @@
             </nav>
 
 
-            <div class="p-4 border-t border-slate-800">
-
-                <div class="flex items-center gap-3">
-
-                    <div class="w-9 h-9 rounded-full bg-slate-700 flex items-center justify-center">
-
-                        <span class="text-sm">
-                            A
-                        </span>
-
-                    </div>
-
-
-                    <div>
-
-                        <p
-                            id="session-username"
-                            class="text-sm font-medium"
-                        >
-                            Administrador
-                        </p>
-
-                        <p class="text-xs text-slate-500">
-                            RemoteAdmin
-                        </p>
-
-                    </div>
-
-                </div>
+            <div class="vy-sidebar-pie">
 
                 <button
                     id="logout-button"
-                    class="mt-4 w-full px-3 py-2 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition text-sm"
+                    type="button"
+                    class="vy-nav-item"
                 >
-                    Cerrar sesión
+                    <svg class="vy-icon"><use href="#i-salir"></use></svg>
+
+                    <span class="vy-nav-texto">
+                        Cerrar sesión
+                    </span>
+
                 </button>
 
             </div>
@@ -389,26 +806,54 @@
         <div class="flex-1 min-w-0">
 
 
-            <header class="h-20 bg-white border-b border-slate-200 flex items-center justify-between px-6">
+            <header class="vy-header">
 
-                <div>
+                <div class="flex items-center gap-3 min-w-0">
 
-                    <h2 id="view-title" class="text-xl font-semibold">
-                        Dashboard
-                    </h2>
+                    <!-- Abre el cajon en movil -->
+                    <button
+                        id="vy-menu-boton"
+                        type="button"
+                        class="vy-btn-menu vy-btn-icono"
+                        aria-label="Abrir el menu"
+                        aria-expanded="false"
+                        aria-controls="vy-sidebar"
+                    >
+                        <svg class="vy-icon"><use href="#i-menu"></use></svg>
+                    </button>
 
-                    <p id="view-subtitle" class="text-sm text-slate-500">
-                        Resumen de tus dispositivos
-                    </p>
+                    <!-- Contrae o amplia la barra en tableta y escritorio -->
+                    <button
+                        id="vy-ampliar"
+                        type="button"
+                        class="vy-btn-icono hidden md:inline-flex"
+                        aria-label="Contraer o ampliar la navegacion"
+                    >
+                        <svg class="vy-icon"><use href="#i-lateral"></use></svg>
+                    </button>
+
+                    <div class="min-w-0">
+
+                        <h2 id="view-title" class="vy-header-titulo">
+                            Dashboard
+                        </h2>
+
+                        <p id="view-subtitle" class="vy-header-sub">
+                            Resumen de tus dispositivos
+                        </p>
+
+                    </div>
 
                 </div>
 
 
-                <div class="flex items-center gap-3">
+                <div class="vy-header-acciones">
 
                     <div
                         id="server-status"
-                        class="px-4 py-2 rounded-full bg-slate-100 text-sm text-slate-600"
+                        class="vy-punto vy-punto-neutro"
+                        style="padding:8px 14px;border:1px solid var(--vy-borde);
+                            border-radius:999px;background:var(--vy-superficie-suave)"
                     >
                         Conectando...
                     </div>
@@ -416,10 +861,96 @@
 
                     <button
                         onclick="loadDevices()"
-                        class="px-4 py-2 rounded-lg bg-slate-900 text-white text-sm hover:bg-slate-700 transition"
+                        type="button"
+                        class="vy-btn vy-btn-secundario vy-solo-ancha"
                     >
+                        <svg class="vy-icon vy-icon-sm">
+                            <use href="#i-actualizar"></use>
+                        </svg>
                         Actualizar
                     </button>
+
+
+                    <!--
+                    Identidad y menu del usuario. El selector de tema
+                    vive aqui dentro, que es donde se busca.
+                    -->
+                    <div class="relative">
+
+                        <button
+                            id="vy-usuario-boton"
+                            type="button"
+                            class="vy-usuario"
+                            aria-haspopup="true"
+                            aria-expanded="false"
+                        >
+
+                            <span class="vy-usuario-avatar">
+                                <svg class="vy-icon vy-icon-sm">
+                                    <use href="#i-persona"></use>
+                                </svg>
+                            </span>
+
+                            <span class="vy-usuario-texto text-left">
+
+                                <span
+                                    id="session-username"
+                                    class="vy-usuario-nombre block"
+                                >
+                                    Administrador
+                                </span>
+
+                                <span
+                                    id="vy-usuario-org"
+                                    class="vy-usuario-rol block"
+                                ></span>
+
+                            </span>
+
+                            <svg class="vy-icon vy-icon-sm vy-usuario-texto">
+                                <use href="#i-abajo"></use>
+                            </svg>
+
+                        </button>
+
+
+                        <div id="vy-usuario-menu" class="vy-menu" hidden>
+
+                            <p class="vy-menu-grupo">
+                                Apariencia
+                            </p>
+
+                            <button
+                                id="vy-tema-boton"
+                                type="button"
+                                class="vy-menu-item"
+                            >
+                                <svg class="vy-icon vy-icon-sm" id="vy-tema-icono">
+                                    <use href="#i-sol" id="vy-tema-uso"></use>
+                                </svg>
+
+                                <span id="vy-tema-texto">
+                                    Cambiar a modo claro
+                                </span>
+
+                            </button>
+
+                            <div class="vy-menu-sep"></div>
+
+                            <button
+                                id="vy-menu-salir"
+                                type="button"
+                                class="vy-menu-item"
+                            >
+                                <svg class="vy-icon vy-icon-sm">
+                                    <use href="#i-salir"></use>
+                                </svg>
+                                Cerrar sesión
+                            </button>
+
+                        </div>
+
+                    </div>
 
                 </div>
 
@@ -453,142 +984,182 @@
             <main class="p-6">
 
 
-                <section id="stats-section" class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-5 mb-8">
+                <!--
+                RESUMEN
 
+                Cinco cifras, cada una enlazada al filtro que la
+                explica: pulsar "En linea" filtra la tabla por equipos
+                conectados. Los valores los rellena app.js con lo que
+                responde el backend para la organizacion de la sesion;
+                aqui solo esta el hueco, con un cero de arranque.
+
+                Cada estado lleva su palabra ademas de su color: quien
+                no distingue el verde del rojo tambien tiene que poder
+                leerlo.
+                -->
+                <section
+                    id="stats-section"
+                    class="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4 mb-7"
+                >
 
                     <div
                         id="card-total"
-                        class="summary-card bg-white border border-slate-200 rounded-xl p-6 shadow-sm"
+                        class="summary-card vy-card"
+                        style="padding:18px;cursor:pointer"
                         title="Ver todos los equipos"
                     >
 
-                        <div class="flex items-center justify-between">
+                        <div class="flex items-start justify-between gap-3">
 
-                            <div>
+                            <div class="min-w-0">
 
-                                <p class="text-sm text-slate-500">
-                                    Dispositivos
+                                <p class="vy-metrica-etiqueta">
+                                    Equipos
                                 </p>
 
                                 <strong
                                     id="total-devices"
-                                    class="block text-3xl font-bold mt-2"
+                                    class="vy-metrica-valor block"
                                 >
                                     0
                                 </strong>
 
                             </div>
 
-
-                            <div class="w-11 h-11 rounded-lg bg-slate-100 flex items-center justify-center text-xl">
-                                💻
-                            </div>
+                            <span
+                                class="vy-usuario-avatar"
+                                style="width:38px;height:38px;border-radius:10px"
+                            >
+                                <svg class="vy-icon vy-icon-sm">
+                                    <use href="#i-equipo"></use>
+                                </svg>
+                            </span>
 
                         </div>
 
                     </div>
-
 
 
                     <div
                         id="card-online"
-                        class="summary-card bg-white border border-slate-200 rounded-xl p-6 shadow-sm"
+                        class="summary-card vy-card"
+                        style="padding:18px;cursor:pointer"
                         title="Filtrar: solo equipos online"
                     >
 
-                        <div class="flex items-center justify-between">
+                        <div class="flex items-start justify-between gap-3">
 
-                            <div>
+                            <div class="min-w-0">
 
-                                <p class="text-sm text-slate-500">
-                                    Online
+                                <p class="vy-metrica-etiqueta">
+                                    En línea
                                 </p>
 
                                 <strong
                                     id="online-devices"
-                                    class="block text-3xl font-bold text-emerald-600 mt-2"
+                                    class="vy-metrica-valor block"
                                 >
                                     0
                                 </strong>
 
-                            </div>
-
-
-                            <div class="w-11 h-11 rounded-lg bg-emerald-50 flex items-center justify-center">
-
-                                <span class="w-3 h-3 rounded-full bg-emerald-500"></span>
+                                <span
+                                    class="vy-punto vy-punto-ok mt-2"
+                                >Conectados</span>
 
                             </div>
+
+                            <span
+                                class="vy-usuario-avatar"
+                                style="width:38px;height:38px;border-radius:10px"
+                            >
+                                <svg class="vy-icon vy-icon-sm">
+                                    <use href="#i-actividad"></use>
+                                </svg>
+                            </span>
 
                         </div>
 
                     </div>
-
 
 
                     <div
                         id="card-offline"
-                        class="summary-card bg-white border border-slate-200 rounded-xl p-6 shadow-sm"
+                        class="summary-card vy-card"
+                        style="padding:18px;cursor:pointer"
                         title="Filtrar: solo equipos offline"
                     >
 
-                        <div class="flex items-center justify-between">
+                        <div class="flex items-start justify-between gap-3">
 
-                            <div>
+                            <div class="min-w-0">
 
-                                <p class="text-sm text-slate-500">
-                                    Offline
+                                <p class="vy-metrica-etiqueta">
+                                    Sin conexión
                                 </p>
 
                                 <strong
                                     id="offline-devices"
-                                    class="block text-3xl font-bold text-red-600 mt-2"
+                                    class="vy-metrica-valor block"
                                 >
                                     0
                                 </strong>
 
-                            </div>
-
-
-                            <div class="w-11 h-11 rounded-lg bg-red-50 flex items-center justify-center">
-
-                                <span class="w-3 h-3 rounded-full bg-red-500"></span>
+                                <span
+                                    class="vy-punto vy-punto-mal mt-2"
+                                >Desconectados</span>
 
                             </div>
+
+                            <span
+                                class="vy-usuario-avatar"
+                                style="width:38px;height:38px;border-radius:10px"
+                            >
+                                <svg class="vy-icon vy-icon-sm">
+                                    <use href="#i-servidor"></use>
+                                </svg>
+                            </span>
 
                         </div>
 
                     </div>
 
 
-
                     <div
                         id="card-alerts"
-                        class="summary-card bg-white border border-slate-200 rounded-xl p-6 shadow-sm"
-                        title="Ver las alertas"
+                        class="summary-card vy-card"
+                        style="padding:18px;cursor:pointer"
+                        title="Ver alertas pendientes"
                     >
 
-                        <div class="flex items-center justify-between">
+                        <div class="flex items-start justify-between gap-3">
 
-                            <div>
+                            <div class="min-w-0">
 
-                                <p class="text-sm text-slate-500">
-                                    Alertas pendientes
+                                <p class="vy-metrica-etiqueta">
+                                    Alertas
                                 </p>
 
                                 <strong
                                     id="pending-alerts"
-                                    class="block text-3xl font-semibold mt-3"
+                                    class="vy-metrica-valor block"
                                 >
                                     0
                                 </strong>
 
+                                <span
+                                    class="vy-punto vy-punto-aviso mt-2"
+                                >Pendientes</span>
+
                             </div>
 
-
-                            <div class="w-11 h-11 rounded-lg bg-amber-50 flex items-center justify-center text-xl">
-                                🔔
-                            </div>
+                            <span
+                                class="vy-usuario-avatar"
+                                style="width:38px;height:38px;border-radius:10px"
+                            >
+                                <svg class="vy-icon vy-icon-sm">
+                                    <use href="#i-alerta"></use>
+                                </svg>
+                            </span>
 
                         </div>
 
@@ -597,38 +1168,41 @@
 
                     <div
                         id="card-warnings"
-                        class="summary-card bg-white border border-slate-200 rounded-xl p-6 shadow-sm"
-                        title="Ver los equipos con uso alto de RAM o disco"
+                        class="summary-card vy-card"
+                        style="padding:18px;cursor:pointer"
+                        title="Equipos con disco o memoria al limite"
                     >
 
-                        <div class="flex items-center justify-between">
+                        <div class="flex items-start justify-between gap-3">
 
-                            <div>
+                            <div class="min-w-0">
 
-                                <p class="text-sm text-slate-500">
-                                    Equipos con avisos
+                                <p class="vy-metrica-etiqueta">
+                                    En riesgo
                                 </p>
 
                                 <strong
                                     id="warning-devices"
-                                    class="block text-3xl font-semibold mt-3"
+                                    class="vy-metrica-valor block"
                                 >
                                     0
                                 </strong>
 
-                                <!-- Informativo: equipos sin inventario de RAM/disco.
-                                     No cuenta como aviso. -->
                                 <span
                                     id="nodata-devices"
-                                    class="hidden block text-xs text-slate-400 mt-1"
+                                    class="vy-punto vy-punto-neutro mt-2"
                                 ></span>
 
                             </div>
 
-
-                            <div class="w-11 h-11 rounded-lg bg-orange-50 flex items-center justify-center text-xl">
-                                ⚠️
-                            </div>
+                            <span
+                                class="vy-usuario-avatar"
+                                style="width:38px;height:38px;border-radius:10px"
+                            >
+                                <svg class="vy-icon vy-icon-sm">
+                                    <use href="#i-aviso"></use>
+                                </svg>
+                            </span>
 
                         </div>
 
@@ -919,7 +1493,7 @@
                         id="devices-stale-warning"
                         class="hidden px-6 py-2 bg-amber-50 border-b border-amber-200 text-xs text-amber-800 flex items-center gap-2"
                     >
-                        <span>⚠️</span>
+                        <svg class="vy-icon vy-icon-sm"><use href="#i-aviso"></use></svg>
                         <span id="devices-stale-text"></span>
                     </div>
 
@@ -1079,7 +1653,7 @@
                                     class="hidden inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-red-50 text-red-700 text-sm"
                                 >
                                     <span class="w-2.5 h-2.5 rounded-full bg-red-500"></span>
-                                    Grabando
+                                    <span id="recording-indicator-text">Grabando</span>
                                 </span>
                             </div>
 
@@ -1145,6 +1719,130 @@
                                 </div>
 
                                 <p id="power-status" class="hidden text-sm mt-3"></p>
+
+                            </div>
+
+
+                            <!-- Baja del equipo.
+                                 En su propio bloque: las acciones de
+                                 arriba actuan sobre la maquina y esta
+                                 sobre el inventario. -->
+                            <div
+                                id="decommission-panel"
+                                class="hidden mt-4 p-5 bg-white border border-slate-200 rounded-xl"
+                            >
+
+                                <div class="flex flex-wrap items-start justify-between gap-3">
+
+                                    <div class="min-w-[18rem] flex-1">
+
+                                        <h4 class="font-semibold text-slate-900">
+                                            Baja del equipo
+                                        </h4>
+
+                                        <p class="text-sm text-slate-500 mt-1">
+                                            Retira el equipo del inventario
+                                            y revoca su credencial.
+                                            <strong>Se conservan</strong> sus
+                                            grabaciones, sus alertas y su
+                                            historial.
+                                        </p>
+
+                                    </div>
+
+                                    <div class="flex flex-wrap gap-2">
+
+                                        <button
+                                            type="button"
+                                            id="decommission-button"
+                                            class="px-4 py-2 rounded-lg bg-red-50 text-red-700 text-sm font-medium hover:bg-red-100 transition"
+                                        >
+                                            Dar de baja
+                                        </button>
+
+                                        <button
+                                            type="button"
+                                            id="reinstate-button"
+                                            class="hidden px-4 py-2 rounded-lg bg-slate-100 text-slate-700 text-sm font-medium hover:bg-slate-200 transition"
+                                        >
+                                            Reincorporar
+                                        </button>
+
+                                    </div>
+
+                                </div>
+
+                                <p
+                                    id="decommission-state"
+                                    class="hidden text-sm mt-3"
+                                ></p>
+
+                                <p
+                                    id="decommission-status"
+                                    class="hidden text-sm mt-3"
+                                ></p>
+
+
+                                <!-- Vinculacion con un equipo anterior.
+                                     Solo aparece si hay equipos de baja
+                                     cuyo historial este libre. -->
+                                <div
+                                    id="link-history-box"
+                                    class="hidden mt-4 pt-4 border-t border-slate-200"
+                                >
+
+                                    <p class="text-sm font-medium text-slate-900">
+                                        ¿Es un equipo reinstalado?
+                                    </p>
+
+                                    <p class="text-sm text-slate-500 mt-1">
+                                        Puedes vincularlo con el historial
+                                        de un equipo dado de baja. Las
+                                        grabaciones anteriores
+                                        <strong>no se mueven</strong>: se
+                                        consultan desde aquí.
+                                    </p>
+
+                                    <div class="flex flex-wrap items-center gap-2 mt-3">
+
+                                        <select
+                                            id="link-history-select"
+                                            class="px-3 py-2 border border-slate-300 rounded-lg text-sm min-w-[18rem]"
+                                        ></select>
+
+                                        <button
+                                            type="button"
+                                            id="link-history-button"
+                                            class="px-4 py-2 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-700 transition"
+                                        >
+                                            Vincular historial
+                                        </button>
+
+                                    </div>
+
+                                </div>
+
+
+                                <!-- Cuando ya esta vinculado -->
+                                <div
+                                    id="linked-history-box"
+                                    class="hidden mt-4 pt-4 border-t border-slate-200"
+                                >
+
+                                    <p class="text-sm text-slate-900">
+                                        Hereda el historial de
+                                        <strong id="linked-history-name"></strong>
+                                    </p>
+
+                                    <button
+                                        type="button"
+                                        id="unlink-history-button"
+                                        class="mt-3 px-4 py-2 rounded-lg bg-slate-100 text-slate-700 text-sm font-medium hover:bg-slate-200 transition"
+                                    >
+                                        Deshacer vinculación
+                                    </button>
+
+                                </div>
 
                             </div>
 

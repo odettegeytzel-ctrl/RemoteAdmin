@@ -1,6 +1,421 @@
 let selectedDevice = null;
 
 /* ==============================
+ICONOS
+
+Los iconos viven en un unico <svg> de simbolos al principio de la
+pagina (ver index.html). Aqui solo se compone la referencia.
+
+Importa que sea marcado FIJO: el nombre del icono lo elige este
+codigo, nunca llega de fuera, asi que no hay forma de que un dato del
+servidor acabe interpretado como HTML por esta via.
+============================== */
+
+function icono(nombre, clase) {
+
+    const tamano = clase || "vy-icon-sm";
+
+    return `<svg class="vy-icon ${tamano}" aria-hidden="true">`
+        + `<use href="#i-${nombre}"></use></svg>`;
+}
+
+
+/* ==============================
+APARIENCIA: MODO CLARO Y OSCURO
+============================== */
+
+// Donde se guarda la preferencia.
+//
+// El backend no tiene hoy ninguna tabla de preferencias de usuario, y
+// crear una es un cambio de esquema que no toca hacer dentro de un
+// rediseño visual. Asi que la eleccion vive en el navegador.
+//
+// Pero NO en una sola clave: dos personas que usen el mismo equipo se
+// pisarian el tema. Cada usuario tiene la suya, y "veyra-tema" guarda
+// ademas la ultima activa para que el script del <head> pueda pintar
+// el tema correcto antes de que exista la sesion.
+//
+// Limitacion conocida: al ser local, la preferencia no viaja a otro
+// navegador ni a otro equipo. Llevarla consigo exige guardarla en el
+// servidor.
+const TEMA_CLAVE = "veyra-tema";
+const TEMA_OSCURO = "dark";
+const TEMA_CLARO = "light";
+
+// Usuario al que pertenece la preferencia en curso. Vacio mientras no
+// haya sesion: entonces la eleccion es solo de este navegador.
+let temaDeUsuario = "";
+
+
+function claveDelTema(usuario) {
+
+    return usuario ? TEMA_CLAVE + ":" + usuario : TEMA_CLAVE;
+}
+
+
+function leerAlmacen(clave) {
+
+    // localStorage lanza en navegacion privada y con el
+    // almacenamiento bloqueado. Nunca debe tumbar el panel.
+    try {
+        return window.localStorage.getItem(clave);
+
+    } catch (error) {
+        return null;
+    }
+}
+
+
+function guardarAlmacen(clave, valor) {
+
+    try {
+        window.localStorage.setItem(clave, valor);
+
+    } catch (error) {
+        // Sin sitio donde guardar, el tema dura lo que la pestaña.
+    }
+}
+
+
+function temaActual() {
+
+    return document.documentElement.getAttribute("data-theme")
+        === TEMA_CLARO ? TEMA_CLARO : TEMA_OSCURO;
+}
+
+
+function aplicarTema(tema, guardar) {
+
+    const elegido = tema === TEMA_CLARO ? TEMA_CLARO : TEMA_OSCURO;
+
+    document.documentElement.setAttribute("data-theme", elegido);
+
+    // La barra del navegador en movil, a juego con el fondo
+    const meta = document.querySelector('meta[name="theme-color"]');
+
+    if (meta) {
+        meta.setAttribute(
+            "content",
+            elegido === TEMA_CLARO ? "#F4F6FB" : "#070C17"
+        );
+    }
+
+    actualizarControlDeTema(elegido);
+
+    if (guardar) {
+
+        // La del usuario y la "ultima activa", que es la que lee el
+        // script del <head> en la siguiente carga.
+        guardarAlmacen(claveDelTema(temaDeUsuario), elegido);
+        guardarAlmacen(TEMA_CLAVE, elegido);
+    }
+}
+
+
+function actualizarControlDeTema(tema) {
+
+    const uso = document.getElementById("vy-tema-uso");
+    const texto = document.getElementById("vy-tema-texto");
+
+    const vaAClaro = tema === TEMA_OSCURO;
+
+    if (uso) {
+        // El icono anuncia a DONDE se va, no donde se esta: el sol
+        // lleva al modo claro.
+        uso.setAttribute("href", vaAClaro ? "#i-sol" : "#i-luna");
+    }
+
+    if (texto) {
+        texto.textContent = vaAClaro
+            ? "Cambiar a modo claro"
+            : "Cambiar a modo oscuro";
+    }
+}
+
+
+function alternarTema() {
+
+    aplicarTema(
+        temaActual() === TEMA_OSCURO ? TEMA_CLARO : TEMA_OSCURO,
+        true
+    );
+}
+
+
+function adoptarTemaDeUsuario(usuario) {
+
+    // Se llama al abrir sesion. A partir de aqui la preferencia es de
+    // esta persona, no del navegador.
+    temaDeUsuario = usuario || "";
+
+    const suyo = leerAlmacen(claveDelTema(temaDeUsuario));
+
+    if (suyo === TEMA_CLARO || suyo === TEMA_OSCURO) {
+
+        aplicarTema(suyo, false);
+        guardarAlmacen(TEMA_CLAVE, suyo);
+
+        return;
+    }
+
+    // Sin preferencia propia todavia: oscuro, que es el
+    // predeterminado del producto. No se hereda la del usuario
+    // anterior, para que nadie estrene el panel con los ajustes de
+    // otro.
+    aplicarTema(TEMA_OSCURO, true);
+}
+
+
+function olvidarTemaDeUsuario() {
+
+    // Al cerrar sesion se deja de hablar en nombre de ese usuario. Su
+    // eleccion se conserva para cuando vuelva; lo que se suelta es el
+    // vinculo.
+    temaDeUsuario = "";
+}
+
+
+/* ==============================
+NAVEGACION ADAPTABLE
+============================== */
+
+// Ancho por debajo del cual la barra lateral es un cajon. Coincide
+// con el punto de corte de veyra.css; si cambia uno, cambia el otro.
+const ANCHO_MOVIL = 767;
+
+
+function esMovil() {
+
+    return window.matchMedia(
+        "(max-width: " + ANCHO_MOVIL + "px)"
+    ).matches;
+}
+
+
+function abrirCajon() {
+
+    const barra = document.getElementById("vy-sidebar");
+    const capa = document.getElementById("vy-capa");
+    const boton = document.getElementById("vy-menu-boton");
+
+    if (!barra) {
+        return;
+    }
+
+    barra.classList.add("is-abierta");
+
+    if (capa) {
+        capa.hidden = false;
+    }
+
+    if (boton) {
+        boton.setAttribute("aria-expanded", "true");
+    }
+
+    // El foco entra en el cajon para que el teclado no se quede
+    // navegando por detras de la capa oscura.
+    const primero = barra.querySelector(".vy-nav-item");
+
+    if (primero) {
+        primero.focus();
+    }
+}
+
+
+function cerrarCajon() {
+
+    const barra = document.getElementById("vy-sidebar");
+    const capa = document.getElementById("vy-capa");
+    const boton = document.getElementById("vy-menu-boton");
+
+    if (barra) {
+        barra.classList.remove("is-abierta");
+    }
+
+    if (capa) {
+        capa.hidden = true;
+    }
+
+    if (boton) {
+        boton.setAttribute("aria-expanded", "false");
+    }
+}
+
+
+function alternarBarra() {
+
+    const barra = document.getElementById("vy-sidebar");
+
+    if (!barra) {
+        return;
+    }
+
+    if (esMovil()) {
+
+        if (barra.classList.contains("is-abierta")) {
+            cerrarCajon();
+        } else {
+            abrirCajon();
+        }
+
+        return;
+    }
+
+    // En tableta la barra nace compacta y el boton la amplia; en
+    // escritorio nace entera y el boton la encoge.
+    barra.classList.toggle("is-expandida");
+    barra.classList.toggle("is-compacta");
+}
+
+
+/* ==============================
+MENU DEL USUARIO
+============================== */
+
+function cerrarMenuUsuario() {
+
+    const menu = document.getElementById("vy-usuario-menu");
+    const boton = document.getElementById("vy-usuario-boton");
+
+    if (menu) {
+        menu.hidden = true;
+    }
+
+    if (boton) {
+        boton.setAttribute("aria-expanded", "false");
+    }
+}
+
+
+function alternarMenuUsuario() {
+
+    const menu = document.getElementById("vy-usuario-menu");
+    const boton = document.getElementById("vy-usuario-boton");
+
+    if (!menu) {
+        return;
+    }
+
+    const abierto = !menu.hidden;
+
+    menu.hidden = abierto;
+
+    if (boton) {
+        boton.setAttribute("aria-expanded", String(!abierto));
+    }
+}
+
+
+function conectarInterfazVeyra() {
+
+    const menuBoton = document.getElementById("vy-menu-boton");
+
+    if (menuBoton) {
+        menuBoton.addEventListener("click", alternarBarra);
+    }
+
+    const ampliar = document.getElementById("vy-ampliar");
+
+    if (ampliar) {
+        ampliar.addEventListener("click", alternarBarra);
+    }
+
+    const capa = document.getElementById("vy-capa");
+
+    if (capa) {
+        capa.addEventListener("click", cerrarCajon);
+    }
+
+    const cerrar = document.getElementById("vy-cerrar-cajon");
+
+    if (cerrar) {
+        cerrar.addEventListener("click", cerrarCajon);
+    }
+
+    const usuarioBoton = document.getElementById("vy-usuario-boton");
+
+    if (usuarioBoton) {
+
+        usuarioBoton.addEventListener("click", evento => {
+            evento.stopPropagation();
+            alternarMenuUsuario();
+        });
+    }
+
+    const temaBoton = document.getElementById("vy-tema-boton");
+
+    if (temaBoton) {
+        temaBoton.addEventListener("click", alternarTema);
+    }
+
+    // El menu tiene su propio "Cerrar sesion"; reusa el de siempre
+    // para no duplicar la logica de cierre.
+    const menuSalir = document.getElementById("vy-menu-salir");
+
+    if (menuSalir) {
+
+        menuSalir.addEventListener("click", () => {
+
+            const original = document.getElementById("logout-button");
+
+            if (original) {
+                original.click();
+            }
+        });
+    }
+
+    // Un clic fuera cierra el menu
+    document.addEventListener("click", evento => {
+
+        const menu = document.getElementById("vy-usuario-menu");
+
+        if (menu && !menu.hidden && !menu.contains(evento.target)) {
+            cerrarMenuUsuario();
+        }
+    });
+
+    // Escape cierra lo que este abierto, empezando por lo mas encima
+    document.addEventListener("keydown", evento => {
+
+        if (evento.key !== "Escape") {
+            return;
+        }
+
+        const menu = document.getElementById("vy-usuario-menu");
+
+        if (menu && !menu.hidden) {
+            cerrarMenuUsuario();
+            return;
+        }
+
+        const barra = document.getElementById("vy-sidebar");
+
+        if (barra && barra.classList.contains("is-abierta")) {
+
+            cerrarCajon();
+
+            const boton = document.getElementById("vy-menu-boton");
+
+            if (boton) {
+                boton.focus();
+            }
+        }
+    });
+
+    // Al pasar de movil a escritorio, el cajon abierto se queda como
+    // una barra flotante rara. Se cierra al cruzar el umbral.
+    window.addEventListener("resize", () => {
+
+        if (!esMovil()) {
+            cerrarCajon();
+        }
+    });
+
+    actualizarControlDeTema(temaActual());
+}
+
+
+/* ==============================
 AUTENTICACION
 ============================== */
 
@@ -17,6 +432,10 @@ function showLoginScreen() {
 document.getElementById("login-screen").classList.remove("hidden");
 document.getElementById("app-shell").classList.add("hidden");
 
+cerrarCajon();
+cerrarMenuUsuario();
+olvidarTemaDeUsuario();
+
 }
 
 function showAppShell(username) {
@@ -27,6 +446,9 @@ document.getElementById("app-shell").classList.remove("hidden");
 if (username) {
     document.getElementById("session-username").textContent = username;
 }
+
+// La preferencia de apariencia pasa a ser la de esta persona
+adoptarTemaDeUsuario(username);
 
 }
 
@@ -1356,7 +1778,7 @@ if (conMotivos.length === 0) {
 
     lista.innerHTML = `
         <div class="px-6 py-8 text-center text-sm text-slate-500">
-            ✅ Ningún equipo requiere atención ahora mismo
+            ${icono("correcto")} Ningún equipo requiere atención ahora mismo
         </div>
     `;
 
@@ -1397,7 +1819,7 @@ lista.innerHTML =
 
                 </div>
 
-                <span class="text-xs text-slate-400 shrink-0">Ver equipo →</span>
+                <span class="text-xs text-slate-400 shrink-0 inline-flex items-center gap-1">Ver equipo ${icono("derecha")}</span>
 
             </div>
         `;
@@ -1573,14 +1995,14 @@ recientes.innerHTML =
     lista.slice(0, 5).map(rec => `
         <div class="px-6 py-2.5 flex items-center gap-3">
 
-            <span class="text-slate-400 shrink-0">⏺</span>
+            <span class="text-slate-400 shrink-0">${icono("grabacion")}</span>
 
             <div class="flex-1 min-w-0">
                 <p class="text-sm text-slate-900 truncate">
                     ${rec.hostname || rec.device_id}
                 </p>
                 <p class="text-xs text-slate-500 mt-0.5">
-                    ${formatRecordingDate(rec.started_at)} · ${rec.duration_sec || 0}s
+                    ${textoDeFecha(rec.started_at)} · ${formatDuration(rec.duration_sec)}
                 </p>
             </div>
 
@@ -1613,7 +2035,7 @@ function renderActivityPanel(alerts) {
 
         eventos.push({
             fecha: alert.created_at,
-            icono: apariencia.icon || "•",
+            icono: icono(apariencia.icono || "info"),
             punto: apariencia.dot,
             texto: alert.message
         });
@@ -1624,9 +2046,10 @@ function renderActivityPanel(alerts) {
 
         eventos.push({
             fecha: rec.started_at,
-            icono: "⏺",
+            icono: icono("grabacion"),
             punto: "bg-slate-400",
-            texto: `Grabación de ${rec.hostname || rec.device_id} (${rec.duration_sec || 0}s)`
+            texto: `Grabación de ${rec.hostname || rec.device_id}`
+                + ` (${formatDuration(rec.duration_sec)})`
         });
 
     });
@@ -2099,16 +2522,50 @@ return date.toLocaleString(
 
 }
 
+// Escalones de tamaño. Se elige el mayor que deje un numero legible,
+// que es lo que hace cualquier gestor de archivos.
+//
+// Antes se dividia siempre entre 1024^3, asi que todo lo que no
+// llegara al gigabyte salia como "0.0 GB": una grabacion de 3 MB, el
+// espacio ocupado por once grabaciones... todo cero. El dato era
+// correcto y la unidad no.
+const UNIDADES_DE_TAMANO = [
+    { desde: 1024 ** 4, sufijo: "TB", decimales: 2 },
+    { desde: 1024 ** 3, sufijo: "GB", decimales: 1 },
+    { desde: 1024 ** 2, sufijo: "MB", decimales: 1 },
+    { desde: 1024, sufijo: "KB", decimales: 0 }
+];
+
+
 function formatBytes(bytes) {
 
-if (!bytes) {
+// Sin dato NO es lo mismo que cero bytes. Lo primero es que el
+// equipo todavia no lo ha informado; lo segundo es un archivo vacio,
+// que es un problema y hay que poder verlo.
+if (bytes === null || bytes === undefined || bytes === "") {
     return "Sin información";
 }
 
-const gigabytes =
-    bytes / (1024 ** 3);
+const numero = Number(bytes);
 
-return `${gigabytes.toFixed(1)} GB`;
+if (!Number.isFinite(numero) || numero < 0) {
+    return "Sin información";
+}
+
+if (numero === 0) {
+    return "0 B";
+}
+
+for (const unidad of UNIDADES_DE_TAMANO) {
+
+    if (numero >= unidad.desde) {
+
+        return `${(numero / unidad.desde).toFixed(unidad.decimales)} `
+            + unidad.sufijo;
+    }
+}
+
+return `${Math.round(numero)} B`;
 
 }
 
@@ -2289,6 +2746,13 @@ function showDeviceDetails(device) {
 
 selectedDevice = device;
 
+// Los equipos de baja cuyo historial esta libre. Se piden al abrir la
+// ficha, que es cuando pueden hacer falta, y no en cada repintado.
+//
+// Deliberadamente sin await: la ficha no debe esperar a esto. Cuando
+// llegue, se repinta solo el bloque de vinculacion.
+cargarEquiposDadosDeBaja().then(pintarVinculacion);
+
 renderDeviceInfoFields(device);
 
 document.getElementById(
@@ -2333,22 +2797,34 @@ APARIENCIA DE LAS ALERTAS
 // Cómo se representa cada tipo de alerta. El color sigue el mismo semáforo
 // que las barras de la tabla (verde bien, ámbar aviso, rojo crítico), para
 // que la lista de alertas y el estado de los equipos concuerden.
+//
+// El icono se nombra, no se dibuja: icono() lo resuelve contra el
+// juego de simbolos. "label" sigue siendo la palabra que acompaña al
+// color, que es lo que lee quien no distingue verde de rojo.
 const ALERT_APPEARANCE = {
-    online:         { dot: "bg-emerald-500", icon: "🟢", label: "Conexión" },
-    offline:        { dot: "bg-red-500",     icon: "🔴", label: "Desconexión" },
-    ram_warning:    { dot: "bg-amber-500",   icon: "⚠️", label: "RAM" },
-    ram_critical:   { dot: "bg-red-500",     icon: "🔥", label: "RAM crítica" },
-    disk_warning:   { dot: "bg-amber-500",   icon: "⚠️", label: "Disco" },
-    disk_critical:  { dot: "bg-red-500",     icon: "🔥", label: "Disco crítico" },
-    ram_recovered:  { dot: "bg-emerald-500", icon: "✅", label: "RAM recuperada" },
-    disk_recovered: { dot: "bg-emerald-500", icon: "✅", label: "Disco recuperado" }
+    online:         { dot: "bg-emerald-500", icono: "actividad",
+                      label: "Conexión" },
+    offline:        { dot: "bg-red-500",     icono: "servidor",
+                      label: "Desconexión" },
+    ram_warning:    { dot: "bg-amber-500",   icono: "aviso",
+                      label: "RAM" },
+    ram_critical:   { dot: "bg-red-500",     icono: "aviso",
+                      label: "RAM crítica" },
+    disk_warning:   { dot: "bg-amber-500",   icono: "disco",
+                      label: "Disco" },
+    disk_critical:  { dot: "bg-red-500",     icono: "disco",
+                      label: "Disco crítico" },
+    ram_recovered:  { dot: "bg-emerald-500", icono: "correcto",
+                      label: "RAM recuperada" },
+    disk_recovered: { dot: "bg-emerald-500", icono: "correcto",
+                      label: "Disco recuperado" }
 };
 
 // Para un tipo no previsto: punto gris y sin icono. Así un tipo futuro no
 // rompe la interfaz ni se disfraza de error.
 const UNKNOWN_ALERT_APPEARANCE = {
     dot: "bg-slate-400",
-    icon: "",
+    icono: "info",
     label: ""
 };
 
@@ -2561,7 +3037,7 @@ try {
 
             const conservada =
                 rec.keep
-                    ? `<span class="text-xs text-amber-600" title="Protegida de la retención">★</span>`
+                    ? `<span class="text-xs text-amber-600 inline-flex" title="Protegida de la retención">${icono("escudo")}</span>`
                     : "";
 
             return `
@@ -2570,11 +3046,11 @@ try {
                     <div class="flex-1 min-w-0">
 
                         <p class="text-sm text-slate-900">
-                            ${formatRecordingDate(rec.started_at)} ${conservada}
+                            ${textoDeFecha(rec.started_at)} ${conservada}
                         </p>
 
                         <p class="text-xs text-slate-500 mt-1">
-                            ${rec.duration_sec || 0}s · ${formatBytes(rec.size_bytes)}
+                            ${formatDuration(rec.duration_sec)} · ${formatBytes(rec.size_bytes)}
                         </p>
 
                     </div>
@@ -2666,6 +3142,18 @@ function formatContinuousTime(iso) {
     return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+// Como se nombra cada forma de grabar.
+//
+// El estado del Agent trae "recording_source": quien sostiene la
+// grabacion. Antes solo decia SI se grababa, y el panel encendia el
+// control manual tambien cuando quien grababa era la programacion.
+const ORIGEN_DE_LA_GRABACION = {
+    manual: "Grabando",
+    programada: "Grabando (programada)",
+    continua: "Grabando (continua)"
+};
+
+
 async function refreshContinuousStatus() {
 
 if (!selectedDevice) {
@@ -2691,7 +3179,15 @@ try {
     const enabled = Boolean(data.continuous_recording_enabled);
 
     const stateEl = document.getElementById("continuous-state");
-    const stateText = enabled ? "ACTIVADA" : "DESACTIVADA";
+
+    // Con un horario activo, la continua se limita a sus franjas. Si
+    // no se dice, el rotulo "ACTIVADA" hace creer que graba a todas
+    // horas.
+    const stateText = enabled
+        ? (data.schedule_enabled
+            ? "ACTIVADA (dentro del horario)"
+            : "ACTIVADA")
+        : "DESACTIVADA";
 
     // Solo escribe si cambió (evita reflow/parpadeo en cada ciclo del polling)
     if (stateEl.textContent !== stateText) {
@@ -2713,10 +3209,14 @@ try {
     if (!data.online) {
         // El Agent no está conectado
         state = "OFFLINE";
+    } else if (data.recording) {
+        // Grabando: lo util es saber QUIEN la sostiene. Que la
+        // continua este activada no significa que ahora mismo este
+        // grabando ella: con un horario puesto, manda el horario.
+        state = (ORIGEN_DE_LA_GRABACION[data.recording_source]
+            || "Grabando").toUpperCase();
     } else if (data.state) {
         state = STATE_LABELS[data.state] || String(data.state).toUpperCase();
-    } else if (data.recording) {
-        state = "GRABANDO";
     } else {
         // Conectado pero el Agent aún no ha reportado su estado
         state = "SIN DATOS";
@@ -2814,11 +3314,13 @@ GRABACION DEL DISPOSITIVO
 // con el clic del usuario).
 let lastRecordingUIState = null;
 
-function setRecordingUI(recording) {
+function setRecordingUI(recording, origen) {
 
 recording = Boolean(recording);
 
-if (lastRecordingUIState === recording) {
+const clave = recording + "|" + (origen || "");
+
+if (lastRecordingUIState === clave) {
     return;
 }
 
@@ -2835,11 +3337,25 @@ if (!startButton || !stopButton || !indicator) {
     return;
 }
 
-lastRecordingUIState = recording;
+lastRecordingUIState = clave;
 
 startButton.classList.toggle("hidden", recording);
+
+// "Detener" sigue disponible sea cual sea el origen: una persona
+// tiene que poder cortar una grabacion programada sin ir a
+// desactivar la programacion entera.
 stopButton.classList.toggle("hidden", !recording);
 indicator.classList.toggle("hidden", !recording);
+
+// El indicador dice QUE la sostiene. Con textContent, que el origen
+// viene del Agent.
+const texto = document.getElementById("recording-indicator-text");
+
+if (texto) {
+
+    texto.textContent =
+        ORIGEN_DE_LA_GRABACION[origen] || "Grabando";
+}
 
 }
 
@@ -2864,7 +3380,7 @@ try {
         await response.json();
 
     // Solo se actualizan los botones si el estado cambió (sin parpadeo)
-    setRecordingUI(Boolean(data.recording));
+    setRecordingUI(Boolean(data.recording), data.recording_source);
 
     // La misma respuesta sirve para el punto de la tabla: el equipo abierto
     // queda siempre al día sin pedir nada adicional.
@@ -4002,6 +4518,20 @@ async function cargarSesionActual() {
             correo.value = sesionActual.email || "";
         }
 
+        // En la cabecera, debajo del nombre: de que organizacion se
+        // esta viendo el panel. Con textContent, que viene del
+        // servidor.
+        const rotuloOrg = document.getElementById("vy-usuario-org");
+
+        if (rotuloOrg) {
+
+            rotuloOrg.textContent =
+                (sesionActual.organization
+                    && sesionActual.organization.name)
+                || etiquetaDeRol(sesionActual.role)
+                || "";
+        }
+
         // Organizacion sin acceso: se avisa con lo que diga el servidor.
         // El panel no decide nada; si intentara operar igualmente, cada
         // peticion seria rechazada de todos modos.
@@ -4488,7 +5018,7 @@ const ACCIONES_DE_EQUIPO = [
     {
         accion: "shutdown",
         permiso: "device.shutdown",
-        etiqueta: "⏻ Apagar",
+        etiqueta: "Apagar",
         confirmacion:
             "El equipo se apagará. Habrá que encenderlo a mano"
             + " para volver a usarlo.",
@@ -4504,6 +5034,442 @@ const ACCIONES_DE_EQUIPO = [
 const accionesEnCurso = new Set();
 
 
+/* ==============================
+BAJA Y REINCORPORACION DE EQUIPOS
+
+Dar de baja NO borra nada: retira el equipo del inventario, revoca su
+credencial y deja intactas sus grabaciones y su historial. Por eso la
+confirmacion dice exactamente que se va y que se queda: nadie deberia
+pulsar esto creyendo que borra, ni creyendo que no hace nada.
+============================== */
+
+/* ==============================
+VINCULAR UN EQUIPO CON SU HISTORIAL ANTERIOR
+
+Cuando se reinstala un equipo, el servidor le da un identificador
+NUEVO: no hay forma automatica y fiable de saber que es la misma
+maquina —el nombre y el numero de serie los controla quien tenga el
+equipo delante—. Por eso lo decide una persona autorizada.
+
+Vincular NO mueve ninguna grabacion: el equipo nuevo anota a quien
+sucede y las grabacionesanteriores se siguen consultando desde su
+sitio.
+============================== */
+
+// Equipos de baja que pueden ceder su historial. Se piden al abrir la
+// ficha de un equipo y se guardan para no pedirlos en cada repintado.
+let equiposDadosDeBaja = [];
+
+
+async function cargarEquiposDadosDeBaja() {
+
+    if (!puede("devices.manage")) {
+        equiposDadosDeBaja = [];
+        return;
+    }
+
+    try {
+
+        const respuesta = await fetch("/api/devices/decommissioned");
+
+        if (!respuesta.ok) {
+            equiposDadosDeBaja = [];
+            return;
+        }
+
+        const datos = await respuesta.json();
+
+        equiposDadosDeBaja = datos.devices || [];
+
+    } catch (error) {
+        equiposDadosDeBaja = [];
+    }
+}
+
+
+function pintarVinculacion() {
+
+    const caja = document.getElementById("link-history-box");
+    const yaVinculado = document.getElementById("linked-history-box");
+
+    if (!caja || !yaVinculado) {
+        return;
+    }
+
+    if (!selectedDevice || !puede("devices.manage")) {
+        caja.classList.add("hidden");
+        yaVinculado.classList.add("hidden");
+        return;
+    }
+
+    // Ya hereda un historial
+    if (selectedDevice.succeeds_device_id) {
+
+        caja.classList.add("hidden");
+        yaVinculado.classList.remove("hidden");
+
+        const nombre = document.getElementById("linked-history-name");
+
+        if (nombre) {
+
+            // Con textContent: el identificador viene del servidor.
+            nombre.textContent = selectedDevice.succeeds_device_id;
+        }
+
+        return;
+    }
+
+    yaVinculado.classList.add("hidden");
+
+    // Un equipo de baja no hereda nada: primero hay que
+    // reincorporarlo.
+    const disponibles = equiposDadosDeBaja.filter(
+        e => e.device_id !== selectedDevice.device_id
+    );
+
+    if (selectedDevice.decommissioned_at || disponibles.length === 0) {
+        caja.classList.add("hidden");
+        return;
+    }
+
+    caja.classList.remove("hidden");
+
+    const lista = document.getElementById("link-history-select");
+
+    if (!lista) {
+        return;
+    }
+
+    lista.innerHTML = "";
+
+    const vacia = document.createElement("option");
+    vacia.value = "";
+    vacia.textContent = "Elige el equipo anterior...";
+    lista.appendChild(vacia);
+
+    disponibles.forEach(equipo => {
+
+        const opcion = document.createElement("option");
+
+        opcion.value = equipo.device_id;
+
+        // textContent y no innerHTML: el nombre lo puso el equipo.
+        opcion.textContent =
+            (equipo.hostname || equipo.device_id)
+            + "  ·  baja del "
+            + textoDeFecha(equipo.decommissioned_at);
+
+        lista.appendChild(opcion);
+    });
+}
+
+
+async function vincularHistorial() {
+
+    if (!selectedDevice) {
+        return;
+    }
+
+    const lista = document.getElementById("link-history-select");
+    const estado = document.getElementById("decommission-status");
+
+    if (!lista || !lista.value) {
+
+        mensajeDeBaja(estado, "Elige primero el equipo anterior", false);
+        return;
+    }
+
+    const anterior = equiposDadosDeBaja.find(
+        e => e.device_id === lista.value
+    );
+
+    const nombreAnterior =
+        (anterior && (anterior.hostname || anterior.device_id))
+        || lista.value;
+
+    const nombreActual =
+        selectedDevice.hostname || selectedDevice.device_id;
+
+    const seguro = window.confirm(
+        `¿Vincular "${nombreActual}" con el historial de `
+        + `"${nombreAnterior}"?\n\n`
+        + "Las grabaciones anteriores NO se mueven: se consultaran "
+        + "desde este equipo.\n"
+        + "La credencial del equipo anterior sigue revocada.\n\n"
+        + "Hazlo solo si es la misma maquina reinstalada."
+    );
+
+    if (!seguro) {
+        return;
+    }
+
+    const boton = document.getElementById("link-history-button");
+
+    if (boton) {
+        boton.disabled = true;
+    }
+
+    try {
+
+        const respuesta = await fetch(
+            `/api/devices/${selectedDevice.device_id}/link-history`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ previous_device_id: lista.value })
+            }
+        );
+
+        const datos = await respuesta.json();
+
+        mensajeDeBaja(estado,
+                      datos.message || "No se pudo vincular",
+                      respuesta.ok);
+
+        if (respuesta.ok) {
+            await cargarEquiposDadosDeBaja();
+            await loadDevices();
+        }
+
+    } catch (error) {
+        mensajeDeBaja(estado, "No se pudo contactar con el servidor",
+                      false);
+
+    } finally {
+
+        if (boton) {
+            boton.disabled = false;
+        }
+    }
+}
+
+
+async function deshacerVinculacion() {
+
+    if (!selectedDevice) {
+        return;
+    }
+
+    const seguro = window.confirm(
+        "¿Deshacer la vinculacion?\n\n"
+        + "Los dos historiales vuelven a estar separados. No se "
+        + "pierde ninguna grabacion."
+    );
+
+    if (!seguro) {
+        return;
+    }
+
+    const estado = document.getElementById("decommission-status");
+
+    try {
+
+        const respuesta = await fetch(
+            `/api/devices/${selectedDevice.device_id}/unlink-history`,
+            { method: "POST" }
+        );
+
+        const datos = await respuesta.json();
+
+        mensajeDeBaja(estado,
+                      datos.message || "No se pudo deshacer",
+                      respuesta.ok);
+
+        if (respuesta.ok) {
+            await cargarEquiposDadosDeBaja();
+            await loadDevices();
+        }
+
+    } catch (error) {
+        mensajeDeBaja(estado, "No se pudo contactar con el servidor",
+                      false);
+    }
+}
+
+
+function pintarBajaDeEquipo() {
+
+    const panel = document.getElementById("decommission-panel");
+
+    if (!panel) {
+        return;
+    }
+
+    // Solo para quien puede administrar el inventario. El servidor lo
+    // vuelve a comprobar: esto es comodidad, no seguridad.
+    if (!selectedDevice || !puede("devices.manage")) {
+        panel.classList.add("hidden");
+        return;
+    }
+
+    panel.classList.remove("hidden");
+
+    const deBaja = Boolean(selectedDevice.decommissioned_at);
+
+    document
+        .getElementById("decommission-button")
+        .classList.toggle("hidden", deBaja);
+
+    document
+        .getElementById("reinstate-button")
+        .classList.toggle("hidden", !deBaja);
+
+    pintarVinculacion();
+
+    const estado = document.getElementById("decommission-state");
+
+    if (!estado) {
+        return;
+    }
+
+    estado.classList.toggle("hidden", !deBaja);
+
+    if (deBaja) {
+
+        // Con textContent: la fecha viene del servidor.
+        estado.className = "text-sm mt-3 text-amber-700";
+        estado.textContent =
+            "Dado de baja el "
+            + textoDeFecha(selectedDevice.decommissioned_at)
+            + ". Su credencial esta revocada y no cuenta para el plan.";
+    }
+}
+
+
+function mensajeDeBaja(elemento, texto, bien) {
+
+    if (!elemento) {
+        return;
+    }
+
+    elemento.classList.remove("hidden");
+
+    elemento.className = "text-sm mt-3 "
+        + (bien ? "text-emerald-700" : "text-red-700");
+
+    elemento.textContent = texto;
+}
+
+
+async function darDeBajaEquipo() {
+
+    if (!selectedDevice) {
+        return;
+    }
+
+    const nombre = selectedDevice.hostname || selectedDevice.device_id;
+
+    // La confirmacion nombra el equipo y dice que se conserva. Un
+    // "¿seguro?" a secas no deja decidir nada.
+    const seguro = window.confirm(
+        `¿Dar de baja "${nombre}"?\n\n`
+        + "Se revocara su credencial y dejara de conectarse.\n"
+        + "SE CONSERVAN sus grabaciones, sus alertas y su historial.\n\n"
+        + "Para volver a usarlo habra que instalarlo de nuevo."
+    );
+
+    if (!seguro) {
+        return;
+    }
+
+    const estado = document.getElementById("decommission-status");
+    const boton = document.getElementById("decommission-button");
+
+    if (boton) {
+        boton.disabled = true;
+    }
+
+    try {
+
+        const respuesta = await fetch(
+            `/api/devices/${selectedDevice.device_id}/decommission`,
+            { method: "POST" }
+        );
+
+        const datos = await respuesta.json();
+
+        if (!respuesta.ok) {
+
+            mensajeDeBaja(estado,
+                          datos.message || "No se pudo dar de baja",
+                          false);
+            return;
+        }
+
+        mensajeDeBaja(estado, datos.message, true);
+
+        // El estado real lo dice el servidor, no esta pantalla
+        await loadDevices();
+
+    } catch (error) {
+        mensajeDeBaja(estado, "No se pudo contactar con el servidor",
+                      false);
+
+    } finally {
+
+        if (boton) {
+            boton.disabled = false;
+        }
+    }
+}
+
+
+async function reincorporarEquipo() {
+
+    if (!selectedDevice) {
+        return;
+    }
+
+    const nombre = selectedDevice.hostname || selectedDevice.device_id;
+
+    const seguro = window.confirm(
+        `¿Reincorporar "${nombre}"?\n\n`
+        + "Recupera su historial, pero su credencial sigue revocada: "
+        + "habra que instalarlo de nuevo con una credencial de alta "
+        + "para que vuelva a conectarse."
+    );
+
+    if (!seguro) {
+        return;
+    }
+
+    const estado = document.getElementById("decommission-status");
+    const boton = document.getElementById("reinstate-button");
+
+    if (boton) {
+        boton.disabled = true;
+    }
+
+    try {
+
+        const respuesta = await fetch(
+            `/api/devices/${selectedDevice.device_id}/reinstate`,
+            { method: "POST" }
+        );
+
+        const datos = await respuesta.json();
+
+        mensajeDeBaja(estado,
+                      datos.message || "No se pudo reincorporar",
+                      respuesta.ok);
+
+        if (respuesta.ok) {
+            await loadDevices();
+        }
+
+    } catch (error) {
+        mensajeDeBaja(estado, "No se pudo contactar con el servidor",
+                      false);
+
+    } finally {
+
+        if (boton) {
+            boton.disabled = false;
+        }
+    }
+}
+
+
 function pintarAccionesDeEquipo() {
 
     const panel = document.getElementById("power-panel");
@@ -4514,6 +5480,8 @@ function pintarAccionesDeEquipo() {
     }
 
     contenedor.innerHTML = "";
+
+    pintarBajaDeEquipo();
 
     const permitidas = ACCIONES_DE_EQUIPO.filter(a => puede(a.permiso));
 
@@ -6769,21 +7737,20 @@ document
         const active =
             button.dataset.view === view;
 
-        button.classList.toggle(
-            "bg-slate-800",
-            active
-        );
+        // El aspecto del boton activo lo decide veyra.css. Aqui
+        // solo se dice CUAL lo esta.
+        button.classList.toggle("is-activa", active);
 
-        button.classList.toggle(
-            "text-white",
-            active
-        );
-
-        button.classList.toggle(
-            "text-slate-400",
-            !active
-        );
+        if (active) {
+            button.setAttribute("aria-current", "page");
+        } else {
+            button.removeAttribute("aria-current");
+        }
     });
+
+// En movil la navegacion vive en un cajon: al elegir destino se
+// cierra, porque dejarlo abierto tapa justo lo que se acaba de pedir.
+cerrarCajon();
 
 const titles =
     VIEW_TITLES[view] ||
@@ -7130,7 +8097,7 @@ detail.innerHTML = `
         <button onclick="closeTimelineDetail()"
             aria-label="Cerrar"
             class="w-7 h-7 flex items-center justify-center rounded-lg bg-slate-200 text-slate-600 hover:bg-slate-300 transition">
-            ✕
+            ${icono("cerrar")}
         </button>
     </div>
     <div class="flex flex-wrap items-start justify-between gap-4">
@@ -7141,7 +8108,7 @@ detail.innerHTML = `
             <div><p class="text-xs text-slate-500">Hora inicio</p><strong>${start.time}</strong></div>
             <div><p class="text-xs text-slate-500">Hora fin</p><strong>${end.time || "-"}</strong></div>
             <div><p class="text-xs text-slate-500">Duración</p><strong>${formatDuration(rec.duration_sec)}</strong></div>
-            <div><p class="text-xs text-slate-500">Conservada</p><strong>${rec.keep ? "⭐ Sí" : "No"}</strong></div>
+            <div><p class="text-xs text-slate-500">Conservada</p><strong>${rec.keep ? "Sí" : "No"}</strong></div>
         </div>
         <div class="flex flex-col gap-2">
             <button onclick="playRecording(${rec.id})"
@@ -7260,9 +8227,23 @@ if (player) {
 
 function formatDuration(seconds) {
 
-const total = Math.max(0, Math.round(seconds || 0));
-const m = Math.floor(total / 60);
+// Cero es "no la se", no "dura cero segundos".
+//
+// Es lo que declara el Agent cuando construye la ficha escaneando la
+// carpeta: el sistema de archivos solo sabe tamaño y fecha. Decir
+// "0s" afirmaria algo falso sobre la grabacion.
+if (!duracionConocida(seconds)) {
+    return "Desconocida";
+}
+
+const total = Math.round(Number(seconds));
+const h = Math.floor(total / 3600);
+const m = Math.floor((total % 3600) / 60);
 const s = total % 60;
+
+if (h > 0) {
+    return `${h}h ${String(m).padStart(2, "0")}m`;
+}
 
 if (m === 0) {
     return `${s}s`;
@@ -7271,6 +8252,40 @@ if (m === 0) {
 return `${m}m ${String(s).padStart(2, "0")}s`;
 
 }
+
+
+function duracionConocida(segundos) {
+
+    const numero = Number(segundos);
+
+    return Number.isFinite(numero) && numero > 0;
+}
+
+// La fecha y la hora en una sola linea.
+//
+// formatRecordingDate() devuelve un OBJETO {date, time}, porque la
+// tabla las pinta en celdas distintas. Interpolarlo dentro de una
+// plantilla daba "[object Object]": JavaScript convierte el objeto a
+// texto sin avisar de nada.
+//
+// Esta funcion es para cuando se quiere la linea entera.
+function textoDeFecha(iso) {
+
+    if (!iso) {
+        return "-";
+    }
+
+    const partes = formatRecordingDate(iso);
+
+    // Una fecha ilegible llega con la hora vacia: se enseña tal cual
+    // en vez de inventar una.
+    if (!partes.time) {
+        return partes.date;
+    }
+
+    return `${partes.date} ${partes.time}`;
+}
+
 
 function formatRecordingDate(iso) {
 
@@ -7454,7 +8469,7 @@ try {
         const kept = Boolean(rec.keep);
 
         const keepCell = kept
-            ? `<span class="inline-flex items-center gap-1 text-amber-600 font-medium">⭐ Conservada</span>
+            ? `<span class="inline-flex items-center gap-1 text-amber-600 font-medium">${icono("escudo")} Conservada</span>
                <button onclick="toggleKeep(${rec.id}, 1)"
                    class="ml-2 px-2 py-1 rounded-lg bg-slate-100 text-slate-600 text-xs hover:bg-slate-200 transition">
                    Dejar de conservar
@@ -7508,7 +8523,8 @@ GUARDAR UNA GRABACION EN EL SERVIDOR
 // confunde mas que su ausencia.
 const ESTADOS_DE_ALMACENAMIENTO = {
     local_only: {
-        etiqueta: "\uD83D\uDCCD Solo local",
+        etiqueta: "Solo local",
+        icono: "ubicacion",
         clase: "bg-slate-100 text-slate-600",
         sePuedeGuardar: true,
         sePuedeAbrir: false,
@@ -7516,21 +8532,24 @@ const ESTADOS_DE_ALMACENAMIENTO = {
             + "Guardala en el servidor para poder verla o descargarla."
     },
     server_pending: {
-        etiqueta: "\u23F3 Guardando...",
+        etiqueta: "Guardando...",
+        icono: "reloj",
         clase: "bg-blue-100 text-blue-700",
         sePuedeGuardar: false,
         sePuedeAbrir: false,
         porQueNoSeAbre: "Se esta transfiriendo al servidor."
     },
     server_stored: {
-        etiqueta: "\u2601 En el servidor",
+        etiqueta: "En el servidor",
+        icono: "nube",
         clase: "bg-emerald-100 text-emerald-700",
         sePuedeGuardar: false,
         sePuedeAbrir: true,
         porQueNoSeAbre: ""
     },
     server_error: {
-        etiqueta: "\u26A0 Error al guardar",
+        etiqueta: "Error al guardar",
+        icono: "aviso",
         clase: "bg-red-100 text-red-700",
         sePuedeGuardar: true,
         sePuedeAbrir: false,
@@ -7553,8 +8572,11 @@ function insigniaDeAlmacenamiento(rec) {
 
     const estado = estadoDeAlmacenamiento(rec);
 
-    return `<span class="px-2 py-0.5 rounded-full text-xs ${estado.clase}">`
-        + `${estado.etiqueta}</span>`;
+    // El icono acompaña a la palabra, no la sustituye: el estado se
+    // puede leer aunque el icono no se vea.
+    return `<span class="inline-flex items-center gap-1 px-2 py-0.5 `
+        + `rounded-full text-xs ${estado.clase}">`
+        + `${icono(estado.icono || "info")}${estado.etiqueta}</span>`;
 }
 
 
@@ -7612,7 +8634,7 @@ function botonGuardarEnServidor(rec) {
                 class="ml-2 px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-xs hover:bg-emerald-500 transition disabled:opacity-50"
                 title="Transferir esta grabacion al servidor. La copia del equipo se conserva."
             >
-                \u2601 Guardar en servidor
+                ${icono("nube")} Guardar en servidor
             </button>`;
 }
 
@@ -9267,3 +10289,24 @@ document
 document
     .getElementById("install-copy-token")
     ?.addEventListener("click", copiarCredencialDeInstalacion);
+
+
+document
+    .getElementById("decommission-button")
+    ?.addEventListener("click", darDeBajaEquipo);
+
+document
+    .getElementById("reinstate-button")
+    ?.addEventListener("click", reincorporarEquipo);
+
+document
+    .getElementById("link-history-button")
+    ?.addEventListener("click", vincularHistorial);
+
+document
+    .getElementById("unlink-history-button")
+    ?.addEventListener("click", deshacerVinculacion);
+
+
+// Tema, menu del usuario y cajon de navegacion
+conectarInterfazVeyra();
