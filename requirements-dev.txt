@@ -24,3 +24,17 @@ psutil==7.2.2
 # En Linux basta con que el paquete se pueda importar: las pruebas no
 # llegan a capturar pantalla.
 mss==10.2.0
+
+# agent/release.py, que prueba la firma de las actualizaciones.
+#
+# Hace falta AQUI porque el servidor no la necesita y por eso no esta
+# en requirements-server.txt: solo la usan el Agent (para verificar),
+# la herramienta de publicacion (para firmar) y estas pruebas. Sin
+# esta linea, test_actualizacion.py no pasaria en una maquina limpia.
+cryptography==46.0.3
+
+# Empaquetado del instalador grafico de Windows en un .exe
+# (installer/build-installer.ps1). Solo hace falta en el equipo donde
+# se construye el instalador, nunca en el servidor ni en los equipos
+# administrados.
+pyinstaller==6.16.0
