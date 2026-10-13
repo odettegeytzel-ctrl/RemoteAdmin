@@ -477,6 +477,13 @@ TARJETAS
     border: 1px solid var(--vy-borde);
     border-radius: 14px;
     box-shadow: var(--vy-sombra);
+
+    /*
+    Red de seguridad: una palabra sin espacios —un nombre de equipo,
+    una ruta— no puede sacar su texto fuera de la tarjeta.
+    */
+    overflow-wrap: anywhere;
+    min-width: 0;
 }
 
 .vy-card-cabecera {
@@ -528,6 +535,28 @@ TARJETAS
     align-items: center;
     gap: 8px 14px;
     margin-top: 14px;
+}
+
+/*
+El pie de una tarjeta de metrica puede ser largo: "1 equipo sin datos
+de RAM/disco" no cabe en una linea estrecha. Aqui se deja partir,
+porque .vy-punto lleva nowrap por defecto —que es lo correcto para
+"Conectados" o "Pendientes", de una sola palabra— y ese nowrap hacia
+que el texto se saliera de la tarjeta.
+
+El punto de color no se encoge y se alinea con la PRIMERA linea, no
+con el centro del bloque: centrado quedaria flotando a media altura
+cuando el texto ocupa dos renglones.
+*/
+.vy-metrica-pie .vy-punto {
+    white-space: normal;
+    align-items: flex-start;
+    text-align: left;
+    min-width: 0;
+}
+
+.vy-metrica-pie .vy-punto::before {
+    margin-top: 5px;
 }
 
 

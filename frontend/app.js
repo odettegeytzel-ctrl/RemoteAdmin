@@ -2286,10 +2286,11 @@ const resumen =
 contador.textContent =
     resumen.warnings;
 
-contador.className =
-    resumen.warnings > 0
-        ? "block text-3xl font-semibold mt-3 text-red-600"
-        : "block text-3xl font-semibold mt-3";
+// Solo se toca el color. Antes se reescribia className entero y
+// eso borraba vy-metrica-valor, con lo que esta tarjeta quedaba con
+// un numero de otro tamaño que el de las demas en cuanto se
+// refrescaba la pantalla.
+contador.classList.toggle("text-red-600", resumen.warnings > 0);
 
 if (!sinDatos) {
     return;
@@ -2327,10 +2328,8 @@ const pendientes =
 contador.textContent =
     pendientes;
 
-contador.className =
-    pendientes > 0
-        ? "block text-3xl font-semibold mt-3 text-amber-600"
-        : "block text-3xl font-semibold mt-3";
+// Igual que arriba: se cambia el color, no la clase entera.
+contador.classList.toggle("text-amber-600", pendientes > 0);
 
 }
 

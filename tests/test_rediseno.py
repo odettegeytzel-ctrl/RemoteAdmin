@@ -982,6 +982,71 @@ def test_las_imagenes_reservan_su_sitio():
                   not sin_medidas, str(sin_medidas[:1]))
 
 
+def test_el_pie_de_una_tarjeta_puede_partir_en_dos_lineas():
+    """
+    "1 equipo sin datos de RAM/disco" no cabe en una linea estrecha.
+
+    .vy-punto lleva nowrap, que es lo correcto para "Conectados" o
+    "Pendientes", de una sola palabra. En el pie de una tarjeta ese
+    nowrap sacaba el texto fuera del recuadro.
+    """
+
+    comprobar("El pie de la metrica puede partir",
+              ".vy-metrica-pie .vy-punto" in CSS)
+
+    bloque = CSS.split(".vy-metrica-pie .vy-punto {", 1)[1].split(
+        "}", 1
+    )[0]
+
+    comprobar("Dejando de forzar una sola linea",
+              "white-space: normal" in bloque, bloque)
+
+    comprobar("Y el punto se alinea con la primera linea",
+              "align-items: flex-start" in bloque, bloque)
+
+    # Los de una palabra conservan su nowrap
+    general = CSS.split(chr(10) + ".vy-punto {", 1)[1].split("}", 1)[0]
+
+    comprobar("Los pies cortos siguen sin partirse",
+              "white-space: nowrap" in general, general)
+
+
+def test_una_palabra_larga_no_desborda_una_tarjeta():
+    """Un nombre de equipo o una ruta sin espacios."""
+
+    bloque = CSS.split(chr(10) + ".vy-card {", 1)[1].split("}", 1)[0]
+
+    comprobar("La tarjeta parte las palabras largas",
+              "overflow-wrap: anywhere" in bloque, bloque)
+
+
+def test_el_refresco_no_borra_la_clase_del_tema():
+    """
+    El panel reescribia className entero al refrescar, borrando
+    vy-metrica-valor: esas tarjetas quedaban con un numero de otro
+    tamaño que el resto en cuanto se actualizaba la pantalla.
+    """
+
+    import re as _re
+
+    # Ningun className se reasigna con las clases de una metrica
+    malos = _re.findall(
+        r'className\s*=\s*[^;]*text-3xl[^;]*;', JS, _re.S
+    )
+
+    comprobar("Ningun refresco reescribe el numero de una metrica",
+              not malos, str(malos)[:200])
+
+    # Y las cinco siguen declarando su clase en el marcado
+    for ident in ("total-devices", "online-devices", "offline-devices",
+                  "pending-alerts", "warning-devices"):
+
+        bloque = HTML.split(f'id="{ident}"', 1)[1][:120]
+
+        comprobar(f"{ident} lleva la clase del tema",
+                  "vy-metrica-valor" in bloque, bloque[:80])
+
+
 # ==============================
 # NO SE ROMPIO NADA
 # ==============================
@@ -1188,6 +1253,9 @@ def main():
         test_en_compacta_queda_el_dibujo,
         test_el_logotipo_no_se_anuncia_dos_veces,
         test_las_imagenes_reservan_su_sitio,
+        test_el_pie_de_una_tarjeta_puede_partir_en_dos_lineas,
+        test_una_palabra_larga_no_desborda_una_tarjeta,
+        test_el_refresco_no_borra_la_clase_del_tema,
         test_siguen_estando_los_identificadores_del_panel,
         test_siguen_estando_las_seis_vistas,
         test_el_panel_sigue_sirviendose,
