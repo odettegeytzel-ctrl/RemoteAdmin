@@ -545,7 +545,30 @@ def init_db():
         # Organizacion a la que pertenece el equipo. La asigna el
         # servidor en el alta y NUNCA se acepta del cliente: un Agent no
         # puede cambiar de empresa enviando otro identificador.
-        "organization_id": "INTEGER"
+        "organization_id": "INTEGER",
+
+        # Cuando se dio de baja el equipo. NULL = en servicio.
+        #
+        # Una baja NO borra la fila: se conserva el historial, y con el
+        # el hostname del que tiran las grabaciones. Lleva fecha y no
+        # un si/no porque lo que se querra saber despues es cuando
+        # ocurrio.
+        #
+        # Va en su propia columna y no en 'status' porque aquello es
+        # online/offline, una observacion que reescribe el heartbeat:
+        # el primer latido de un equipo olvidado borraria la baja.
+        "decommissioned_at": "TEXT",
+
+        # A que equipo dado de baja sucede este.
+        #
+        # Es como se vincula un equipo reinstalado con su historial
+        # anterior. Apunta del NUEVO al VIEJO, y de ese modo no hace
+        # falta tocar ni una grabacion: cada una conserva su
+        # device_id original, su ruta en disco y su nombre.
+        #
+        # NULL es lo normal: la inmensa mayoria de los equipos no
+        # suceden a ninguno.
+        "succeeds_device_id": "TEXT"
     }
 
     for column_name, column_type in new_columns.items():
