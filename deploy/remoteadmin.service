@@ -1,0 +1,79 @@
+# Backend de RemoteAdmin (FastAPI/Uvicorn) como servicio del sistema.
+#
+# Instalar:
+#   sudo cp deploy/remoteadmin.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now remoteadmin
+#
+# Ajusta User, WorkingDirectory y las rutas si el despliegue no esta en
+# /opt/remoteadmin. No cambies el puerto sin cambiarlo tambien en la
+# configuracion de Nginx.
+
+[Unit]
+Description=RemoteAdmin backend
+Documentation=file:///opt/remoteadmin/deploy/README.md
+
+# Arranca cuando hay red utilizable. No se declara dependencia de
+# nginx ni de cloudflared a proposito: son procesos independientes y
+# cada uno se recupera por su cuenta. Encadenarlos haria que la caida
+# de uno arrastrase a los demas.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+
+# Usuario sin privilegios, dueno de la base y de las grabaciones.
+User=remoteadmin
+Group=remoteadmin
+
+WorkingDirectory=/opt/remoteadmin
+
+# Las credenciales viven aqui, fuera del repositorio y del alcance de
+# systemctl show: el archivo debe ser 0600 y de este usuario.
+EnvironmentFile=/etc/remoteadmin/remoteadmin.env
+
+ExecStart=/opt/remoteadmin/.venv/bin/uvicorn backend.main:app \
+    --host 127.0.0.1 \
+    --port 8000 \
+    --proxy-headers \
+    --forwarded-allow-ips 127.0.0.1
+
+# Escucha solo en loopback: el unico camino desde fuera es Nginx, que
+# es quien pone el TLS. Publicar el 8000 seria dar una puerta que se
+# salta el proxy.
+
+# --- Recuperacion ---
+#
+# Se reinicia pase lo que pase, incluida una salida limpia: si el
+# proceso termina, algo va mal.
+Restart=always
+RestartSec=5
+
+# Si falla cinco veces en un minuto, systemd lo deja parado. Sin este
+# limite, un fallo de configuracion da vueltas eternamente y llena el
+# disco de logs. StartLimitIntervalSec=0 lo desactivaria.
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+# --- Aislamiento ---
+#
+# Lo que el servicio no necesita, no lo tiene.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+# Lo unico que puede escribir: su propio directorio de datos.
+ReadWritePaths=/opt/remoteadmin
+
+# Al journal. Nunca a un archivo del proyecto.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=remoteadmin
+
+[Install]
+WantedBy=multi-user.target

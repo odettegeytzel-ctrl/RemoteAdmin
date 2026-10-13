@@ -1,0 +1,49 @@
+# Named Tunnel de Cloudflare para RemoteAdmin.
+#
+# Destino: /etc/cloudflared/config.yml
+#
+# ESTE ARCHIVO ES UNA PLANTILLA. Los dos valores entre <> hay que
+# rellenarlos: no se pueden inventar porque los asigna Cloudflare al
+# crear el tunel y al tener un dominio.
+#
+# Un Named Tunnel NO es lo mismo que el Quick Tunnel de
+# *.trycloudflare.com: el Quick Tunnel cambia de direccion cada vez que
+# arranca y no sirve para produccion, porque cada reinicio dejaria a
+# todos los Agents apuntando a una direccion que ya no existe.
+#
+# Pasos, una sola vez (ver deploy/README.md):
+#
+#   cloudflared tunnel login
+#   cloudflared tunnel create remoteadmin
+#   cloudflared tunnel route dns remoteadmin <HOSTNAME>
+#
+# El primero abre un navegador y requiere que el dominio ya este en
+# Cloudflare. Sin dominio no hay hostname estable, y ese es el unico
+# punto que no se puede resolver desde el codigo.
+
+tunnel: <ID-DEL-TUNEL>
+credentials-file: /etc/cloudflared/<ID-DEL-TUNEL>.json
+
+# Sin esto, cloudflared no sabria a donde mandar lo que entra.
+ingress:
+
+  - hostname: <HOSTNAME>
+
+    # A Nginx, no directamente al backend: Nginx es quien tiene la
+    # configuracion de WebSocket y las cabeceras de proxy.
+    service: http://127.0.0.1:80
+
+    originRequest:
+
+      # WebSocket. Sin esto el panel funciona y los Agents no
+      # conectan, que es la averia mas dificil de diagnosticar: todo
+      # parece bien hasta que ningun equipo aparece en linea.
+      noTLSVerify: false
+
+      # Las conexiones de los Agents son largas y silenciosas entre
+      # latidos. Un timeout corto las cortaria cada pocos minutos.
+      connectTimeout: 30s
+      tcpKeepAlive: 30s
+
+  # Obligatorio: todo lo que no encaje arriba se rechaza.
+  - service: http_status:404
