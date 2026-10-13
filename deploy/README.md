@@ -151,3 +151,145 @@ sudo reboot
 # y al volver:
 systemctl is-active remoteadmin nginx cloudflared
 ```
+
+
+## 6. Actualizar a una version nueva
+
+El servidor trabaja sobre `main`. Una version nueva llega fusionando
+su pull request y trayendo los cambios con `git pull`.
+
+Antes de empezar, dos datos que hacen falta para poder volver atras:
+
+```bash
+cd /opt/remoteadmin/RemoteAdmin
+
+sudo -u remoteadmin git rev-parse HEAD      # anota esto
+sudo -u remoteadmin git status --short      # debe estar limpio
+```
+
+Si `git status` no sale vacio, hay cambios hechos a mano en el
+servidor. **Para y averigua que son antes de seguir**: un `git pull`
+los pisaria.
+
+### 6.1. Respaldo, primero
+
+Sin respaldo verificado no se actualiza. El procedimiento completo
+esta en `docs/respaldo-y-reversion.md`; el resumen:
+
+```bash
+cd /opt/remoteadmin/RemoteAdmin
+
+sudo -u remoteadmin ./.venv/bin/python scripts/respaldo.py crear
+sudo -u remoteadmin ./.venv/bin/python scripts/respaldo.py probar \
+    respaldos/veyra-AAAAMMDD-HHMMSS
+```
+
+`probar` tiene que decir **"el respaldo SIRVE para restaurar"**. Si
+dice otra cosa, no se actualiza.
+
+Despues, sacar la copia del servidor:
+
+```bash
+# desde tu equipo
+scp -r ubuntu@<servidor>:/opt/remoteadmin/RemoteAdmin/respaldos/veyra-... .
+```
+
+Un respaldo en el mismo disco que la base no protege del fallo mas
+probable.
+
+### 6.2. Traer la version
+
+```bash
+cd /opt/remoteadmin/RemoteAdmin
+
+sudo -u remoteadmin git fetch origin
+sudo -u remoteadmin git pull --ff-only origin main
+sudo -u remoteadmin git rev-parse --short HEAD   # el commit esperado
+```
+
+`--ff-only` a proposito: si no puede avanzar en linea recta, falla en
+vez de crear una fusion en el servidor.
+
+El `sudo -u remoteadmin` tambien: ejecutar git como root deja los
+archivos con otro dueño y la siguiente actualizacion falla con
+"dubious ownership".
+
+### 6.3. Dependencias, solo si cambiaron
+
+```bash
+sudo -u remoteadmin git diff --name-only <commit-anterior> HEAD \
+    | grep requirements
+```
+
+Si no sale nada, no hay que instalar nada. Si sale, mirar **que**
+cambio antes de instalar.
+
+### 6.4. Reiniciar
+
+```bash
+sudo systemctl restart remoteadmin
+systemctl is-active remoteadmin
+```
+
+Las migraciones de base corren solas al arrancar: `init_db()` añade
+las columnas que falten. Son aditivas y no reescriben filas.
+
+### 6.5. Comprobar
+
+```bash
+curl -s https://<url-publica>/api/health          # {"status":"ok",...}
+curl -sI https://<url-publica>/            | head -1   # 200
+curl -sI https://<url-publica>/panel       | head -1   # 200
+curl -sI https://<url-publica>/frontend/index.html | head -1  # 200
+
+journalctl -u remoteadmin -n 60 --no-pager
+sudo tail -n 40 /var/log/nginx/error.log
+```
+
+Y que los datos siguen ahi, con los mismos recuentos que antes:
+
+```bash
+sudo -u remoteadmin sqlite3 \
+  "file:/opt/remoteadmin/RemoteAdmin/remoteadmin.db?mode=ro" \
+  "SELECT 'equipos', COUNT(*) FROM devices
+   UNION ALL SELECT 'grabaciones', COUNT(*) FROM recordings
+   UNION ALL SELECT 'usuarios', COUNT(*) FROM users
+   UNION ALL SELECT 'auditoria', COUNT(*) FROM audit_log;"
+```
+
+Por ultimo, que los Agents vuelven solos: en unos minutos deberian
+reconectar sin que nadie toque sus equipos.
+
+```bash
+journalctl -u remoteadmin --since "5 minutes ago" | grep -i "agent connected"
+```
+
+### 6.6. Volver atras
+
+Revertir el codigo **no necesita restaurar la base**. Las columnas
+nuevas le sobran a la version anterior, que las ignora.
+
+```bash
+sudo systemctl stop remoteadmin
+sudo -u remoteadmin git -C /opt/remoteadmin/RemoteAdmin checkout <commit-anterior>
+sudo systemctl start remoteadmin
+curl -s https://<url-publica>/api/health
+```
+
+La base solo se restaura si los datos se han estropeado, que es otro
+problema y tiene su propio procedimiento en
+`docs/respaldo-y-reversion.md`.
+
+Una consecuencia de revertir que conviene conocer: si se habia dado
+de baja algun equipo, al volver atras **reaparece en el inventario y
+vuelve a ocupar plaza del plan**, porque la version anterior no
+entiende esa marca. Su credencial sigue revocada, asi que no puede
+conectarse. Al volver a la version nueva, la baja reaparece: el dato
+nunca se pierde.
+
+### Que NO toca una actualizacion
+
+Ni `/etc/remoteadmin/remoteadmin.env`, ni la base, ni
+`server_recordings/`, ni los certificados, ni los respaldos
+anteriores. `git pull` solo trae archivos versionados, y ninguno de
+esos lo esta.
