@@ -1,0 +1,1694 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>VEYRA by NYRA | Administracion remota de equipos</title>
+
+    <meta
+        name="description"
+        content="VEYRA permite supervisar equipos, consultar grabaciones y
+            gestionar usuarios de una organizacion desde una plataforma
+            centralizada."
+    >
+
+    <meta name="theme-color" content="#070C17">
+
+    <!--
+    LA MARCA
+
+    El .ico lleva dentro 16, 32, 48 y 64 pixeles: cada navegador coge
+    el que le conviene en vez de reducir por su cuenta una imagen
+    grande, que es cuando se emborrona.
+    -->
+    <link rel="icon" href="/frontend/marca/veyra.ico" sizes="any">
+    <link rel="icon" type="image/png" sizes="32x32"
+        href="/frontend/marca/veyra-32.png">
+    <link rel="icon" type="image/png" sizes="48x48"
+        href="/frontend/marca/veyra-48.png">
+    <link rel="apple-touch-icon" href="/frontend/marca/veyra-180.png">
+
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <link rel="stylesheet" href="/frontend/veyra.css">
+
+    <script>
+        /* El tema, antes de pintar. Mismo criterio que en el panel. */
+        (function () {
+
+            var tema = "dark";
+
+            try {
+                var guardado = window.localStorage.getItem("veyra-tema");
+
+                if (guardado === "light" || guardado === "dark") {
+                    tema = guardado;
+                }
+
+            } catch (error) {
+                /* Sin almacenamiento se queda el oscuro. */
+            }
+
+            document.documentElement.setAttribute("data-theme", tema);
+        })();
+    </script>
+
+</head>
+
+
+<body class="vy-publico">
+
+    <!--
+    ICONOS DE VEYRA
+
+    Un solo juego, de trazo uniforme sobre una reticula de 24x24. Se
+    define una vez aqui y cada uso es un <use href="#i-...">, asi que
+    el mismo icono repetido cien veces pesa una.
+
+    No se añade ninguna biblioteca ni CDN: son trazados escritos en el
+    propio archivo. Asi el panel sigue funcionando sin internet, que
+    importa en una herramienta de administracion.
+
+    El color NO se fija aqui: todos usan stroke="currentColor" a
+    traves de .vy-icon, de modo que heredan el color del texto y
+    obedecen al tema sin una sola regla extra.
+    -->
+    <svg
+        width="0"
+        height="0"
+        style="position:absolute"
+        aria-hidden="true"
+        focusable="false"
+    >
+        <defs>
+
+            <!-- Navegacion -->
+
+            <symbol id="i-panel" viewBox="0 0 24 24">
+                <rect x="3" y="3" width="7" height="9" rx="1"/>
+                <rect x="14" y="3" width="7" height="5" rx="1"/>
+                <rect x="14" y="12" width="7" height="9" rx="1"/>
+                <rect x="3" y="16" width="7" height="5" rx="1"/>
+            </symbol>
+
+            <symbol id="i-equipo" viewBox="0 0 24 24">
+                <rect x="2" y="3" width="20" height="14" rx="2"/>
+                <path d="M8 21h8"/>
+                <path d="M12 17v4"/>
+            </symbol>
+
+            <symbol id="i-grabacion" viewBox="0 0 24 24">
+                <path d="m22 8-6 4 6 4V8Z"/>
+                <rect x="2" y="6" width="14" height="12" rx="2"/>
+            </symbol>
+
+            <symbol id="i-usuarios" viewBox="0 0 24 24">
+                <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
+                <circle cx="9" cy="7" r="4"/>
+                <path d="M22 21v-2a4 4 0 0 0-3-3.87"/>
+                <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+            </symbol>
+
+            <symbol id="i-organizacion" viewBox="0 0 24 24">
+                <path d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z"/>
+                <path d="M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"/>
+                <path d="M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2"/>
+                <path d="M10 6h4"/>
+                <path d="M10 10h4"/>
+                <path d="M10 14h4"/>
+                <path d="M10 18h4"/>
+            </symbol>
+
+            <symbol id="i-configuracion" viewBox="0 0 24 24">
+                <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
+                <circle cx="12" cy="12" r="3"/>
+            </symbol>
+
+            <symbol id="i-instalar" viewBox="0 0 24 24">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <path d="m7 10 5 5 5-5"/>
+                <path d="M12 15V3"/>
+            </symbol>
+
+            <symbol id="i-alerta" viewBox="0 0 24 24">
+                <path d="M10.268 21a2 2 0 0 0 3.464 0"/>
+                <path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"/>
+            </symbol>
+
+            <!-- Estados y avisos -->
+
+            <symbol id="i-aviso" viewBox="0 0 24 24">
+                <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/>
+                <path d="M12 9v4"/>
+                <path d="M12 17h.01"/>
+            </symbol>
+
+            <symbol id="i-correcto" viewBox="0 0 24 24">
+                <path d="M21.8 10A10 10 0 1 1 17 3.34"/>
+                <path d="m9 11 3 3L22 4"/>
+            </symbol>
+
+            <symbol id="i-info" viewBox="0 0 24 24">
+                <circle cx="12" cy="12" r="10"/>
+                <path d="M12 16v-4"/>
+                <path d="M12 8h.01"/>
+            </symbol>
+
+            <symbol id="i-reloj" viewBox="0 0 24 24">
+                <circle cx="12" cy="12" r="10"/>
+                <path d="M12 6v6l4 2"/>
+            </symbol>
+
+            <symbol id="i-actividad" viewBox="0 0 24 24">
+                <path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/>
+            </symbol>
+
+            <symbol id="i-grabando" viewBox="0 0 24 24">
+                <circle cx="12" cy="12" r="10"/>
+                <circle cx="12" cy="12" r="3.5" fill="currentColor" stroke="none"/>
+            </symbol>
+
+            <!-- Almacenamiento -->
+
+            <symbol id="i-nube" viewBox="0 0 24 24">
+                <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>
+            </symbol>
+
+            <symbol id="i-disco" viewBox="0 0 24 24">
+                <path d="M22 12H2"/>
+                <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>
+                <path d="M6 16h.01"/>
+                <path d="M10 16h.01"/>
+            </symbol>
+
+            <symbol id="i-ubicacion" viewBox="0 0 24 24">
+                <path d="M20 10c0 4.99-5.54 10.19-7.4 11.8a1 1 0 0 1-1.2 0C9.54 20.19 4 14.99 4 10a8 8 0 0 1 16 0"/>
+                <circle cx="12" cy="10" r="3"/>
+            </symbol>
+
+            <symbol id="i-servidor" viewBox="0 0 24 24">
+                <rect x="2" y="2" width="20" height="8" rx="2"/>
+                <rect x="2" y="14" width="20" height="8" rx="2"/>
+                <path d="M6 6h.01"/>
+                <path d="M6 18h.01"/>
+            </symbol>
+
+            <!-- Acciones -->
+
+            <symbol id="i-reproducir" viewBox="0 0 24 24">
+                <path d="m6 3 14 9-14 9Z"/>
+            </symbol>
+
+            <symbol id="i-pausa" viewBox="0 0 24 24">
+                <rect x="14" y="4" width="4" height="16" rx="1"/>
+                <rect x="6" y="4" width="4" height="16" rx="1"/>
+            </symbol>
+
+            <symbol id="i-descargar" viewBox="0 0 24 24">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <path d="m7 10 5 5 5-5"/>
+                <path d="M12 15V3"/>
+            </symbol>
+
+            <symbol id="i-buscar" viewBox="0 0 24 24">
+                <circle cx="11" cy="11" r="8"/>
+                <path d="m21 21-4.3-4.3"/>
+            </symbol>
+
+            <symbol id="i-editar" viewBox="0 0 24 24">
+                <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                <path d="M18.37 2.63a1.9 1.9 0 0 1 2.7 2.7L11.5 14.9l-3.6 1 1-3.6z"/>
+            </symbol>
+
+            <symbol id="i-eliminar" viewBox="0 0 24 24">
+                <path d="M3 6h18"/>
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/>
+                <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                <path d="M10 11v6"/>
+                <path d="M14 11v6"/>
+            </symbol>
+
+            <symbol id="i-actualizar" viewBox="0 0 24 24">
+                <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
+                <path d="M21 3v5h-5"/>
+                <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
+                <path d="M8 16H3v5"/>
+            </symbol>
+
+            <symbol id="i-mas" viewBox="0 0 24 24">
+                <path d="M5 12h14"/>
+                <path d="M12 5v14"/>
+            </symbol>
+
+            <symbol id="i-filtro" viewBox="0 0 24 24">
+                <path d="M22 3H2l8 9.46V19l4 2v-8.54Z"/>
+            </symbol>
+
+            <symbol id="i-calendario" viewBox="0 0 24 24">
+                <rect x="3" y="4" width="18" height="18" rx="2"/>
+                <path d="M16 2v4"/>
+                <path d="M8 2v4"/>
+                <path d="M3 10h18"/>
+            </symbol>
+
+            <symbol id="i-encender" viewBox="0 0 24 24">
+                <path d="M12 2v10"/>
+                <path d="M18.4 6.6a9 9 0 1 1-12.77.04"/>
+            </symbol>
+
+            <symbol id="i-salir" viewBox="0 0 24 24">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+                <path d="m16 17 5-5-5-5"/>
+                <path d="M21 12H9"/>
+            </symbol>
+
+            <!-- Seguridad -->
+
+            <symbol id="i-escudo" viewBox="0 0 24 24">
+                <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>
+                <path d="m9 12 2 2 4-4"/>
+            </symbol>
+
+            <symbol id="i-candado" viewBox="0 0 24 24">
+                <rect x="3" y="11" width="18" height="11" rx="2"/>
+                <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+            </symbol>
+
+            <symbol id="i-correo" viewBox="0 0 24 24">
+                <rect x="2" y="4" width="20" height="16" rx="2"/>
+                <path d="m22 7-9 5.7a2 2 0 0 1-2 0L2 7"/>
+            </symbol>
+
+            <!-- Interfaz -->
+
+            <symbol id="i-menu" viewBox="0 0 24 24">
+                <path d="M4 6h16"/>
+                <path d="M4 12h16"/>
+                <path d="M4 18h16"/>
+            </symbol>
+
+            <symbol id="i-cerrar" viewBox="0 0 24 24">
+                <path d="M18 6 6 18"/>
+                <path d="m6 6 12 12"/>
+            </symbol>
+
+            <symbol id="i-abajo" viewBox="0 0 24 24">
+                <path d="m6 9 6 6 6-6"/>
+            </symbol>
+
+            <symbol id="i-derecha" viewBox="0 0 24 24">
+                <path d="m9 18 6-6-6-6"/>
+            </symbol>
+
+            <symbol id="i-flecha-derecha" viewBox="0 0 24 24">
+                <path d="M5 12h14"/>
+                <path d="m12 5 7 7-7 7"/>
+            </symbol>
+
+            <symbol id="i-lateral" viewBox="0 0 24 24">
+                <rect x="3" y="3" width="18" height="18" rx="2"/>
+                <path d="M9 3v18"/>
+            </symbol>
+
+            <symbol id="i-sol" viewBox="0 0 24 24">
+                <circle cx="12" cy="12" r="4"/>
+                <path d="M12 2v2"/>
+                <path d="M12 20v2"/>
+                <path d="m4.93 4.93 1.41 1.41"/>
+                <path d="m17.66 17.66 1.41 1.41"/>
+                <path d="M2 12h2"/>
+                <path d="M20 12h2"/>
+                <path d="m6.34 17.66-1.41 1.41"/>
+                <path d="m19.07 4.93-1.41 1.41"/>
+            </symbol>
+
+            <symbol id="i-luna" viewBox="0 0 24 24">
+                <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>
+            </symbol>
+
+            <symbol id="i-persona" viewBox="0 0 24 24">
+                <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/>
+                <circle cx="12" cy="7" r="4"/>
+            </symbol>
+
+            <symbol id="i-guia" viewBox="0 0 24 24">
+                <path d="M12 7v14"/>
+                <path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/>
+            </symbol>
+
+            <symbol id="i-ayuda" viewBox="0 0 24 24">
+                <path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>
+            </symbol>
+
+            <symbol id="i-camara" viewBox="0 0 24 24">
+                <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3z"/>
+                <circle cx="12" cy="13" r="3"/>
+            </symbol>
+
+            <symbol id="i-ojo" viewBox="0 0 24 24">
+                <path d="M2.06 12.35a1 1 0 0 1 0-.7 10.75 10.75 0 0 1 19.88 0 1 1 0 0 1 0 .7 10.75 10.75 0 0 1-19.88 0"/>
+                <circle cx="12" cy="12" r="3"/>
+            </symbol>
+
+        </defs>
+    </svg>
+
+    <!-- ==============================
+         ENCABEZADO
+         Los enlaces llevan a secciones de esta misma pagina o al
+         panel real. Ninguno es decorativo.
+         ============================== -->
+    <header class="vy-publico-nav">
+
+        <a
+            href="#inicio"
+            class="vy-marca"
+            style="text-decoration:none;flex-shrink:0"
+        >
+
+            <!--
+            El encabezado se asienta sobre el fondo de la pagina, que
+            cambia con el tema: se ponen los dos logotipos y CSS
+            enseña el que contrasta.
+            -->
+            <img
+                class="vy-logo vy-logo-sobre-claro"
+                src="/frontend/marca/veyra-logo-320.png"
+                alt="VEYRA"
+                width="320"
+                height="93"
+                style="width:168px;height:auto"
+            >
+
+            <img
+                class="vy-logo vy-logo-sobre-oscuro"
+                src="/frontend/marca/veyra-logo-claro-320.png"
+                alt=""
+                aria-hidden="true"
+                width="320"
+                height="93"
+                style="width:168px;height:auto"
+            >
+
+        </a>
+
+
+        <nav class="vy-publico-enlaces" aria-label="Secciones">
+            <a href="#inicio" class="vy-publico-enlace is-activa">Inicio</a>
+            <a href="#funciones" class="vy-publico-enlace">Funciones</a>
+            <a href="#seguridad" class="vy-publico-enlace">Seguridad</a>
+            <a href="#planes" class="vy-publico-enlace">Planes</a>
+            <a href="#contacto" class="vy-publico-enlace">Contacto</a>
+        </nav>
+
+
+        <div class="flex items-center gap-2" style="margin-left:auto">
+
+            <button
+                id="tema-boton"
+                type="button"
+                class="vy-btn-icono"
+                aria-label="Cambiar entre modo claro y oscuro"
+            >
+                <svg class="vy-icon vy-icon-sm">
+                    <use href="#i-sol" id="tema-uso"></use>
+                </svg>
+            </button>
+
+            <a href="/panel" class="vy-btn vy-btn-secundario">
+                Iniciar sesión
+            </a>
+
+            <!--
+            No existe alta publica: las organizaciones las crea el
+            operador de la plataforma. Por eso el boton no promete una
+            cuenta inmediata, lleva a la seccion que explica como se
+            consigue acceso de verdad.
+            -->
+            <a href="#contacto" class="vy-btn vy-btn-primario">
+                Solicitar acceso
+            </a>
+
+        </div>
+
+    </header>
+
+
+    <main id="inicio">
+
+        <section
+            class="max-w-[1240px] mx-auto px-6 pt-14 pb-10
+                grid lg:grid-cols-2 gap-12 items-center"
+        >
+
+            <div>
+
+                <span class="vy-pildora">
+                    Plataforma de administración remota
+                </span>
+
+                <h1 class="vy-titular mt-7">
+                    Administra tus equipos
+                    <span class="vy-titular-azul">desde un solo lugar.</span>
+                </h1>
+
+                <p class="vy-entradilla mt-6">
+                    Supervisa dispositivos, consulta grabaciones, gestiona
+                    tu organización y mantén el control de tu entorno de
+                    forma segura y centralizada.
+                </p>
+
+                <div class="flex flex-wrap gap-3 mt-9">
+
+                    <a href="#contacto" class="vy-btn vy-btn-primario">
+                        Solicitar acceso
+                        <svg class="vy-icon vy-icon-sm">
+                            <use href="#i-flecha-derecha"></use>
+                        </svg>
+                    </a>
+
+                    <a href="/panel" class="vy-btn vy-btn-secundario">
+                        Iniciar sesión
+                    </a>
+
+                </div>
+
+                <p class="text-sm mt-7" style="color:var(--vy-texto-tenue)">
+                    Una solución de <strong>NYRA</strong> para empresas que
+                    necesitan control, seguridad y simplicidad.
+                </p>
+
+            </div>
+
+
+            <!--
+            LA MAQUETA DEL PANEL
+
+            Una ilustracion de la interfaz, NO el panel y NO datos de
+            ninguna empresa. Se arma con las mismas variables, las
+            mismas tarjetas y los mismos iconos que el panel de
+            verdad, asi que se parece porque esta hecha igual.
+
+            Lo que no es real son las cifras. La seccion va marcada
+            como decorativa para los lectores de pantalla y el pie lo
+            dice tambien por escrito, para que nadie la confunda con
+            metricas de produccion.
+            -->
+            <div>
+
+                <div class="vy-maqueta" aria-hidden="true">
+
+                    <div class="flex" style="min-height:342px">
+
+                        <!-- La barra lateral, con los destinos reales -->
+                        <div
+                            class="vy-maqueta-barra p-2.5 hidden sm:block"
+                            style="width:146px;flex:0 0 146px"
+                        >
+
+                            <div
+                                class="vy-marca"
+                                style="margin:2px 0 14px 6px"
+                            >
+                                <img
+                                    src="/frontend/marca/veyra-logo-claro-320.png"
+                                    alt=""
+                                    width="320"
+                                    height="93"
+                                    style="width:106px;height:auto"
+                                >
+                            </div>
+
+                            <p class="vy-maqueta-grupo">Principal</p>
+
+                                <div class="vy-maqueta-nav is-activa">
+                                    <svg class="vy-icon"><use href="#i-panel"></use></svg>
+                                    <span>Dashboard</span>
+                                </div>
+
+                                <div class="vy-maqueta-nav">
+                                    <svg class="vy-icon"><use href="#i-equipo"></use></svg>
+                                    <span>Dispositivos</span>
+                                </div>
+
+                                <div class="vy-maqueta-nav">
+                                    <svg class="vy-icon"><use href="#i-grabacion"></use></svg>
+                                    <span>Grabaciones</span>
+                                </div>
+
+                                <div class="vy-maqueta-nav">
+                                    <svg class="vy-icon"><use href="#i-alerta"></use></svg>
+                                    <span>Alertas</span>
+                                    <span class="vy-maqueta-insignia">13</span>
+                                </div>
+
+                                <p class="vy-maqueta-grupo">Sistema</p>
+
+                                <div class="vy-maqueta-nav">
+                                    <svg class="vy-icon"><use href="#i-instalar"></use></svg>
+                                    <span>Instalar equipo</span>
+                                </div>
+
+                                <div class="vy-maqueta-nav">
+                                    <svg class="vy-icon"><use href="#i-configuracion"></use></svg>
+                                    <span>Configuración</span>
+                                </div>
+
+                        </div>
+
+
+                        <div class="flex-1 min-w-0 vy-maqueta-area">
+
+                            <!-- Cabecera: titulo de la vista y usuario -->
+                            <div
+                                class="flex items-center justify-between gap-2 px-3"
+                                style="height:46px;
+                                    background:var(--vy-superficie);
+                                    border-bottom:1px solid var(--vy-borde)"
+                            >
+
+                                <div>
+                                    <div style="font-size:12.5px;
+                                        font-weight:650;
+                                        color:var(--vy-texto)"
+                                    >Dashboard</div>
+                                    <div style="font-size:9px;
+                                        color:var(--vy-texto-tenue)"
+                                    >Resumen de tus dispositivos</div>
+                                </div>
+
+                                <div class="flex items-center gap-1.5">
+
+                                    <span class="vy-punto vy-punto-ok"
+                                        style="font-size:9px">Servidor
+                                        online</span>
+
+                                    <span class="vy-maqueta-icono"
+                                        style="border-radius:999px">
+                                        <svg class="vy-icon">
+                                            <use href="#i-persona"></use>
+                                        </svg>
+                                    </span>
+
+                                </div>
+
+                            </div>
+
+
+                            <div class="p-3">
+
+                                <div class="grid grid-cols-3 gap-2">
+
+                                <div class="vy-maqueta-tarjeta">
+                                    <div class="flex items-start justify-between gap-2">
+                                        <div>
+                                            <div class="vy-maqueta-etiqueta">Equipos</div>
+                                            <div class="vy-maqueta-cifra">12</div>
+                                        </div>
+                                        <span class="vy-maqueta-icono"><svg class="vy-icon"><use href="#i-equipo"></use></svg></span>
+                                    </div>
+                                </div>
+
+                                <div class="vy-maqueta-tarjeta">
+                                    <div class="flex items-start justify-between gap-2">
+                                        <div>
+                                            <div class="vy-maqueta-etiqueta">En línea</div>
+                                            <div class="vy-maqueta-cifra">10</div>
+                                        </div>
+                                        <span class="vy-maqueta-icono"><svg class="vy-icon"><use href="#i-actividad"></use></svg></span>
+                                    </div>
+                                        <div class="vy-punto vy-punto-ok vy-maqueta-pie">Conectados</div>
+                                </div>
+
+                                <div class="vy-maqueta-tarjeta">
+                                    <div class="flex items-start justify-between gap-2">
+                                        <div>
+                                            <div class="vy-maqueta-etiqueta">Sin conexión</div>
+                                            <div class="vy-maqueta-cifra">2</div>
+                                        </div>
+                                        <span class="vy-maqueta-icono"><svg class="vy-icon"><use href="#i-servidor"></use></svg></span>
+                                    </div>
+                                        <div class="vy-punto vy-punto-mal vy-maqueta-pie">Desconectados</div>
+                                </div>
+
+                                </div>
+
+
+                                <div class="grid grid-cols-3 gap-2 mt-2">
+
+                                <div class="vy-maqueta-tarjeta">
+                                    <div class="flex items-start justify-between gap-2">
+                                        <div>
+                                            <div class="vy-maqueta-etiqueta">Alertas</div>
+                                            <div class="vy-maqueta-cifra">13</div>
+                                        </div>
+                                        <span class="vy-maqueta-icono"><svg class="vy-icon"><use href="#i-alerta"></use></svg></span>
+                                    </div>
+                                        <div class="vy-punto vy-punto-aviso vy-maqueta-pie">Pendientes</div>
+                                </div>
+
+                                <div class="vy-maqueta-tarjeta">
+                                    <div class="flex items-start justify-between gap-2">
+                                        <div>
+                                            <div class="vy-maqueta-etiqueta">En riesgo</div>
+                                            <div class="vy-maqueta-cifra">0</div>
+                                        </div>
+                                        <span class="vy-maqueta-icono"><svg class="vy-icon"><use href="#i-aviso"></use></svg></span>
+                                    </div>
+                                        <div class="vy-punto vy-punto-neutro vy-maqueta-pie">Sin avisos</div>
+                                </div>
+
+                                </div>
+
+
+                                <!-- Los dos paneles de abajo -->
+                                <div class="grid sm:grid-cols-2 gap-2 mt-2">
+
+                                    <div class="vy-maqueta-tarjeta">
+
+                                        <div class="vy-maqueta-etiqueta"
+                                            style="font-weight:600;
+                                                color:var(--vy-texto)"
+                                        >Estado general</div>
+
+                                        <div class="flex items-center gap-2 mt-2.5">
+                                            <span class="vy-punto vy-punto-ok"
+                                                style="font-size:9px">En línea 10</span>
+                                        </div>
+
+                                        <div class="flex items-center gap-2 mt-1.5">
+                                            <span class="vy-punto vy-punto-mal"
+                                                style="font-size:9px">Sin conexión 2</span>
+                                        </div>
+
+                                    </div>
+
+
+                                    <div class="vy-maqueta-tarjeta">
+
+                                        <div class="vy-maqueta-etiqueta"
+                                            style="font-weight:600;
+                                                color:var(--vy-texto)"
+                                        >Salud del sistema</div>
+
+                                        <div class="flex items-center gap-2 mt-2.5">
+                                            <svg class="vy-icon"
+                                                style="width:12px;height:12px;
+                                                    color:var(--vy-acento-claro)">
+                                                <use href="#i-disco"></use>
+                                            </svg>
+                                            <span style="font-size:9px;
+                                                color:var(--vy-texto-medio)"
+                                            >Memoria y disco sin avisos</span>
+                                        </div>
+
+                                        <div class="flex items-center gap-2 mt-1.5">
+                                            <svg class="vy-icon"
+                                                style="width:12px;height:12px;
+                                                    color:var(--vy-acento-claro)">
+                                                <use href="#i-reloj"></use>
+                                            </svg>
+                                            <span style="font-size:9px;
+                                                color:var(--vy-texto-medio)"
+                                            >Último inventario reportado</span>
+                                        </div>
+
+                                    </div>
+
+                                </div>
+
+                            </div>
+
+                        </div>
+
+                    </div>
+
+                </div>
+
+                <p
+                    class="text-xs text-center mt-3"
+                    style="color:var(--vy-texto-tenue)"
+                >
+                    Vista de ejemplo de la interfaz. Las cifras son
+                    ilustrativas y no corresponden a ninguna organización.
+                </p>
+
+            </div>
+
+        </section>
+
+
+        <!-- ==============================
+             FUNCIONES
+             Las cinco existen en el producto. Ninguna se anuncia de
+             mas: cada descripcion dice lo que hace hoy.
+             ============================== -->
+        <section
+            id="funciones"
+            class="max-w-[1240px] mx-auto px-6 py-12"
+            style="border-top:1px solid var(--vy-borde)"
+        >
+
+            <div class="grid sm:grid-cols-2 lg:grid-cols-5 gap-7">
+
+                <div>
+
+                    <svg
+                        class="vy-icon vy-icon-lg"
+                        style="color:var(--vy-acento-claro)"
+                    >
+                        <use href="#i-equipo"></use>
+                    </svg>
+
+                    <h3
+                        class="font-semibold mt-3"
+                        style="color:var(--vy-texto);font-size:14.5px"
+                    >Monitoreo de equipos</h3>
+
+                    <p
+                        class="text-sm mt-1.5"
+                        style="color:var(--vy-texto-medio);line-height:1.55"
+                    >Consulta el estado, la memoria y el disco de tus dispositivos, con alertas cuando algo se acerca al límite.</p>
+
+                </div>
+
+                <div>
+
+                    <svg
+                        class="vy-icon vy-icon-lg"
+                        style="color:var(--vy-acento-claro)"
+                    >
+                        <use href="#i-grabacion"></use>
+                    </svg>
+
+                    <h3
+                        class="font-semibold mt-3"
+                        style="color:var(--vy-texto);font-size:14.5px"
+                    >Grabaciones de pantalla</h3>
+
+                    <p
+                        class="text-sm mt-1.5"
+                        style="color:var(--vy-texto-medio);line-height:1.55"
+                    >Las grabaciones se quedan en el equipo que las genera y solo viajan al servidor cuando alguien lo pide.</p>
+
+                </div>
+
+                <div>
+
+                    <svg
+                        class="vy-icon vy-icon-lg"
+                        style="color:var(--vy-acento-claro)"
+                    >
+                        <use href="#i-usuarios"></use>
+                    </svg>
+
+                    <h3
+                        class="font-semibold mt-3"
+                        style="color:var(--vy-texto);font-size:14.5px"
+                    >Gestión de usuarios</h3>
+
+                    <p
+                        class="text-sm mt-1.5"
+                        style="color:var(--vy-texto-medio);line-height:1.55"
+                    >Crea subadministradores y concede permisos por separado, uno a uno.</p>
+
+                </div>
+
+                <div>
+
+                    <svg
+                        class="vy-icon vy-icon-lg"
+                        style="color:var(--vy-acento-claro)"
+                    >
+                        <use href="#i-organizacion"></use>
+                    </svg>
+
+                    <h3
+                        class="font-semibold mt-3"
+                        style="color:var(--vy-texto);font-size:14.5px"
+                    >Organizaciones separadas</h3>
+
+                    <p
+                        class="text-sm mt-1.5"
+                        style="color:var(--vy-texto-medio);line-height:1.55"
+                    >Cada empresa ve únicamente sus equipos, sus grabaciones y sus usuarios.</p>
+
+                </div>
+
+                <div>
+
+                    <svg
+                        class="vy-icon vy-icon-lg"
+                        style="color:var(--vy-acento-claro)"
+                    >
+                        <use href="#i-escudo"></use>
+                    </svg>
+
+                    <h3
+                        class="font-semibold mt-3"
+                        style="color:var(--vy-texto);font-size:14.5px"
+                    >Seguridad y control</h3>
+
+                    <p
+                        class="text-sm mt-1.5"
+                        style="color:var(--vy-texto-medio);line-height:1.55"
+                    >Sesión en cookie protegida, credencial propia por equipo y registro de auditoría de lo que ocurre.</p>
+
+                </div>
+
+            </div>
+
+        </section>
+
+
+        <!-- ==============================
+             SEGURIDAD
+             Hechos comprobables del producto, no promesas.
+             ============================== -->
+        <section
+            id="seguridad"
+            class="max-w-[1240px] mx-auto px-6 py-14"
+            style="border-top:1px solid var(--vy-borde)"
+        >
+
+            <h2
+                class="text-2xl font-bold"
+                style="color:var(--vy-texto)"
+            >Seguridad</h2>
+
+            <p
+                class="vy-entradilla mt-3"
+            >Cómo está construido el acceso a VEYRA.</p>
+
+            <div class="grid md:grid-cols-2 gap-4 mt-8">
+
+                <div class="vy-card" style="padding:20px">
+
+                    <div class="flex items-start gap-3">
+
+                        <svg
+                            class="vy-icon"
+                            style="color:var(--vy-acento-claro);margin-top:2px"
+                        >
+                            <use href="#i-organizacion"></use>
+                        </svg>
+
+                        <div>
+
+                            <h3
+                                class="font-semibold"
+                                style="color:var(--vy-texto);font-size:14.5px"
+                            >Aislamiento entre organizaciones</h3>
+
+                            <p
+                                class="text-sm mt-1.5"
+                                style="color:var(--vy-texto-medio);
+                                    line-height:1.55"
+                            >Una organización no puede consultar ni administrar los equipos, grabaciones o usuarios de otra. La comprobación es central, no pantalla por pantalla.</p>
+
+                        </div>
+
+                    </div>
+
+                </div>
+
+                <div class="vy-card" style="padding:20px">
+
+                    <div class="flex items-start gap-3">
+
+                        <svg
+                            class="vy-icon"
+                            style="color:var(--vy-acento-claro);margin-top:2px"
+                        >
+                            <use href="#i-candado"></use>
+                        </svg>
+
+                        <div>
+
+                            <h3
+                                class="font-semibold"
+                                style="color:var(--vy-texto);font-size:14.5px"
+                            >Sesión en cookie protegida</h3>
+
+                            <p
+                                class="text-sm mt-1.5"
+                                style="color:var(--vy-texto-medio);
+                                    line-height:1.55"
+                            >El identificador de sesión viaja en una cookie HttpOnly y Secure: no es accesible desde JavaScript.</p>
+
+                        </div>
+
+                    </div>
+
+                </div>
+
+                <div class="vy-card" style="padding:20px">
+
+                    <div class="flex items-start gap-3">
+
+                        <svg
+                            class="vy-icon"
+                            style="color:var(--vy-acento-claro);margin-top:2px"
+                        >
+                            <use href="#i-escudo"></use>
+                        </svg>
+
+                        <div>
+
+                            <h3
+                                class="font-semibold"
+                                style="color:var(--vy-texto);font-size:14.5px"
+                            >Credencial propia por equipo</h3>
+
+                            <p
+                                class="text-sm mt-1.5"
+                                style="color:var(--vy-texto-medio);
+                                    line-height:1.55"
+                            >Cada equipo se da de alta con una credencial de su organización y después usa un token individual. No hay una contraseña compartida entre todos.</p>
+
+                        </div>
+
+                    </div>
+
+                </div>
+
+                <div class="vy-card" style="padding:20px">
+
+                    <div class="flex items-start gap-3">
+
+                        <svg
+                            class="vy-icon"
+                            style="color:var(--vy-acento-claro);margin-top:2px"
+                        >
+                            <use href="#i-correo"></use>
+                        </svg>
+
+                        <div>
+
+                            <h3
+                                class="font-semibold"
+                                style="color:var(--vy-texto);font-size:14.5px"
+                            >Recuperación por correo</h3>
+
+                            <p
+                                class="text-sm mt-1.5"
+                                style="color:var(--vy-texto-medio);
+                                    line-height:1.55"
+                            >El enlace de recuperación es temporal, de un solo uso, y no aparece en ningún registro.</p>
+
+                        </div>
+
+                    </div>
+
+                </div>
+
+            </div>
+
+        </section>
+
+
+        <!-- ==============================
+             PLANES
+
+             Los limites son los que aplica de verdad el servidor
+             (backend/organizations.py). NO se indican precios porque
+             el producto no los define: eso se acuerda al contratar.
+             ============================== -->
+        <section
+            id="planes"
+            class="max-w-[1240px] mx-auto px-6 py-14"
+            style="border-top:1px solid var(--vy-borde)"
+        >
+
+            <h2
+                class="text-2xl font-bold"
+                style="color:var(--vy-texto)"
+            >Planes</h2>
+
+            <p class="vy-entradilla mt-3">
+                Los límites que aplica la plataforma en cada plan. El
+                precio y las condiciones se acuerdan al contratar.
+            </p>
+
+            <div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-8">
+
+                <div class="vy-card" style="padding:20px">
+
+                    <h3
+                        class="font-bold"
+                        style="color:var(--vy-texto);font-size:16px"
+                    >Free</h3>
+
+                    <ul
+                        class="text-sm mt-4 flex flex-col gap-2.5"
+                        style="color:var(--vy-texto-medio)"
+                    >
+                        <li class="flex items-center gap-2">
+                            <svg class="vy-icon vy-icon-sm"
+                                style="color:var(--vy-acento-claro)">
+                                <use href="#i-correcto"></use>
+                            </svg>
+                            <span>Hasta 2 equipos</span>
+                        </li>
+                        <li class="flex items-center gap-2">
+                            <svg class="vy-icon vy-icon-sm"
+                                style="color:var(--vy-acento-claro)">
+                                <use href="#i-correcto"></use>
+                            </svg>
+                            <span>Hasta 2 usuarios</span>
+                        </li>
+                        <li class="flex items-center gap-2">
+                            <svg class="vy-icon vy-icon-sm"
+                                style="color:var(--vy-acento-claro)">
+                                <use href="#i-correcto"></use>
+                            </svg>
+                            <span>1 GB de grabaciones</span>
+                        </li>
+                        <li class="flex items-center gap-2">
+                            <svg class="vy-icon vy-icon-sm"
+                                style="color:var(--vy-acento-claro)">
+                                <use href="#i-correcto"></use>
+                            </svg>
+                            <span>Archivado en el servidor</span>
+                        </li>
+                    </ul>
+
+                </div>
+
+                <div class="vy-card" style="padding:20px">
+
+                    <h3
+                        class="font-bold"
+                        style="color:var(--vy-texto);font-size:16px"
+                    >Basic</h3>
+
+                    <ul
+                        class="text-sm mt-4 flex flex-col gap-2.5"
+                        style="color:var(--vy-texto-medio)"
+                    >
+                        <li class="flex items-center gap-2">
+                            <svg class="vy-icon vy-icon-sm"
+                                style="color:var(--vy-acento-claro)">
+                                <use href="#i-correcto"></use>
+                            </svg>
+                            <span>Hasta 10 equipos</span>
+                        </li>
+                        <li class="flex items-center gap-2">
+                            <svg class="vy-icon vy-icon-sm"
+                                style="color:var(--vy-acento-claro)">
+                                <use href="#i-correcto"></use>
+                            </svg>
+                            <span>Hasta 5 usuarios</span>
+                        </li>
+                        <li class="flex items-center gap-2">
+                            <svg class="vy-icon vy-icon-sm"
+                                style="color:var(--vy-acento-claro)">
+                                <use href="#i-correcto"></use>
+                            </svg>
+                            <span>10 GB de grabaciones</span>
+                        </li>
+                        <li class="flex items-center gap-2">
+                            <svg class="vy-icon vy-icon-sm"
+                                style="color:var(--vy-acento-claro)">
+                                <use href="#i-correcto"></use>
+                            </svg>
+                            <span>Archivado en el servidor</span>
+                        </li>
+                        <li class="flex items-center gap-2">
+                            <svg class="vy-icon vy-icon-sm"
+                                style="color:var(--vy-acento-claro)">
+                                <use href="#i-correcto"></use>
+                            </svg>
+                            <span>Acciones remotas</span>
+                        </li>
+                    </ul>
+
+                </div>
+
+                <div class="vy-card" style="padding:20px">
+
+                    <h3
+                        class="font-bold"
+                        style="color:var(--vy-texto);font-size:16px"
+                    >Pro</h3>
+
+                    <ul
+                        class="text-sm mt-4 flex flex-col gap-2.5"
+                        style="color:var(--vy-texto-medio)"
+                    >
+                        <li class="flex items-center gap-2">
+                            <svg class="vy-icon vy-icon-sm"
+                                style="color:var(--vy-acento-claro)">
+                                <use href="#i-correcto"></use>
+                            </svg>
+                            <span>Hasta 50 equipos</span>
+                        </li>
+                        <li class="flex items-center gap-2">
+                            <svg class="vy-icon vy-icon-sm"
+                                style="color:var(--vy-acento-claro)">
+                                <use href="#i-correcto"></use>
+                            </svg>
+                            <span>Hasta 20 usuarios</span>
+                        </li>
+                        <li class="flex items-center gap-2">
+                            <svg class="vy-icon vy-icon-sm"
+                                style="color:var(--vy-acento-claro)">
+                                <use href="#i-correcto"></use>
+                            </svg>
+                            <span>100 GB de grabaciones</span>
+                        </li>
+                        <li class="flex items-center gap-2">
+                            <svg class="vy-icon vy-icon-sm"
+                                style="color:var(--vy-acento-claro)">
+                                <use href="#i-correcto"></use>
+                            </svg>
+                            <span>Archivado en el servidor</span>
+                        </li>
+                        <li class="flex items-center gap-2">
+                            <svg class="vy-icon vy-icon-sm"
+                                style="color:var(--vy-acento-claro)">
+                                <use href="#i-correcto"></use>
+                            </svg>
+                            <span>Acciones remotas</span>
+                        </li>
+                        <li class="flex items-center gap-2">
+                            <svg class="vy-icon vy-icon-sm"
+                                style="color:var(--vy-acento-claro)">
+                                <use href="#i-correcto"></use>
+                            </svg>
+                            <span>Programación de horarios</span>
+                        </li>
+                    </ul>
+
+                </div>
+
+                <div class="vy-card" style="padding:20px">
+
+                    <h3
+                        class="font-bold"
+                        style="color:var(--vy-texto);font-size:16px"
+                    >Enterprise</h3>
+
+                    <ul
+                        class="text-sm mt-4 flex flex-col gap-2.5"
+                        style="color:var(--vy-texto-medio)"
+                    >
+                        <li class="flex items-center gap-2">
+                            <svg class="vy-icon vy-icon-sm"
+                                style="color:var(--vy-acento-claro)">
+                                <use href="#i-correcto"></use>
+                            </svg>
+                            <span>Equipos sin límite</span>
+                        </li>
+                        <li class="flex items-center gap-2">
+                            <svg class="vy-icon vy-icon-sm"
+                                style="color:var(--vy-acento-claro)">
+                                <use href="#i-correcto"></use>
+                            </svg>
+                            <span>Usuarios sin límite</span>
+                        </li>
+                        <li class="flex items-center gap-2">
+                            <svg class="vy-icon vy-icon-sm"
+                                style="color:var(--vy-acento-claro)">
+                                <use href="#i-correcto"></use>
+                            </svg>
+                            <span>Almacenamiento sin límite</span>
+                        </li>
+                        <li class="flex items-center gap-2">
+                            <svg class="vy-icon vy-icon-sm"
+                                style="color:var(--vy-acento-claro)">
+                                <use href="#i-correcto"></use>
+                            </svg>
+                            <span>Archivado en el servidor</span>
+                        </li>
+                        <li class="flex items-center gap-2">
+                            <svg class="vy-icon vy-icon-sm"
+                                style="color:var(--vy-acento-claro)">
+                                <use href="#i-correcto"></use>
+                            </svg>
+                            <span>Acciones remotas</span>
+                        </li>
+                        <li class="flex items-center gap-2">
+                            <svg class="vy-icon vy-icon-sm"
+                                style="color:var(--vy-acento-claro)">
+                                <use href="#i-correcto"></use>
+                            </svg>
+                            <span>Programación de horarios</span>
+                        </li>
+                        <li class="flex items-center gap-2">
+                            <svg class="vy-icon vy-icon-sm"
+                                style="color:var(--vy-acento-claro)">
+                                <use href="#i-correcto"></use>
+                            </svg>
+                            <span>Instalación en servidor propio</span>
+                        </li>
+                    </ul>
+
+                </div>
+
+            </div>
+
+        </section>
+
+
+        <!-- ==============================
+             TARJETAS DE ENTRADA
+             Cada una lleva a algo que existe: una seccion de esta
+             pagina, la guia de instalacion real del repositorio, o
+             la seccion de contacto.
+             ============================== -->
+        <section
+            class="max-w-[1240px] mx-auto px-6 pb-14"
+            style="border-top:1px solid var(--vy-borde);padding-top:48px"
+        >
+
+            <div class="grid md:grid-cols-3 gap-5">
+
+                <div class="vy-card" style="padding:24px">
+
+                    <span
+                        class="vy-usuario-avatar"
+                        style="width:44px;height:44px;border-radius:12px"
+                    >
+                        <svg class="vy-icon">
+                            <use href="#i-info"></use>
+                        </svg>
+                    </span>
+
+                    <h3
+                        class="font-semibold mt-4"
+                        style="color:var(--vy-texto);font-size:16px"
+                    >¿Qué es VEYRA?</h3>
+
+                    <p
+                        class="text-sm mt-2"
+                        style="color:var(--vy-texto-medio);line-height:1.6"
+                    >Una plataforma para administrar equipos de forma remota, con grabaciones, control de usuarios y herramientas de supervisión.</p>
+
+                    <a
+                        href="#funciones"
+                        class="inline-flex items-center gap-1.5 text-sm
+                            font-semibold mt-4"
+                        style="color:var(--vy-acento-claro);
+                            text-decoration:none"
+                    >
+                        Conocer más
+                        <svg class="vy-icon vy-icon-sm">
+                            <use href="#i-flecha-derecha"></use>
+                        </svg>
+                    </a>
+
+                </div>
+
+                <div class="vy-card" style="padding:24px">
+
+                    <span
+                        class="vy-usuario-avatar"
+                        style="width:44px;height:44px;border-radius:12px"
+                    >
+                        <svg class="vy-icon">
+                            <use href="#i-guia"></use>
+                        </svg>
+                    </span>
+
+                    <h3
+                        class="font-semibold mt-4"
+                        style="color:var(--vy-texto);font-size:16px"
+                    >¿Cómo empezar?</h3>
+
+                    <p
+                        class="text-sm mt-2"
+                        style="color:var(--vy-texto-medio);line-height:1.6"
+                    >Con las credenciales de tu organización, entra al panel y abre «Instalar equipo»: ahí se genera el instalador del primer equipo y se explica el proceso.</p>
+
+                    <a
+                        href="/panel"
+                        class="inline-flex items-center gap-1.5 text-sm
+                            font-semibold mt-4"
+                        style="color:var(--vy-acento-claro);
+                            text-decoration:none"
+                    >
+                        Entrar al panel
+                        <svg class="vy-icon vy-icon-sm">
+                            <use href="#i-flecha-derecha"></use>
+                        </svg>
+                    </a>
+
+                </div>
+
+                <div class="vy-card" style="padding:24px">
+
+                    <span
+                        class="vy-usuario-avatar"
+                        style="width:44px;height:44px;border-radius:12px"
+                    >
+                        <svg class="vy-icon">
+                            <use href="#i-ayuda"></use>
+                        </svg>
+                    </span>
+
+                    <h3
+                        class="font-semibold mt-4"
+                        style="color:var(--vy-texto);font-size:16px"
+                    >¿Necesitas ayuda?</h3>
+
+                    <p
+                        class="text-sm mt-2"
+                        style="color:var(--vy-texto-medio);line-height:1.6"
+                    >El acceso a VEYRA lo gestiona el operador de la plataforma. Aquí se explica cómo solicitarlo.</p>
+
+                    <a
+                        href="#contacto"
+                        class="inline-flex items-center gap-1.5 text-sm
+                            font-semibold mt-4"
+                        style="color:var(--vy-acento-claro);
+                            text-decoration:none"
+                    >
+                        Contactar
+                        <svg class="vy-icon vy-icon-sm">
+                            <use href="#i-flecha-derecha"></use>
+                        </svg>
+                    </a>
+
+                </div>
+
+            </div>
+
+        </section>
+
+
+        <!-- ==============================
+             CONTACTO
+
+             Sin dato inventado. VEYRA no tiene alta publica: las
+             organizaciones las crea el operador de la plataforma, asi
+             que lo honesto es explicar ese proceso en vez de fingir
+             un formulario de registro.
+
+             La direccion de contacto se rellena abajo, en
+             CORREO_DE_CONTACTO. Mientras este vacia no se enseña
+             ningun enlace: antes ninguna via que una inventada.
+             ============================== -->
+        <section
+            id="contacto"
+            class="max-w-[1240px] mx-auto px-6 py-14"
+            style="border-top:1px solid var(--vy-borde)"
+        >
+
+            <div class="max-w-2xl">
+
+                <h2
+                    class="text-2xl font-bold"
+                    style="color:var(--vy-texto)"
+                >Solicitar acceso</h2>
+
+                <p class="vy-entradilla mt-3">
+                    VEYRA no tiene registro abierto. Cada organización la
+                    da de alta el operador de la plataforma, que entrega
+                    al administrador responsable sus credenciales
+                    iniciales.
+                </p>
+
+                <ol
+                    class="mt-7 flex flex-col gap-4 text-sm"
+                    style="color:var(--vy-texto-medio)"
+                >
+
+                    <li class="flex items-start gap-3">
+
+                        <span
+                            class="vy-usuario-avatar"
+                            style="width:26px;height:26px;font-size:12px;
+                                font-weight:700;flex:0 0 26px"
+                        >1</span>
+
+                        <span style="line-height:1.6;padding-top:3px"
+                        >Solicitas el alta de tu empresa al operador de la plataforma.</span>
+
+                    </li>
+
+                    <li class="flex items-start gap-3">
+
+                        <span
+                            class="vy-usuario-avatar"
+                            style="width:26px;height:26px;font-size:12px;
+                                font-weight:700;flex:0 0 26px"
+                        >2</span>
+
+                        <span style="line-height:1.6;padding-top:3px"
+                        >El operador crea la organización y entrega las credenciales al administrador responsable.</span>
+
+                    </li>
+
+                    <li class="flex items-start gap-3">
+
+                        <span
+                            class="vy-usuario-avatar"
+                            style="width:26px;height:26px;font-size:12px;
+                                font-weight:700;flex:0 0 26px"
+                        >3</span>
+
+                        <span style="line-height:1.6;padding-top:3px"
+                        >Ese administrador entra al panel, instala el primer equipo y crea los subadministradores que necesite, con los permisos que decida.</span>
+
+                    </li>
+
+                    <li class="flex items-start gap-3">
+
+                        <span
+                            class="vy-usuario-avatar"
+                            style="width:26px;height:26px;font-size:12px;
+                                font-weight:700;flex:0 0 26px"
+                        >4</span>
+
+                        <span style="line-height:1.6;padding-top:3px"
+                        >Cada subadministrador accede solo con los permisos que le hayan concedido.</span>
+
+                    </li>
+
+                </ol>
+
+                <div id="contacto-via" class="mt-8"></div>
+
+            </div>
+
+        </section>
+
+
+    </main>
+
+
+    <footer
+        class="max-w-[1240px] mx-auto px-6 py-8 flex flex-wrap
+            items-center justify-between gap-4"
+        style="border-top:1px solid var(--vy-borde)"
+    >
+
+        <p class="text-sm" style="color:var(--vy-texto-tenue)">
+            VEYRA by NYRA
+        </p>
+
+        <a
+            href="/panel"
+            class="text-sm"
+            style="color:var(--vy-texto-tenue);text-decoration:none"
+        >
+            Acceder al panel
+        </a>
+
+    </footer>
+
+
+    <script>
+        /* ==============================
+        PAGINA PUBLICA
+        ============================== */
+
+        /*
+        Direccion por la que se solicita el acceso.
+
+        Se deja VACIA a proposito: inventar un correo de contacto seria
+        peor que no ofrecer ninguno, porque quien escriba no recibira
+        respuesta. En cuanto haya una direccion real, se escribe aqui y
+        la seccion de contacto la muestra sola.
+        */
+        const CORREO_DE_CONTACTO = "";
+
+
+        function pintarVia() {
+
+            const hueco = document.getElementById("contacto-via");
+
+            if (!hueco) {
+                return;
+            }
+
+            if (!CORREO_DE_CONTACTO) {
+
+                // Sin direccion configurada no se enseña un enlace que
+                // no lleva a ninguna parte.
+                const aviso = document.createElement("p");
+
+                aviso.className = "text-sm";
+                aviso.style.color = "var(--vy-texto-tenue)";
+                aviso.textContent =
+                    "Si ya trabajas con VEYRA, pide el alta por el canal "
+                    + "que hayas acordado con el operador de la "
+                    + "plataforma.";
+
+                hueco.appendChild(aviso);
+
+                return;
+            }
+
+            const enlace = document.createElement("a");
+
+            enlace.className = "vy-btn vy-btn-primario";
+            enlace.href = "mailto:" + CORREO_DE_CONTACTO;
+            enlace.textContent = "Escribir a " + CORREO_DE_CONTACTO;
+
+            hueco.appendChild(enlace);
+        }
+
+
+        /* --- Tema --- */
+
+        function temaActual() {
+
+            return document.documentElement.getAttribute("data-theme")
+                === "light" ? "light" : "dark";
+        }
+
+
+        function pintarBotonDeTema() {
+
+            const uso = document.getElementById("tema-uso");
+
+            if (uso) {
+                uso.setAttribute(
+                    "href",
+                    temaActual() === "dark" ? "#i-sol" : "#i-luna"
+                );
+            }
+        }
+
+
+        function alternarTema() {
+
+            const nuevo = temaActual() === "dark" ? "light" : "dark";
+
+            document.documentElement.setAttribute("data-theme", nuevo);
+
+            const meta = document.querySelector('meta[name="theme-color"]');
+
+            if (meta) {
+                meta.setAttribute(
+                    "content", nuevo === "light" ? "#F4F6FB" : "#070C17"
+                );
+            }
+
+            try {
+                /*
+                Quien todavia no ha entrado no tiene usuario al que
+                atribuir la preferencia, asi que se guarda la del
+                navegador. Al iniciar sesion, el panel pasa a usar la
+                de esa persona.
+                */
+                window.localStorage.setItem("veyra-tema", nuevo);
+
+            } catch (error) {
+                /* Sin almacenamiento, dura lo que la pestaña. */
+            }
+
+            pintarBotonDeTema();
+        }
+
+
+        /* --- Seccion activa en el menu --- */
+
+        function marcarSeccionVisible() {
+
+            const enlaces =
+                document.querySelectorAll(".vy-publico-enlace");
+
+            let activa = "";
+
+            enlaces.forEach(enlace => {
+
+                const destino =
+                    document.querySelector(enlace.getAttribute("href"));
+
+                if (!destino) {
+                    return;
+                }
+
+                if (destino.getBoundingClientRect().top <= 120) {
+                    activa = enlace.getAttribute("href");
+                }
+            });
+
+            enlaces.forEach(enlace => {
+                enlace.classList.toggle(
+                    "is-activa", enlace.getAttribute("href") === activa
+                );
+            });
+        }
+
+
+        /* --- Si ya hay sesion, se ofrece el panel --- */
+
+        async function comprobarSesion() {
+
+            try {
+                const respuesta = await fetch("/api/auth/me");
+
+                if (!respuesta.ok) {
+                    return;
+                }
+
+                const datos = await respuesta.json();
+
+                if (!datos || !datos.username) {
+                    return;
+                }
+
+                /*
+                Hay sesion abierta: "Iniciar sesion" sobra. Se cambia
+                por la entrada directa al panel. Solo se toca el texto
+                del enlace, nunca se inyecta el nombre con innerHTML.
+                */
+                document
+                    .querySelectorAll('a[href="/panel"]')
+                    .forEach(enlace => {
+
+                        if (enlace.textContent.trim() === "Iniciar sesión") {
+                            enlace.textContent = "Ir al panel";
+                        }
+                    });
+
+            } catch (error) {
+                /*
+                Sin respuesta del servidor la pagina sigue siendo
+                util: es informativa. No se avisa de nada.
+                */
+            }
+        }
+
+
+        document
+            .getElementById("tema-boton")
+            .addEventListener("click", alternarTema);
+
+        window.addEventListener("scroll", marcarSeccionVisible,
+            { passive: true });
+
+        pintarBotonDeTema();
+        pintarVia();
+        marcarSeccionVisible();
+        comprobarSesion();
+    </script>
+
+</body>
+</html>

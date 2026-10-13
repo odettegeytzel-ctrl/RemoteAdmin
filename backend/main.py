@@ -83,7 +83,15 @@ from backend.devices import (
     set_continuous_recording,
     get_continuous_recording,
     device_exists,
-    get_device_organization
+    get_device_organization,
+    decommission_device,
+    is_decommissioned,
+    reinstate_device,
+    link_device_history,
+    unlink_device_history,
+    device_history_chain,
+    decommissioned_devices,
+    LinkError
 )
 from backend.media import duration_for_storage, validate_recording
 from backend import mailer
@@ -231,6 +239,17 @@ async def require_authentication(request: Request, call_next):
         if negado is not None:
             return negado
 
+        # Capacidades del plan. Va DESPUES del aislamiento: primero
+        # se decide si puede tocar ese recurso, y solo entonces si su
+        # plan incluye la funcion. Al reves se filtraria que existe
+        # un equipo de otra empresa.
+        #
+        # En modo observacion esto no bloquea nada: solo anota.
+        sin_plan = _plan_bloquea(request, path)
+
+        if sin_plan is not None:
+            return sin_plan
+
     return await call_next(request)
 
 
@@ -302,6 +321,155 @@ def _suspension_bloquea(request, path):
             "organization_status": organizacion["subscription_status"],
             "suspended_at": organizacion["suspended_at"],
             "message": organizations.access_message(organizacion)
+        }
+    )
+
+
+# ==============================
+# CAPACIDADES DEL PLAN
+# ==============================
+#
+# Que capacidad exige cada ruta. Lo que no aparece aqui no exige
+# ninguna.
+#
+# Criterio de lo que NO entra, que es tan importante como lo que si:
+#
+#   - Las consultas de SOLO LECTURA (procesos, servicios, listados)
+#     se quedan fuera de remote.actions. Mirar no es actuar, y un
+#     plan basico sin poder ver nada no tendria sentido.
+#
+#   - La SUBIDA de grabaciones del Agent (/recordings/upload) se
+#     queda fuera a proposito. La hace el equipo con su token, no una
+#     persona: bloquearla dejaria al equipo acumulando archivos que
+#     no puede entregar, y acabaria perdiendolos. Una restriccion
+#     comercial no deberia costar datos del cliente.
+#
+#   - El ARCHIVADO a peticion (/recordings/{id}/store) si entra: eso
+#     lo pide una persona desde el panel.
+
+CAPACIDAD_POR_RUTA = (
+    # (sufijo de la ruta, metodos, capacidad)
+    ("/recording/schedule", ("POST",), "scheduling"),
+    ("/recording/continuous", ("POST",), "scheduling"),
+
+    ("/screen", ("POST",), "remote.actions"),
+    ("/screen/stop", ("POST",), "remote.actions"),
+    ("/keyboard", ("POST",), "remote.actions"),
+    ("/mouse/move", ("POST",), "remote.actions"),
+    ("/mouse/click", ("POST",), "remote.actions"),
+    ("/mouse/down", ("POST",), "remote.actions"),
+    ("/mouse/up", ("POST",), "remote.actions"),
+    ("/files/upload", ("POST",), "remote.actions"),
+
+    ("/store", ("POST",), "recordings.store"),
+)
+
+# Rutas de energia: /api/devices/{id}/power/{accion}
+PREFIJO_ENERGIA = "/power/"
+
+
+def capacidad_requerida(path, metodo):
+    """
+    Que capacidad exige esta ruta, o None si no exige ninguna.
+
+    Devolver None NO es un descuido: la mayoria de las rutas son de
+    consulta o de administracion y no dependen del plan.
+    """
+
+    if not path.startswith("/api/"):
+        return None
+
+    if PREFIJO_ENERGIA in path and metodo == "POST":
+        return "remote.actions"
+
+    for sufijo, metodos, capacidad in CAPACIDAD_POR_RUTA:
+
+        if path.endswith(sufijo) and metodo in metodos:
+            return capacidad
+
+    return None
+
+
+# Modo de las capacidades.
+#
+#   "observacion"  anota lo que habria bloqueado y deja pasar
+#   "activo"       bloquea de verdad
+#
+# Arranca en observacion a proposito, y cambiar esto es una decision
+# comercial: con el bloqueo activo, una organizacion en un plan que
+# no incluya una capacidad dejaria de poder usarla, aunque la venga
+# usando.
+MODO_CAPACIDADES = "observacion"
+
+
+def _plan_bloquea(request, path):
+    """
+    Comprueba que el plan de la organizacion permita esta operacion.
+
+    En modo observacion devuelve siempre None —no bloquea— pero deja
+    anotado lo que habria bloqueado. Es lo que permite ver a quien
+    afectaria el cambio antes de aplicarselo.
+
+    El operador de la plataforma queda exento, como en las otras dos
+    puertas: su trabajo es poder mirarlo todo.
+    """
+
+    capacidad = capacidad_requerida(path, request.method)
+
+    if capacidad is None:
+        return None
+
+    usuario = current_user(request)
+
+    if usuario is None:
+        return None
+
+    if is_platform_owner(usuario):
+        return None
+
+    organizacion = organization_of(usuario)
+
+    if organizacion is None:
+        return None
+
+    if organizations.has_feature(organizacion, capacidad):
+        return None
+
+    plan = organizations.plan_efectivo(organizacion)
+
+    if MODO_CAPACIDADES == "observacion":
+
+        # No se bloquea. Se anota para poder mirarlo despues.
+        log_audit(
+            "plan.feature_observed", request=request,
+            status=STATUS_ERROR,
+            organization_id=organizacion,
+            details=f"Se habria bloqueado {request.method} {path}: "
+                    f"el plan {plan['label']} no incluye "
+                    f"'{capacidad}'"
+        )
+
+        return None
+
+    log_audit(
+        "plan.feature_denied", request=request,
+        status=STATUS_ERROR,
+        organization_id=organizacion,
+        details=f"{request.method} {path} rechazada: el plan "
+                f"{plan['label']} no incluye '{capacidad}'"
+    )
+
+    return JSONResponse(
+        status_code=403,
+        content={
+            "status": "error",
+            # Marca estable para que el panel lo distinga de un "no
+            # tienes permiso" corriente.
+            "code": "plan_feature_required",
+            "feature": capacidad,
+            "plan": plan["label"],
+            "message": f"El plan {plan['label']} no incluye esta "
+                       "funcion. Amplia el plan para usarla."
         }
     )
 
@@ -778,6 +946,407 @@ def devices(request: Request):
     # Detecta cambios de estado antes de devolver la lista
     detect_alerts()
     return get_devices()
+
+
+@app.post("/api/devices/{device_id}/decommission")
+def device_decommission(device_id: str, request: Request):
+    """
+    Da de baja un equipo. No borra nada.
+
+    Se conservan la fila, el hostname, las grabaciones, las alertas y
+    el rastro de auditoria. Lo que se retira es el acceso: la
+    credencial del Agent queda revocada y el equipo no puede volver a
+    conectarse con ella.
+
+    La plaza que ocupaba en el plan queda libre.
+
+    Que este equipo sea de la organizacion de quien lo pide ya lo ha
+    comprobado el middleware, que mira todas las rutas con un
+    device_id. Aqui se comprueba el permiso, que es lo otro.
+    """
+
+    usuario, error = require_permission(request, "devices.manage")
+
+    if error:
+        return error
+
+    if not device_exists(device_id):
+
+        return JSONResponse(
+            status_code=404,
+            content={"status": "error",
+                     "message": "El equipo no existe"}
+        )
+
+    if not decommission_device(device_id):
+
+        # Ya estaba de baja: no es un error, pero tampoco una baja
+        # nueva. Se dice tal cual en vez de fingir que se hizo algo.
+        return {
+            "status": "ok",
+            "device_id": device_id,
+            "already_decommissioned": True,
+            "message": "El equipo ya estaba dado de baja"
+        }
+
+    # La baja YA ocurrio. Que la anotacion falle no la deshace, y
+    # devolver un error haria creer que no se hizo nada: el equipo
+    # quedaria sin acceso mientras el panel dice que sigue en
+    # servicio, que es peor que no avisar.
+    #
+    # Asi que se informa de las dos cosas por separado: la operacion
+    # salio bien, y si no quedo anotada tambien se dice. El evento no
+    # se pierde: log_audit lo guarda en el respaldo.
+    anotado = log_audit(
+        "device.decommissioned", request=request,
+        device_id=device_id,
+        details="Baja del equipo: credencial revocada, "
+                "historial conservado"
+    )
+
+    respuesta = {
+        "status": "ok",
+        "device_id": device_id,
+        "already_decommissioned": False,
+        "audit_recorded": bool(anotado),
+        "message": "Equipo dado de baja. Se conservan sus grabaciones "
+                   "y su historial."
+    }
+
+    if not anotado:
+        respuesta["message"] += (
+            " Aviso: la operacion no se pudo anotar en el registro de "
+            "auditoria y quedo guardada aparte."
+        )
+
+    return respuesta
+
+
+@app.post("/api/devices/{device_id}/reinstate")
+def device_reinstate(device_id: str, request: Request):
+    """
+    Devuelve un equipo al servicio.
+
+    Quita la marca de baja y recupera su historial, pero NO devuelve
+    la credencial: sigue revocada. Para volver a conectarse, el equipo
+    tiene que darse de alta otra vez con una credencial de alta
+    valida.
+
+    Asi, reincorporar no es nunca una forma de resucitar un token
+    revocado.
+    """
+
+    usuario, error = require_permission(request, "devices.manage")
+
+    if error:
+        return error
+
+    if not device_exists(device_id):
+
+        return JSONResponse(
+            status_code=404,
+            content={"status": "error",
+                     "message": "El equipo no existe"}
+        )
+
+    if not reinstate_device(device_id):
+
+        return {
+            "status": "ok",
+            "device_id": device_id,
+            "was_decommissioned": False,
+            "message": "El equipo ya estaba en servicio"
+        }
+
+    anotado = log_audit(
+        "device.reinstated", request=request,
+        device_id=device_id,
+        details="Reincorporacion: la credencial sigue revocada, "
+                "hay que volver a dar de alta el equipo"
+    )
+
+    respuesta = {
+        "status": "ok",
+        "device_id": device_id,
+        "was_decommissioned": True,
+        "audit_recorded": bool(anotado),
+        "message": "Equipo reincorporado. Vuelve a instalarlo con una "
+                   "credencial de alta para que se conecte."
+    }
+
+    if not anotado:
+        respuesta["message"] += (
+            " Aviso: la operacion no se pudo anotar en el registro de "
+            "auditoria y quedo guardada aparte."
+        )
+
+    return respuesta
+
+
+@app.get("/api/devices/decommissioned")
+def devices_decommissioned(request: Request):
+    """
+    Equipos dados de baja que todavia pueden ceder su historial.
+
+    Es lo que se ofrece al vincular un equipo recien instalado. Solo
+    de la organizacion de quien pregunta: la organizacion se deduce de
+    la sesion y nunca se acepta del navegador.
+
+    Los que ya tienen heredero no salen: un historial, un sucesor.
+    """
+
+    usuario, error = require_permission(request, "devices.manage")
+
+    if error:
+        return error
+
+    if is_platform_owner(usuario):
+
+        # El operador no pertenece a ninguna organizacion, asi que no
+        # hay un conjunto suyo que ofrecer.
+        return {"status": "ok", "devices": []}
+
+    organizacion = organization_of(usuario)
+
+    if organizacion is None:
+        return {"status": "ok", "devices": []}
+
+    return {
+        "status": "ok",
+        "devices": decommissioned_devices(organizacion)
+    }
+
+
+@app.post("/api/devices/{device_id}/link-history")
+def device_link_history(device_id: str, data: dict, request: Request):
+    """
+    Vincula este equipo con el historial de uno dado de baja.
+
+    No se mueve ninguna grabacion: el equipo nuevo anota a quien
+    sucede, y cada grabacion conserva su device_id, su ruta y su
+    nombre. Por eso la operacion es reversible sin perder nada.
+
+    La credencial del equipo viejo NO se reactiva nunca. El equipo
+    nuevo sigue con la suya, que es la que obtuvo al darse de alta.
+
+    Que este equipo sea de la organizacion de quien lo pide ya lo
+    comprueba el middleware. El equipo ANTERIOR se comprueba aqui,
+    porque llega en el cuerpo y el middleware no lo ve.
+    """
+
+    usuario, error = require_permission(request, "devices.manage")
+
+    if error:
+        return error
+
+    anterior = (data or {}).get("previous_device_id")
+
+    if not anterior:
+
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error",
+                     "message": "Falta el equipo anterior"}
+        )
+
+    # El equipo anterior tiene que ser de la MISMA organizacion que
+    # quien pide. link_device_history vuelve a compararlo contra el
+    # equipo nuevo, pero esto evita siquiera confirmar que existe un
+    # identificador de otra empresa.
+    if not is_platform_owner(usuario):
+
+        if get_device_organization(anterior) != organization_of(usuario):
+
+            log_audit("device.history_linked", request=request,
+                      device_id=device_id, status=STATUS_ERROR,
+                      details="Rechazada: el equipo anterior es de "
+                              "otra organizacion")
+
+            return JSONResponse(
+                status_code=404,
+                content={"status": "error",
+                         "message": "El equipo anterior no existe"}
+            )
+
+    try:
+        link_device_history(device_id, anterior)
+
+    except LinkError as problema:
+
+        log_audit("device.history_linked", request=request,
+                  device_id=device_id, status=STATUS_ERROR,
+                  details=f"Rechazada: {problema}")
+
+        return JSONResponse(
+            status_code=409,
+            content={"status": "error", "message": str(problema)}
+        )
+
+    anotado = log_audit(
+        "device.history_linked", request=request,
+        device_id=device_id,
+        details=f"Hereda el historial de {anterior}. "
+                "No se movio ninguna grabacion."
+    )
+
+    respuesta = {
+        "status": "ok",
+        "device_id": device_id,
+        "previous_device_id": anterior,
+        "audit_recorded": bool(anotado),
+        "message": "Historial vinculado. Las grabaciones anteriores "
+                   "siguen donde estaban."
+    }
+
+    if not anotado:
+        respuesta["message"] += (
+            " Aviso: la operacion no se pudo anotar en el registro de "
+            "auditoria y quedo guardada aparte."
+        )
+
+    return respuesta
+
+
+@app.post("/api/devices/{device_id}/unlink-history")
+def device_unlink_history(device_id: str, request: Request):
+    """
+    Deshace la vinculacion.
+
+    Como al vincular no se movio nada, deshacerlo no puede perder
+    nada: los dos historiales vuelven a estar separados.
+    """
+
+    usuario, error = require_permission(request, "devices.manage")
+
+    if error:
+        return error
+
+    anterior = unlink_device_history(device_id)
+
+    if anterior is None:
+
+        return {
+            "status": "ok",
+            "device_id": device_id,
+            "was_linked": False,
+            "message": "Este equipo no tenia historial vinculado"
+        }
+
+    log_audit("device.history_unlinked", request=request,
+              device_id=device_id,
+              details=f"Deja de heredar el historial de {anterior}")
+
+    return {
+        "status": "ok",
+        "device_id": device_id,
+        "previous_device_id": anterior,
+        "was_linked": True,
+        "message": "Vinculacion deshecha. No se perdio ninguna "
+                   "grabacion."
+    }
+
+
+@app.get("/api/organizations/{organization_id}/plan")
+def organization_plan(organization_id: int, request: Request):
+    """
+    El plan efectivo de una organizacion y sus excepciones.
+
+    Solo la plataforma. Una organizacion no puede consultar —ni
+    cambiar— las excepciones de otra, ni las suyas: son un acuerdo
+    comercial, no un ajuste del cliente.
+    """
+
+    _, error = require_platform_owner(request)
+
+    if error:
+        return error
+
+    if organizations.get_organization(organization_id) is None:
+
+        return JSONResponse(
+            status_code=404,
+            content={"status": "error",
+                     "message": "La organizacion no existe"}
+        )
+
+    plan = organizations.plan_efectivo(organization_id)
+
+    return {
+        "status": "ok",
+        "organization_id": organization_id,
+        "plan": {
+            clave: (sorted(valor) if isinstance(valor, frozenset)
+                    else valor)
+            for clave, valor in plan.items()
+        },
+        "usage": organizations.organization_usage(organization_id),
+        "exceptions": organizations.get_plan_exceptions(organization_id),
+        "available_exceptions": list(organizations.EXCEPCIONES)
+    }
+
+
+@app.post("/api/organizations/{organization_id}/plan")
+def organization_plan_set(organization_id: int, data: dict,
+                          request: Request):
+    """
+    Concede, cambia o retira una excepcion del plan.
+
+    Reservado al operador de la plataforma. Es la UNICA via: las
+    claves plan.* no estan en ALLOWED_SETTINGS, asi que /api/settings
+    las rechaza, y un cliente no puede concederse capacidades.
+
+    Un valor vacio retira la excepcion. Retirarla no borra nada de la
+    organizacion: solo deja de concederse lo que concedia.
+    """
+
+    _, error = require_platform_owner(request)
+
+    if error:
+
+        log_audit("plan.exception_set", request=request,
+                  status=STATUS_ERROR,
+                  details="Rechazada: no es operador de la plataforma")
+
+        return error
+
+    clave = (data or {}).get("key")
+    valor = (data or {}).get("value")
+
+    try:
+        organizations.set_plan_exception(organization_id, clave, valor)
+
+    except organizations.OrganizationError as problema:
+
+        log_audit("plan.exception_set", request=request,
+                  status=STATUS_ERROR,
+                  organization_id=organization_id,
+                  details=f"Rechazada: {problema}")
+
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "message": str(problema)}
+        )
+
+    # Queda quien, cuando y que. El "por que" va en
+    # plan.courtesy_note, que se guarda igual que las demas.
+    anotado = log_audit(
+        "plan.exception_set", request=request,
+        organization_id=organization_id,
+        details=(f"{clave} = {valor}" if valor
+                 else f"{clave} retirada")
+    )
+
+    plan = organizations.plan_efectivo(organization_id)
+
+    return {
+        "status": "ok",
+        "organization_id": organization_id,
+        "key": clave,
+        "value": valor,
+        "audit_recorded": bool(anotado),
+        "features": sorted(plan["features"]),
+        "message": "Excepcion aplicada" if valor else "Excepcion retirada"
+    }
 
 
 @app.get("/api/alerts")
@@ -4843,7 +5412,37 @@ app.mount(
 
 @app.get("/")
 def root():
+    """
+    La entrada publica: la presentacion de VEYRA.
+
+    Antes aqui salia directamente el panel. Se cambia porque quien
+    llega sin conocer el producto necesita saber que es antes de que
+    le pidan unas credenciales.
+
+    El panel NO se mueve de sitio para nadie que ya lo use: sigue en
+    /frontend/index.html, que es exactamente la direccion que llevan
+    los enlaces de recuperacion por correo, y ademas responde en
+    /panel. Esta ruta no cambia ninguna API.
+    """
+
+    return FileResponse(
+        "frontend/inicio.html"
+    )
+
+
+@app.get("/panel")
+def panel():
+    """El panel de administracion."""
 
     return FileResponse(
         "frontend/index.html"
+    )
+
+
+@app.get("/inicio")
+def inicio():
+    """Alias de la pagina publica, para enlazarla con nombre propio."""
+
+    return FileResponse(
+        "frontend/inicio.html"
     )

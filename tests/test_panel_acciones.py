@@ -111,6 +111,9 @@ def ejecutar_js(preparacion, expresion):
     """Evalua una expresion con las piezas reales de app.js cargadas."""
 
     piezas = [
+        # Las insignias componen su icono con icono(), asi que la
+        # pieza tiene que viajar con ellas.
+        _extraer("icono"),
         _extraer("ESTADOS_DE_ALMACENAMIENTO", "const"),
         _extraer("estadoDeAlmacenamiento"),
         _extraer("insigniaDeAlmacenamiento"),

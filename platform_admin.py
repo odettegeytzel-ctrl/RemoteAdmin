@@ -11,6 +11,8 @@ primero.
     python platform_admin.py degradar <usuario>
     python platform_admin.py asignar <usuario> <id-organizacion>
     python platform_admin.py organizaciones
+    python platform_admin.py correo <usuario> <direccion>
+    python platform_admin.py correo-diagnostico
 
 Por que desde consola y no desde el panel
 -----------------------------------------
@@ -33,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from backend.database import init_db
 from backend.audit import log_audit, STATUS_SUCCESS, STATUS_ERROR
+from backend import mailer
 from backend import organizations
 from backend import users
 
@@ -54,8 +57,9 @@ def listar_usuarios():
                for o in organizations.list_organizations()}
 
     print()
-    print(f"{'USUARIO':<24} {'ROL':<16} {'ORGANIZACION':<24} ESTADO")
-    print("-" * 78)
+    print(f"{'USUARIO':<20} {'ROL':<15} {'ORGANIZACION':<20} "
+          f"{'CORREO':<22} ESTADO")
+    print("-" * 96)
 
     for usuario in filas:
 
@@ -64,10 +68,22 @@ def listar_usuarios():
             if usuario["organization_id"] else "(plataforma)"
         )
 
+        # Sin correo no se puede recuperar la contrasena: se marca
+        # para que se vea de un vistazo, porque el flujo de
+        # recuperacion no avisa de esto (responde lo mismo siempre,
+        # a proposito, para no revelar que direcciones existen).
+        if not usuario.get("email"):
+            correo = "SIN CORREO"
+        elif usuario.get("email_verified"):
+            correo = usuario["email"]
+        else:
+            correo = usuario["email"] + " (sin verificar)"
+
         print(
-            f"{usuario['username']:<24} "
-            f"{usuario['role']:<16} "
-            f"{organizacion:<24} "
+            f"{usuario['username']:<20} "
+            f"{usuario['role']:<15} "
+            f"{organizacion:<20} "
+            f"{correo:<22} "
             f"{'activo' if usuario['active'] else 'desactivado'}"
         )
 
@@ -260,6 +276,137 @@ def asignar(username, organization_id):
     return 0
 
 
+def correo(username, direccion):
+    """
+    Asigna la direccion a la que llegaran los enlaces de recuperacion.
+
+    Hace falta porque sin correo el usuario NO puede recuperar su
+    contrasena, y el propio flujo no lo avisa: responde siempre lo
+    mismo para no revelar que direcciones existen en el sistema. Es
+    decir, un usuario sin correo pide el enlace, ve un mensaje de
+    exito y no recibe nada.
+    """
+
+    try:
+        usuario = users.set_email(username, direccion)
+
+    except users.UserError as problema:
+        print(f"ERROR: {problema}")
+        return 1
+
+    log_audit(
+        "user.email_set", username=USERNAME_CONSOLA,
+        status=STATUS_SUCCESS, source_ip="consola",
+        organization_id=usuario.get("organization_id"),
+        details={"target": username}
+    )
+
+    print()
+    print(f"Correo de '{username}' actualizado.")
+    print()
+    print("Queda SIN VERIFICAR a proposito: cambiar la direccion no")
+    print("hereda la verificacion de la anterior.")
+    print()
+
+    if mailer.get_transport() == mailer.TRANSPORT_MOCK:
+        print("AVISO: el envio de correo esta en modo 'mock', asi que")
+        print("los enlaces de recuperacion NO saldran de este servidor.")
+        print("Comprueba la configuracion con:")
+        print("  python platform_admin.py correo-diagnostico")
+        print()
+
+    return 0
+
+
+def correo_diagnostico():
+    """
+    Dice si la recuperacion por correo funcionaria de verdad.
+
+    Existe porque el sistema puede parecer configurado sin estarlo: en
+    modo 'mock' el envio se da por bueno y el mensaje se descarta en
+    silencio. Nada en el panel lo delata.
+
+    No se imprime ninguna contrasena ni usuario de SMTP: solo si estan
+    definidos.
+    """
+
+    transporte = mailer.get_transport()
+
+    print()
+    print("CORREO DE RECUPERACION")
+    print("-" * 60)
+    print(f"  transporte           : {transporte}")
+
+    problemas = []
+
+    if transporte == mailer.TRANSPORT_MOCK:
+        problemas.append(
+            "El transporte es 'mock': los correos se descartan y NO "
+            "llegan a nadie. Para enviar de verdad, pon "
+            "REMOTEADMIN_MAIL_TRANSPORT=smtp"
+        )
+
+    else:
+
+        for variable, obligatoria in (
+            ("REMOTEADMIN_SMTP_HOST", True),
+            ("REMOTEADMIN_SMTP_PORT", False),
+            ("REMOTEADMIN_SMTP_USER", False),
+            ("REMOTEADMIN_SMTP_PASSWORD", False),
+            ("REMOTEADMIN_MAIL_FROM", False)
+        ):
+            puesta = bool(mailer._entorno(variable))
+
+            print(f"  {variable:<21}: "
+                  f"{'definida' if puesta else 'sin definir'}")
+
+            if obligatoria and not puesta:
+                problemas.append(f"Falta {variable}")
+
+    publica = mailer.get_public_url()
+
+    print(f"  direccion del panel  : {publica}")
+
+    if "localhost" in publica or "127.0.0.1" in publica:
+        problemas.append(
+            "REMOTEADMIN_PUBLIC_URL apunta al propio servidor, asi que "
+            "los enlaces del correo no se podran abrir desde fuera"
+        )
+
+    # Usuarios que no podrian recuperar su contrasena
+    sin_correo = [
+        u["username"] for u in users.list_users()
+        if u["active"] and not u.get("email")
+    ]
+
+    print(f"  usuarios sin correo  : "
+          f"{', '.join(sin_correo) if sin_correo else 'ninguno'}")
+
+    if sin_correo:
+        problemas.append(
+            "Hay usuarios activos sin correo: no podrian recuperar su "
+            "contrasena. Asignalo con: python platform_admin.py "
+            "correo <usuario> <direccion>"
+        )
+
+    print()
+
+    if problemas:
+        print("NO esta listo para enviar:")
+        for numero, problema in enumerate(problemas, 1):
+            print(f"  {numero}. {problema}")
+        print()
+        return 1
+
+    print("La recuperacion por correo esta configurada.")
+    print()
+    print("Para comprobarlo de verdad, pide un enlace desde el panel y")
+    print("confirma que llega. Esta orden solo revisa la configuracion.")
+    print()
+
+    return 0
+
+
 def ayuda():
 
     print(__doc__)
@@ -297,6 +444,12 @@ def main():
 
     if orden == "asignar" and len(argumentos) == 3:
         return asignar(argumentos[1], argumentos[2])
+
+    if orden == "correo" and len(argumentos) == 3:
+        return correo(argumentos[1], argumentos[2])
+
+    if orden in ("correo-diagnostico", "correo-diag"):
+        return correo_diagnostico()
 
     return ayuda()
 

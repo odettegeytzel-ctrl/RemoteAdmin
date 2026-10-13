@@ -50,6 +50,11 @@ ROLES = (ROLE_PLATFORM_OWNER, ROLE_OWNER, ROLE_SUBADMIN)
 PERMISSIONS = (
     "dashboard.view",
     "devices.view",
+
+    # Dar de baja un equipo y volver a incorporarlo. Separado de
+    # devices.view a proposito: mirar el inventario y retirar equipos
+    # de el no son la misma responsabilidad.
+    "devices.manage",
     "recordings.view",
     "recordings.download",
     "recordings.manage",

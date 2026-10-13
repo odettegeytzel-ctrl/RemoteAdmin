@@ -167,6 +167,19 @@ class RecordingScheduler:
         # Ultimo estado conocido de la grabacion
         self._grabando = False
 
+        # Grabacion continua pedida desde el panel.
+        #
+        # No es un horario: es "graba sin que nadie este delante". Con
+        # un horario activo se limita a sus franjas; sin horario, graba
+        # siempre. Antes vivia fuera de aqui y por eso las dos
+        # decisiones se pisaban.
+        self._continuo = False
+
+        # Por que se esta grabando. Lo necesita el panel para no
+        # encender el control manual cuando quien graba es la
+        # programacion.
+        self._fuente = None
+
     def set_schedule(self, horario):
         """
         Cambia el horario. Olvida la excepcion manual.
@@ -180,6 +193,24 @@ class RecordingScheduler:
         self._franja_con_excepcion = None
         self._fecha_con_excepcion = None
 
+    def set_continuous(self, activa):
+        """
+        Enciende o apaga la grabacion continua.
+
+        Igual que al reprogramar: se olvida la excepcion manual,
+        porque acaban de decir expresamente lo que quieren.
+        """
+
+        self._continuo = bool(activa)
+
+        self._excepcion_activa = False
+        self._franja_con_excepcion = None
+        self._fecha_con_excepcion = None
+
+    @property
+    def continua(self):
+        return self._continuo
+
     def notify_manual(self, grabando, ahora=None):
         """
         El operador ha pulsado iniciar o detener.
@@ -191,6 +222,7 @@ class RecordingScheduler:
         momento = ahora_en_zona(self.horario, ahora)
 
         self._grabando = bool(grabando)
+        self._fuente = "manual" if grabando else None
         self._excepcion_activa = True
         self._franja_con_excepcion = inicio_de_la_franja(
             self.horario, momento
@@ -201,6 +233,35 @@ class RecordingScheduler:
         """Estado real informado por el grabador, sin intervencion manual."""
 
         self._grabando = bool(grabando)
+
+        if not grabando:
+            self._fuente = None
+
+    def fuente(self, ahora=None):
+        """
+        Quien sostiene la grabacion: 'manual', 'programada',
+        'continua' o None si no se esta grabando.
+
+        El panel lo necesita para no encender el control de grabacion
+        manual cuando quien graba es la programacion. Antes el estado
+        solo decia SI se graba, y por eso se encendian los dos.
+        """
+
+        if not self._grabando:
+            return None
+
+        if self._fuente:
+            return self._fuente
+
+        # Sin razon anotada (por ejemplo, tras reiniciar el Agent con
+        # una grabacion ya en marcha) se deduce de la situacion.
+        momento = ahora_en_zona(self.horario, ahora)
+
+        deberia, fuente = self._procede(
+            inicio_de_la_franja(self.horario, momento)
+        )
+
+        return fuente if deberia else "manual"
 
     def decide(self, ahora=None):
         """
@@ -231,15 +292,42 @@ class RecordingScheduler:
             self._franja_con_excepcion = None
             self._fecha_con_excepcion = None
 
-        deberia = franja is not None
+        deberia, fuente = self._procede(franja)
 
         if deberia and not self._grabando:
+            self._fuente = fuente
             return "start"
 
         if not deberia and self._grabando:
+            self._fuente = None
             return "stop"
 
+        # Ya esta como debe estar, pero la razon puede haber cambiado:
+        # una grabacion continua que entra en su franja programada
+        # sigue grabando y ahora la sostiene el horario.
+        if deberia:
+            self._fuente = fuente
+
         return None
+
+    def _procede(self, franja):
+        """
+        Si ahora mismo deberia estar grabando, y por que motivo.
+
+        El horario manda cuando esta activo: la continua se limita a
+        sus franjas. Quien configura "lunes a viernes de 9 a 17" no
+        quiere que se grabe el domingo de madrugada.
+        """
+
+        if franja is not None:
+            return True, "programada"
+
+        # Sin horario activo, la continua graba siempre. Con horario
+        # activo y fuera de franja, no: manda el horario.
+        if self._continuo and not self.horario.get("enabled"):
+            return True, "continua"
+
+        return False, None
 
     def estado(self, ahora=None):
         """
@@ -252,7 +340,7 @@ class RecordingScheduler:
         if self._grabando:
             return "grabando"
 
-        if self.horario.get("enabled"):
+        if self.horario.get("enabled") or self._continuo:
             return "programada"
 
         return "detenida"

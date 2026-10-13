@@ -16,6 +16,7 @@ detalles se limitan a lo mínimo para entender la acción.
 """
 
 import json
+import os
 import re
 
 from datetime import datetime, timezone
@@ -249,6 +250,51 @@ def backfill_organizations():
     return True
 
 
+# Donde van los eventos que la base no pudo aceptar.
+#
+# Junto a la base de datos, para que quien tenga acceso a una lo tenga
+# a la otra, y en el mismo sitio del que ya se hacen las copias.
+#
+# Una linea por evento, en JSON: se puede leer a ojo y reinsertar
+# despues sin interpretar nada.
+RESPALDO_AUDITORIA = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "auditoria_pendiente.jsonl"
+)
+
+
+def _guardar_en_respaldo(registro):
+    """
+    Deja constancia de un evento que la base no acepto.
+
+    Devuelve True si se pudo escribir. Si tampoco se puede —disco
+    lleno, permisos—, no queda mas que la consola, pero al menos se
+    habra intentado por dos vias antes de darlo por perdido.
+    """
+
+    try:
+        linea = json.dumps({
+            "timestamp": registro[0],
+            "action": registro[1],
+            "device_id": registro[2],
+            "username": registro[3],
+            "source_ip": registro[4],
+            "status": registro[5],
+            "details": registro[6],
+            "organization_id": registro[7]
+        }, ensure_ascii=False)
+
+        with open(RESPALDO_AUDITORIA, "a", encoding="utf-8") as archivo:
+            archivo.write(linea + "\n")
+
+        return True
+
+    except Exception as error:
+        print(f"[auditoria] Tampoco se pudo escribir el respaldo: "
+              f"{error}")
+        return False
+
+
 def log_audit(action, request=None, device_id=None, status=STATUS_REQUESTED,
               details=None, username=None, source_ip=None,
               organization_id=None):
@@ -285,28 +331,43 @@ def log_audit(action, request=None, device_id=None, status=STATUS_REQUESTED,
             organization_id
         )
 
-        connection = get_connection()
-
         try:
-            connection.execute(
-                """
-                INSERT INTO audit_log (
-                    timestamp, action, device_id, username,
-                    source_ip, status, details, organization_id
+            connection = get_connection()
+
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO audit_log (
+                        timestamp, action, device_id, username,
+                        source_ip, status, details, organization_id
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    registro
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                registro
-            )
-            connection.commit()
+                connection.commit()
 
-        finally:
-            connection.close()
+            finally:
+                connection.close()
 
-        return True
+            return True
+
+        except Exception as error:
+
+            # La base no lo acepto. El evento NO se tira: se guarda en
+            # el respaldo para poder reinsertarlo despues.
+            print(f"[auditoría] No se pudo registrar '{action}': "
+                  f"{error}")
+
+            _guardar_en_respaldo(registro)
+
+            return False
 
     except Exception as error:
-        print(f"[auditoría] No se pudo registrar '{action}': {error}")
+        # Fallo antes siquiera de componer el registro (por ejemplo al
+        # leer el contexto de la peticion). Aqui no hay nada que
+        # respaldar.
+        print(f"[auditoría] No se pudo preparar '{action}': {error}")
         return False
 
 

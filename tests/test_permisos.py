@@ -38,7 +38,12 @@ ENDPOINTS = {
     "recordings.view": ("GET", "/api/recordings"),
     "settings.view": ("GET", "/api/settings"),
     "processes.view": ("GET", "/api/devices/equipo-x/processes"),
-    "services.view": ("GET", "/api/devices/equipo-x/services")
+    "services.view": ("GET", "/api/devices/equipo-x/services"),
+
+    # Dar de baja un equipo. Sobre un identificador que no existe: a
+    # quien tiene el permiso le respondera 404, que es distinto de
+    # 403, y es justo lo que estas pruebas comparan.
+    "devices.manage": ("POST", "/api/devices/equipo-x/decommission")
 }
 
 

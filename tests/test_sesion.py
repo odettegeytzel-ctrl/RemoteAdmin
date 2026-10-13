@@ -826,7 +826,27 @@ def test_actualizar_conserva_la_identidad():
     comprobar("Solo copia el programa",
               'Copy-Item -Path (Join-Path $SourceDir "agent")' in GUION)
 
-    comprobar("No borra nada", "Remove-Item" not in GUION)
+    # Antes se prohibia cualquier Remove-Item. Ahora hay uno
+    # legitimo: el archivo temporal de la credencial. Lo que no puede
+    # borrarse son los DATOS del equipo, asi que se comprueba QUE se
+    # borra y no si la orden aparece.
+    borrados = [
+        linea.strip() for linea in GUION.split(chr(10))
+        if ("Remove-Item" in linea or "rmdir" in linea.lower())
+        and not linea.strip().startswith("#")
+    ]
+
+    indebidos = [b for b in borrados
+                 if "$EnrollmentTokenFile" not in b]
+
+    comprobar("Solo borra el temporal de la credencial",
+              not indebidos, str(indebidos))
+
+    for dato in ("config", "identity", "recordings", "logs",
+                 "InstallDir"):
+        comprobar(f"Ningun borrado alcanza '{dato}'",
+                  not [b for b in borrados if dato in b])
+
 
     comprobar("Y no vuelve a pedir credencial si ya hay identidad",
               "$yaEnrolado = Test-Path $IdentityFile" in GUION)

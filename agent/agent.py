@@ -1011,30 +1011,66 @@ def _schedule_loop():
 
 
 def apply_continuous(enabled):
-    """Aplica la configuración de grabación continua recibida del servidor."""
+    """
+    Aplica la configuracion de grabacion continua recibida del servidor.
+
+    Antes esto arrancaba la grabacion por su cuenta, sin mirar el
+    horario, y ademas con manual=True. Dos consecuencias:
+
+      - el servidor reenvia este ajuste en CADA conexion del Agent,
+        asi que cualquier reconexion de madrugada abria una grabacion
+        fuera de la franja configurada;
+
+      - al marcarla como manual, el panel la presentaba como si
+        alguien la hubiera iniciado a mano.
+
+    Ahora solo se anota la intencion. Quien decide si toca grabar
+    ahora mismo es el planificador, que es el unico que conoce el
+    horario, y lo hace por el mismo camino que cualquier otra
+    decision.
+    """
 
     global continuous_enabled
 
     with _state_lock:
         continuous_enabled = bool(enabled)
 
-    if enabled:
-        if not screen_recorder.is_recording():
-            print("[agent] Grabación continua ACTIVADA: iniciando grabación")
-            start_screen_recording()
-    else:
-        if screen_recorder.is_recording():
-            print("[agent] Grabación continua DESACTIVADA: deteniendo grabación")
-            stop_screen_recording()
+    recording_scheduler.set_continuous(bool(enabled))
+
+    print(f"[agent] Grabacion continua "
+          f"{'ACTIVADA' if enabled else 'DESACTIVADA'}")
+
+    _aplicar_decision_del_horario()
 
 
 def build_recording_status():
+    """
+    Estado de la grabacion para el panel.
+
+    "recording_source" es la novedad: dice QUIEN sostiene la
+    grabacion, no solo que la hay. Sin este dato el panel no podia
+    distinguir una grabacion manual de una programada, y encendia los
+    dos controles a la vez.
+    """
+
     with _state_lock:
         recording = screen_recorder.is_recording()
         state = agent_state
+
+    # Fuera del cerrojo: consultar el planificador mira el reloj y no
+    # necesita el estado compartido.
+    recording_scheduler.notify_state(recording)
+
+    fuente = recording_scheduler.fuente()
+
+    with _state_lock:
         return {
             "continuous_recording_enabled": continuous_enabled,
             "recording": recording,
+            "recording_source": fuente,
+            "schedule_enabled": bool(
+                recording_scheduler.horario.get("enabled")
+            ),
             "state": state,
             "last_segment": last_segment_at,
             "last_upload": last_upload_at,

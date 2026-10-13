@@ -19,6 +19,7 @@ real ni la base de datos de produccion.
 """
 
 import atexit
+import io
 import os
 import shutil
 import subprocess
@@ -763,22 +764,33 @@ def test_el_cambio_vive_solo_en_el_servidor():
     mandan el cero.
     """
 
-    cambiados = subprocess.run(
-        ["git", "diff", "--name-only", "HEAD"],
-        capture_output=True, text=True, cwd=RAIZ
-    ).stdout.split()
+    def leer(ruta):
+        return io.open(os.path.join(RAIZ, ruta), encoding="utf-8").read()
 
-    comprobar("No se toca el Agent",
-              "agent/agent.py" not in cambiados, str(cambiados))
+    # Antes esto miraba "git diff", que solo servia mientras el cambio
+    # estaba sin confirmar: en cuanto se hizo commit dejo de ver nada.
+    # Se comprueba el contenido, que es lo que de verdad importa y
+    # sigue valiendo pasado el tiempo.
 
-    comprobar("Se corrige la validacion",
-              "backend/media.py" in cambiados, str(cambiados))
+    media = leer("backend/media.py")
+    principal = leer("backend/main.py")
+    agente = leer("agent/agent.py")
 
-    comprobar("Y el registro de la grabacion",
-              "backend/main.py" in cambiados, str(cambiados))
+    comprobar("La correccion vive en la validacion",
+              "DECLARED_DURATION_UNKNOWN" in media
+              and "declared_duration_is_known" in media)
 
-    comprobar("Sin tocar el almacenamiento de grabaciones",
-              "backend/recordings.py" not in cambiados, str(cambiados))
+    comprobar("Y en el registro de la grabacion",
+              "duration_for_storage" in principal)
+
+    # El Agent NO se toca: un cambio ahi no llegaria a los equipos ya
+    # instalados, que son justamente los que mandan el cero.
+    comprobar("El Agent sigue declarando cero al escanear el disco",
+              '"duration_sec": 0,' in agente)
+
+    comprobar("Y no sabe nada de la correccion",
+              "duration_for_storage" not in agente
+              and "DECLARED_DURATION_UNKNOWN" not in agente)
 
 
 # ==============================

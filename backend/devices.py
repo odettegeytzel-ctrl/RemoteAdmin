@@ -296,7 +296,9 @@ def get_devices():
              status,
              last_seen,
              created_at,
-             organization_id
+             organization_id,
+             decommissioned_at,
+             succeeds_device_id
         FROM devices
         ORDER BY hostname
         """
@@ -443,6 +445,339 @@ def revoke_agent_token(device_id):
     connection.close()
 
     return cursor.rowcount > 0
+
+
+def decommission_device(device_id):
+    """
+    Da de baja un equipo. No borra nada.
+
+    Dos cosas, en una sola transaccion:
+
+      1. Se revoca la credencial, para que el Agent no pueda volver a
+         autenticarse.
+
+      2. Se anota la fecha de baja.
+
+    Van juntas a proposito: un unico commit al final. Si cualquiera
+    de las dos falla, SQLite descarta ambas al cerrar la conexion sin
+    confirmar, y el equipo se queda exactamente como estaba.
+
+    Eso evita el estado peligroso, que seria quedar marcado como dado
+    de baja conservando el acceso: el panel diria que el equipo esta
+    retirado mientras su Agent sigue conectandose. Comprobado
+    provocando el fallo en cada uno de los dos pasos.
+
+    La fila se conserva entera —hostname, fechas, organizacion— junto
+    con sus grabaciones, sus alertas y su rastro en la auditoria. Dar
+    de baja es decir "este equipo ya no esta en servicio", no "este
+    equipo no existio nunca".
+
+    Devuelve False si el equipo no existe o ya estaba de baja, para
+    que quien llame no anuncie una baja que no ha ocurrido.
+    """
+
+    connection = get_connection()
+
+    try:
+        fila = connection.execute(
+            "SELECT decommissioned_at FROM devices WHERE device_id = ?",
+            (device_id,)
+        ).fetchone()
+
+        if fila is None or fila["decommissioned_at"]:
+            return False
+
+        # 1. La credencial, primero
+        connection.execute(
+            "UPDATE devices SET agent_token_active = 0 WHERE device_id = ?",
+            (device_id,)
+        )
+
+        # 2. La baja
+        connection.execute(
+            "UPDATE devices SET decommissioned_at = ? WHERE device_id = ?",
+            (datetime.now(timezone.utc).isoformat(), device_id)
+        )
+
+        connection.commit()
+
+    finally:
+        connection.close()
+
+    return True
+
+
+def is_decommissioned(device_id):
+    """True si el equipo esta dado de baja."""
+
+    connection = get_connection()
+
+    try:
+        fila = connection.execute(
+            "SELECT decommissioned_at FROM devices WHERE device_id = ?",
+            (device_id,)
+        ).fetchone()
+
+    finally:
+        connection.close()
+
+    return bool(fila and fila["decommissioned_at"])
+
+
+def reinstate_device(device_id):
+    """
+    Devuelve un equipo al servicio.
+
+    Quita la marca de baja, pero NO devuelve la credencial: sigue
+    revocada. Para volver a conectarse, el equipo tiene que darse de
+    alta otra vez con una credencial de alta valida, y asi recupera su
+    historial sin que una credencial vieja vuelva a valer.
+
+    Devuelve False si no existe o no estaba de baja.
+    """
+
+    connection = get_connection()
+
+    try:
+        fila = connection.execute(
+            "SELECT decommissioned_at FROM devices WHERE device_id = ?",
+            (device_id,)
+        ).fetchone()
+
+        if fila is None or not fila["decommissioned_at"]:
+            return False
+
+        connection.execute(
+            "UPDATE devices SET decommissioned_at = NULL WHERE device_id = ?",
+            (device_id,)
+        )
+
+        connection.commit()
+
+    finally:
+        connection.close()
+
+    return True
+
+
+class LinkError(Exception):
+    """La vinculacion no se puede hacer sin arriesgar el historial."""
+
+
+def link_device_history(nuevo_id, anterior_id):
+    """
+    Hace que un equipo recien registrado herede el historial de uno
+    dado de baja.
+
+    No toca ninguna grabacion: solo anota en el equipo nuevo a quien
+    sucede. El viejo se queda de baja y con su credencial revocada
+    para siempre.
+
+    Lanza LinkError si no se puede garantizar que la vinculacion es
+    limpia. Ante la duda no se vincula: un historial partido es un
+    problema menor que uno mezclado con el de otra maquina.
+    """
+
+    if not nuevo_id or not anterior_id:
+        raise LinkError("Faltan los equipos que vincular")
+
+    if nuevo_id == anterior_id:
+        raise LinkError("Un equipo no puede sucederse a si mismo")
+
+    connection = get_connection()
+
+    try:
+        nuevo = connection.execute(
+            "SELECT device_id, organization_id, decommissioned_at, "
+            "succeeds_device_id FROM devices WHERE device_id = ?",
+            (nuevo_id,)
+        ).fetchone()
+
+        anterior = connection.execute(
+            "SELECT device_id, organization_id, decommissioned_at "
+            "FROM devices WHERE device_id = ?",
+            (anterior_id,)
+        ).fetchone()
+
+        if nuevo is None:
+            raise LinkError("El equipo nuevo no existe")
+
+        if anterior is None:
+            raise LinkError("El equipo anterior no existe")
+
+        # Misma organizacion. Sin esto, una empresa podria quedarse
+        # con el historial de otra.
+        if nuevo["organization_id"] != anterior["organization_id"]:
+            raise LinkError(
+                "Los dos equipos deben ser de la misma organizacion"
+            )
+
+        # El predecesor tiene que estar de baja: heredar el historial
+        # de un equipo que sigue en servicio lo dejaria asociado a dos
+        # maquinas activas a la vez.
+        if not anterior["decommissioned_at"]:
+            raise LinkError(
+                "El equipo anterior debe estar dado de baja"
+            )
+
+        if nuevo["decommissioned_at"]:
+            raise LinkError(
+                "El equipo nuevo esta dado de baja"
+            )
+
+        if nuevo["succeeds_device_id"]:
+            raise LinkError(
+                "El equipo nuevo ya tiene un historial vinculado"
+            )
+
+        # Un historial, un heredero.
+        ya_heredado = connection.execute(
+            "SELECT device_id FROM devices WHERE succeeds_device_id = ?",
+            (anterior_id,)
+        ).fetchone()
+
+        if ya_heredado is not None:
+            raise LinkError(
+                "Ese historial ya esta vinculado a otro equipo"
+            )
+
+        connection.execute(
+            "UPDATE devices SET succeeds_device_id = ? WHERE device_id = ?",
+            (anterior_id, nuevo_id)
+        )
+
+        connection.commit()
+
+    finally:
+        connection.close()
+
+    return True
+
+
+def unlink_device_history(device_id):
+    """
+    Deshace una vinculacion.
+
+    Como no se movio ninguna grabacion al vincular, deshacerlo es
+    quitar el puntero: los dos historiales vuelven a estar separados y
+    ninguno ha perdido nada.
+    """
+
+    connection = get_connection()
+
+    try:
+        fila = connection.execute(
+            "SELECT succeeds_device_id FROM devices WHERE device_id = ?",
+            (device_id,)
+        ).fetchone()
+
+        if fila is None or not fila["succeeds_device_id"]:
+            return None
+
+        anterior = fila["succeeds_device_id"]
+
+        connection.execute(
+            "UPDATE devices SET succeeds_device_id = NULL "
+            "WHERE device_id = ?",
+            (device_id,)
+        )
+
+        connection.commit()
+
+    finally:
+        connection.close()
+
+    return anterior
+
+
+# Tope de saltos al seguir la cadena de predecesores.
+#
+# Un equipo reinstalado muchas veces encadena varios registros. El
+# tope existe para que un dato corrupto —una cadena que se muerda la
+# cola— no deje el servidor dando vueltas.
+MAX_PREDECESORES = 50
+
+
+def device_history_chain(device_id):
+    """
+    El equipo y todos los que le precedieron, del mas nuevo al mas
+    viejo.
+
+    Sirve para enseñar el historial completo sin haber tocado ni una
+    grabacion: se consultan las de todos los identificadores de la
+    cadena.
+    """
+
+    if not device_id:
+        return []
+
+    cadena = [device_id]
+    vistos = {device_id}
+
+    connection = get_connection()
+
+    try:
+        actual = device_id
+
+        for _ in range(MAX_PREDECESORES):
+
+            fila = connection.execute(
+                "SELECT succeeds_device_id FROM devices "
+                "WHERE device_id = ?",
+                (actual,)
+            ).fetchone()
+
+            if fila is None or not fila["succeeds_device_id"]:
+                break
+
+            actual = fila["succeeds_device_id"]
+
+            # Una cadena que se muerde la cola no deberia existir,
+            # pero si existiera no puede colgar el servidor.
+            if actual in vistos:
+                break
+
+            vistos.add(actual)
+            cadena.append(actual)
+
+    finally:
+        connection.close()
+
+    return cadena
+
+
+def decommissioned_devices(organization_id):
+    """
+    Equipos dados de baja de una organizacion que todavia no tienen
+    heredero.
+
+    Es lo que se ofrece al vincular: los que ya fueron heredados no
+    salen, porque un historial solo puede tener un sucesor.
+    """
+
+    connection = get_connection()
+
+    try:
+        filas = connection.execute(
+            """
+            SELECT d.device_id, d.hostname, d.operating_system,
+                   d.created_at, d.decommissioned_at, d.last_seen
+            FROM devices d
+            WHERE d.organization_id = ?
+              AND d.decommissioned_at IS NOT NULL
+              AND NOT EXISTS (
+                    SELECT 1 FROM devices s
+                    WHERE s.succeeds_device_id = d.device_id
+              )
+            ORDER BY d.decommissioned_at DESC
+            """,
+            (organization_id,)
+        ).fetchall()
+
+    finally:
+        connection.close()
+
+    return [dict(f) for f in filas]
 
 
 def get_device_organization(device_id):

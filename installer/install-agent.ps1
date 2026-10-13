@@ -23,6 +23,10 @@
 # PowerShell y en la lista de procesos. Sin el parametro, se teclea
 # oculta y no se guarda en ningun sitio.
 #
+# El instalador grafico la pasa con -EnrollmentTokenFile, que evita
+# los dos problemas: no aparece en el historial ni en la lista de
+# procesos, y el archivo se borra al leerlo.
+#
 # El servidor viene ya configurado en el .env del paquete descargado;
 # -Server solo hace falta para cambiarlo.
 
@@ -30,6 +34,13 @@
 param(
     [string]$Server = "",
     [string]$EnrollmentToken = "",
+
+    # Archivo del que leer la credencial, en vez de pasarla como
+    # argumento. Lo usa el instalador grafico: un argumento queda a la
+    # vista en la lista de procesos de todo el equipo mientras el
+    # script corre, y una credencial de alta sirve para meter equipos
+    # en la organizacion. El archivo se borra en cuanto se lee.
+    [string]$EnrollmentTokenFile = "",
 
     # Tarea del servicio de fondo. Conserva el nombre de siempre para
     # que una reinstalacion sobre un equipo ya instalado reemplace la
@@ -92,6 +103,45 @@ Write-Host "Destino: $InstallDir"
 # Si el equipo YA tiene identidad, no hace falta ninguna credencial:
 # el Agent se autentica con su token individual. Pedirla de nuevo
 # seria pedir un secreto para nada.
+
+# La credencial puede llegar en un archivo, que se lee y se borra
+# antes de seguir.
+if ($EnrollmentTokenFile -ne "" -and (Test-Path $EnrollmentTokenFile)) {
+
+    $archivo = Get-Item -LiteralPath $EnrollmentTokenFile -Force
+
+    # Este script corre con permisos de administrador y la ruta la
+    # da un proceso que no los tiene. Si en esa ruta hubiera un
+    # enlace o una union de directorios, se leeria lo que apunte el
+    # enlace en vez del archivo que se escribio, y con mas permisos
+    # de los que tenia quien lo puso ahi.
+    if ($archivo.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw "El archivo de la credencial es un enlace. No se continua."
+    }
+
+    if ($archivo.PSIsContainer) {
+        throw "La ruta de la credencial es una carpeta. No se continua."
+    }
+
+    # Una credencial son unas decenas de bytes. El limite evita leer
+    # un archivo enorme si la ruta apuntara a otra cosa.
+    if ($archivo.Length -gt 4096) {
+        throw "El archivo de la credencial es demasiado grande. No se continua."
+    }
+
+    $EnrollmentToken = (Get-Content -LiteralPath $EnrollmentTokenFile -Raw).Trim()
+
+    # Se sobrescribe antes de borrar para reducir la ventana en que
+    # el contenido sigue legible. NO garantiza un borrado fisico: en
+    # SSD y en sistemas de archivos con journaling los bytes
+    # originales pueden sobrevivir en bloques ya desasociados. La
+    # garantia real es que la credencial caduca y se puede revocar.
+    try {
+        Set-Content -Path $EnrollmentTokenFile -Value ("0" * 256) -Force
+    } catch {}
+
+    Remove-Item -Path $EnrollmentTokenFile -Force -ErrorAction SilentlyContinue
+}
 
 $yaEnrolado = Test-Path $IdentityFile
 
