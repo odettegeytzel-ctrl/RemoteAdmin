@@ -10684,6 +10684,22 @@ async function mostrarVersionDelInstalador() {
         const respuesta = await fetch("/api/agent-installer/info");
 
         if (!respuesta.ok) {
+
+            // 403 no es un fallo: es que esta cuenta no puede
+            // descargarlo. Decirlo asi evita que alguien reintente
+            // pensando que el servidor esta mal.
+            if (respuesta.status === 403) {
+
+                texto.textContent =
+                    "Solo el propietario de la organización puede "
+                    + "descargar el instalador.";
+
+                boton.disabled = true;
+                boton.classList.add("opacity-50", "cursor-not-allowed");
+
+                return;
+            }
+
             throw new Error("sin respuesta");
         }
 
