@@ -645,11 +645,26 @@ def test_el_panel_ofrece_la_descarga():
     comprobar("Con el titulo de la pantalla",
               "Conecta un nuevo equipo" in html)
 
-    comprobar("Y el boton de descarga",
-              "Descargar Agent para Windows" in html)
+    # Dos caminos desde la misma pantalla: el .exe para quien solo
+    # quiere instalar, y el .zip para quien instala a mano o
+    # automatiza. El segundo es el de siempre y no puede desaparecer.
+    comprobar("Esta el boton del instalador .exe",
+              'id="install-download-exe"' in html
+              and "Descargar instalador" in html)
+
+    comprobar("Y sigue el del paquete comprimido",
+              'id="install-download"' in html
+              and "Descargar paquete" in html)
 
     comprobar("Que llama al endpoint",
               '"/api/agent-package"' in js)
+
+    comprobar("Y el .exe al suyo",
+              '"/api/agent-installer"' in js)
+
+    comprobar("La version se enseña antes de descargar",
+              '"/api/agent-installer/info"' in js
+              and 'id="install-exe-version"' in html)
 
     comprobar("Se puede crear la credencial desde ahi",
               'id="install-create-token"' in html

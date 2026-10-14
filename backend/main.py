@@ -129,6 +129,7 @@ from backend import organizations
 from backend import enrollment
 from backend.users import (
     ensure_owner_migrated,
+    grant_remote_control_to_existing_subadmins,
     is_platform_owner,
     organization_of,
     same_organization,
@@ -347,12 +348,20 @@ def _suspension_bloquea(request, path):
 #   - El ARCHIVADO a peticion (/recordings/{id}/store) si entra: eso
 #     lo pide una persona desde el panel.
 
+# Cuanto sigue viendose el aviso de mantenimiento sin que nadie lo
+# renueve. Cinco minutos: lo bastante para que una reconexion normal
+# no lo haga parpadear, y lo bastante poco para que un olvido no deje
+# el aviso puesto en la pantalla de un cliente toda la tarde.
+MANTENIMIENTO_GRACIA_SEGUNDOS = 300
+
+
 CAPACIDAD_POR_RUTA = (
     # (sufijo de la ruta, metodos, capacidad)
     ("/recording/schedule", ("POST",), "scheduling"),
     ("/recording/continuous", ("POST",), "scheduling"),
 
     ("/screen", ("POST",), "remote.actions"),
+    ("/maintenance", ("POST",), "remote.actions"),
     ("/screen/stop", ("POST",), "remote.actions"),
     ("/keyboard", ("POST",), "remote.actions"),
     ("/mouse/move", ("POST",), "remote.actions"),
@@ -721,6 +730,9 @@ def startup():
     # puede deducir con seguridad; el resto se queda en NULL.
     backfill_organizations()
     backfill_alert_organizations()
+    # El control remoto pasa a exigir permiso de usuario. A quien ya
+    # daba soporte se le concede, para no quitarselo sin avisar.
+    grant_remote_control_to_existing_subadmins()
     # La configuracion que habia era de la unica empresa que existia:
     # se copia a su organizacion para que no cambie nada de lo que ya
     # estaba funcionando.
@@ -766,7 +778,20 @@ async def _retention_loop():
 
                 result[organizacion["name"]] = parcial
 
-            if result["deleted"] or result["skipped_traversal"]:
+            # result esta indexado por NOMBRE de empresa, y las claves
+            # "deleted" y "skipped_traversal" viven dentro de cada parcial.
+            # Antes se pedian al contenedor y saltaba KeyError: 'deleted'
+            # en cada pasada, de modo que la retencion borraba en silencio:
+            # se ejecutaba bien, pero su resumen nunca llegaba al registro.
+            borradas = sum(
+                len(parcial["deleted"]) for parcial in result.values()
+            )
+            fuera = sum(
+                len(parcial["skipped_traversal"])
+                for parcial in result.values()
+            )
+
+            if borradas or fuera:
                 print(f"[RETENCIÓN] {result}")
 
         except Exception as error:
@@ -2357,8 +2382,82 @@ def installed_software(device_id: str):
     )
 
 
+@app.post("/api/devices/{device_id}/maintenance")
+async def set_maintenance(device_id: str, data: dict, request: Request):
+    """
+    Enciende o apaga el aviso de mantenimiento del equipo.
+
+    El aviso se muestra HASTA UNA HORA, no indefinidamente. El panel
+    renueva ese plazo mientras el tecnico sigue trabajando; si se
+    desconecta, se le cae la red o cierra el navegador, nadie renueva
+    y el aviso se retira solo al cumplirse el plazo de gracia.
+
+    Es deliberado que el plazo lo lleve el EQUIPO y no el servidor:
+    asi el aviso se quita aunque el servidor desaparezca. Un aviso en
+    la pantalla de un cliente no puede depender de que alguien
+    siga vivo para venir a quitarlo.
+    """
+
+    _, error = require_permission(request, "remote.control")
+
+    if error:
+        return error
+
+    encendido = bool(data.get("enabled"))
+
+    # Plazo de gracia, acotado por el servidor. Lo pide el panel,
+    # pero no se acepta cualquier cosa: ni tan corto que una
+    # desconexion de un segundo lo retire, ni tan largo que un
+    # descuido lo deje puesto toda la noche.
+    segundos = data.get("grace_seconds", MANTENIMIENTO_GRACIA_SEGUNDOS)
+
+    try:
+        segundos = int(segundos)
+
+    except (TypeError, ValueError):
+        segundos = MANTENIMIENTO_GRACIA_SEGUNDOS
+
+    segundos = max(60, min(segundos, 8 * 3600))
+
+    log_audit(
+        "remote.maintenance",
+        request=request,
+        device_id=device_id,
+        status=STATUS_REQUESTED,
+        details={"encendido": encendido, "gracia_segundos": segundos}
+    )
+
+    websocket = connected_agents.get(device_id)
+
+    if not websocket:
+        return JSONResponse(
+            status_code=409,
+            content={"status": "error",
+                     "message": "El equipo no esta conectado"}
+        )
+
+    if encendido:
+        await websocket.send_text(
+            "maintenance_on:" + json.dumps({"seconds": segundos})
+        )
+
+    else:
+        await websocket.send_text("maintenance_off")
+
+    return {
+        "status": "ok",
+        "enabled": encendido,
+        "grace_seconds": segundos
+    }
+
+
 @app.post("/api/devices/{device_id}/screen")
 async def request_screen(device_id: str, request: Request):
+
+    _, error = require_permission(request, "remote.control")
+
+    if error:
+        return error
 
     # Queda constancia de que la acción se PIDIÓ. No se marca como
     # completada: el Agent recibe la orden por WebSocket y no confirma.
@@ -2392,7 +2491,12 @@ async def request_screen(device_id: str, request: Request):
 
 
 @app.get("/api/devices/{device_id}/screen")
-def get_screen(device_id: str):
+def get_screen(device_id: str, request: Request):
+
+    _, error = require_permission(request, "remote.control")
+
+    if error:
+        return error
 
     screen = latest_screens.get(
         device_id
@@ -2463,7 +2567,24 @@ async def screen_generator(device_id):
 
 
 @app.get("/api/devices/{device_id}/screen-stream")
-async def screen_stream(device_id: str):
+async def screen_stream(device_id: str, request: Request):
+    """
+    La transmision de la pantalla.
+
+    Exige el mismo permiso que iniciarla. Antes no exigia ninguno: el
+    middleware comprueba la sesion y la organizacion, pero dentro de
+    una empresa cualquier usuario podia ver la pantalla de cualquier
+    equipo con solo conocer su identificador.
+
+    Ver no es menos que actuar: en esta pantalla aparece el correo,
+    las contraseñas al teclearlas y todo lo que la persona tenga
+    abierto.
+    """
+
+    _, error = require_permission(request, "remote.control")
+
+    if error:
+        return error
 
     if device_id not in connected_agents:
 
@@ -2483,6 +2604,11 @@ async def screen_stream(device_id: str):
 
 @app.post("/api/devices/{device_id}/screen/stop")
 async def stop_screen(device_id: str, request: Request):
+
+    _, error = require_permission(request, "remote.control")
+
+    if error:
+        return error
 
     # Queda constancia de que la acción se PIDIÓ. No se marca como
     # completada: el Agent recibe la orden por WebSocket y no confirma.
@@ -2516,7 +2642,13 @@ async def stop_screen(device_id: str, request: Request):
 
 
 @app.post("/api/devices/{device_id}/mouse/move")
-async def mouse_move(device_id: str, data: dict):
+async def mouse_move(device_id: str, data: dict,
+                 request: Request):
+
+    _, error = require_permission(request, "remote.control")
+
+    if error:
+        return error
 
     websocket = connected_agents.get(
         device_id
@@ -2539,7 +2671,13 @@ async def mouse_move(device_id: str, data: dict):
 
 
 @app.post("/api/devices/{device_id}/mouse/click")
-async def mouse_click(device_id: str, data: dict):
+async def mouse_click(device_id: str, data: dict,
+                 request: Request):
+
+    _, error = require_permission(request, "remote.control")
+
+    if error:
+        return error
 
     websocket = connected_agents.get(
         device_id
@@ -2562,7 +2700,13 @@ async def mouse_click(device_id: str, data: dict):
 
 
 @app.post("/api/devices/{device_id}/mouse/down")
-async def mouse_down(device_id: str, data: dict):
+async def mouse_down(device_id: str, data: dict,
+                 request: Request):
+
+    _, error = require_permission(request, "remote.control")
+
+    if error:
+        return error
 
     websocket = connected_agents.get(
         device_id
@@ -2585,7 +2729,13 @@ async def mouse_down(device_id: str, data: dict):
 
 
 @app.post("/api/devices/{device_id}/mouse/up")
-async def mouse_up(device_id: str, data: dict):
+async def mouse_up(device_id: str, data: dict,
+                 request: Request):
+
+    _, error = require_permission(request, "remote.control")
+
+    if error:
+        return error
 
     websocket = connected_agents.get(
         device_id
@@ -3081,7 +3231,13 @@ async def download_file(device_id: str, path: str, request: Request):
 
 
 @app.post("/api/devices/{device_id}/keyboard")
-async def keyboard_input(device_id: str, data: dict):
+async def keyboard_input(device_id: str, data: dict,
+                 request: Request):
+
+    _, error = require_permission(request, "remote.control")
+
+    if error:
+        return error
 
     websocket = connected_agents.get(
         device_id
@@ -4887,6 +5043,85 @@ def agent_package(request: Request, organization_id: int = None):
             "Content-Disposition":
                 f'attachment; filename="{packaging.PACKAGE_FILENAME}"'
         }
+    )
+
+
+@app.get("/api/agent-installer/info")
+def agent_installer_info(request: Request, organization_id: int = None):
+    """
+    Que version instalaria el .exe, y cuanto pesa.
+
+    Se consulta ANTES de descargar: bajar 76 MB sin saber que version
+    traen es justo lo que lleva a instalar la equivocada.
+
+    La version sale del MANIFIESTO FIRMADO, no del nombre del
+    archivo: es el unico dato que no se puede cambiar sin la clave
+    privada.
+    """
+
+    _, error = _organizacion_de_credenciales(request, organization_id)
+
+    if error:
+        return error
+
+    try:
+        datos = agent_releases.installer_info()
+
+    except agent_releases.InstallerNotPublished:
+        return {"status": "ok", "available": False, "installer": None}
+
+    except agent_releases.ReleaseNotPublished:
+        # Hay .exe pero no hay version firmada: no se ofrece.
+        return {"status": "ok", "available": False, "installer": None}
+
+    return {"status": "ok", "available": True, "installer": datos}
+
+
+@app.get("/api/agent-installer")
+def agent_installer_download(request: Request, organization_id: int = None):
+    """
+    El instalador de Windows, para descargarlo desde el panel.
+
+    Misma autenticacion y misma autorizacion que el paquete ZIP: se
+    reutiliza _organizacion_de_credenciales y no se crea ninguna ruta
+    publica. Un .exe que cualquiera pueda bajar es un .exe que
+    cualquiera puede estudiar para atacar a los equipos.
+
+    El archivo NO lleva credenciales: la de alta se teclea al
+    instalar. Lo que lleva es el Agent, el instalador y el interprete.
+    """
+
+    organizacion, error = _organizacion_de_credenciales(
+        request, organization_id
+    )
+
+    if error:
+        return error
+
+    try:
+        datos = agent_releases.installer_info()
+
+    except (agent_releases.InstallerNotPublished,
+            agent_releases.ReleaseNotPublished) as problema:
+
+        return JSONResponse(
+            status_code=503,
+            content={"status": "error", "message": str(problema)}
+        )
+
+    log_audit(
+        "agent_installer.download", request=request,
+        status=STATUS_SUCCESS,
+        organization_id=organizacion,
+        details={"version": datos["version"], "bytes": datos["size"]}
+    )
+
+    # FileResponse transmite por bloques: 76 MB no caben comodos en
+    # memoria, y menos con varias descargas a la vez.
+    return FileResponse(
+        agent_releases.installer_path(),
+        media_type="application/vnd.microsoft.portable-executable",
+        filename=agent_releases.INSTALLER_NAME
     )
 
 

@@ -29,6 +29,11 @@ INTERACTIVE_EXACT = frozenset({
     # Grabacion: el grabador captura la pantalla
     "start_recording",
     "stop_recording",
+
+    # El aviso de mantenimiento es una ventana en el escritorio del
+    # usuario. El servicio corre en la Sesion 0, donde no hay
+    # escritorio: alli no se veria nada.
+    "maintenance_off",
 })
 
 
@@ -44,6 +49,9 @@ INTERACTIVE_PREFIXES = (
     "mouse_down:",
     "mouse_up:",
     "keyboard:",
+
+    # maintenance_on:{"seconds": 600}
+    "maintenance_on:",
 )
 
 

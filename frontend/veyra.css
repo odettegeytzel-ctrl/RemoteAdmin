@@ -548,14 +548,16 @@ El punto de color no se encoge y se alinea con la PRIMERA linea, no
 con el centro del bloque: centrado quedaria flotando a media altura
 cuando el texto ocupa dos renglones.
 */
-.vy-metrica-pie .vy-punto {
+.vy-metrica-pie .vy-punto,
+.summary-card .vy-punto {
     white-space: normal;
     align-items: flex-start;
     text-align: left;
     min-width: 0;
 }
 
-.vy-metrica-pie .vy-punto::before {
+.vy-metrica-pie .vy-punto::before,
+.summary-card .vy-punto::before {
     margin-top: 5px;
 }
 
@@ -1366,6 +1368,47 @@ Lo que no es real son las cifras, y el pie lo dice.
 }
 
 
+/*
+En un telefono la cabecera publica no cabe en una fila: el logotipo
+mide 168px y a su lado van el conmutador de tema y dos botones. Sumado
+al relleno pasaba de los 390px de un movil corriente, y como la fila no
+podia partirse, lo que sobraba empujaba la pagina ENTERA a la derecha
+—de ahi la barra de desplazamiento horizontal y el boton cortado.
+
+No se oculta ninguno de los dos botones: se deja que la fila se parta.
+El logotipo arriba, los controles debajo ocupando el ancho. Asi todo
+sigue estando a mano y a un alcance comodo para el pulgar.
+*/
+@media (max-width: 560px) {
+
+    .vy-publico-nav {
+        flex-wrap: wrap;
+        padding: 10px 14px;
+        gap: 8px;
+    }
+
+    /* El tamaño va en el atributo style de cada <img>, que gana a
+       cualquier hoja: hace falta !important para rebajarlo. */
+    .vy-publico-nav .vy-logo {
+        width: 132px !important;
+    }
+
+    /* Al partirse la fila, este grupo pasa a ocupar el renglon
+       entero. Sin esto el margin-left:auto lo dejaria pegado a la
+       derecha, con un hueco raro a la izquierda. */
+    .vy-publico-nav > div:last-child {
+        margin-left: 0 !important;
+        width: 100%;
+        justify-content: flex-start;
+    }
+
+    .vy-publico-nav .vy-btn {
+        padding: 9px 13px;
+        font-size: 13px;
+    }
+}
+
+
 /* ==============================
 ESTADOS VACIOS
 
@@ -1554,5 +1597,407 @@ lo que sigue identificando a VEYRA a 40 pixeles.
 
     .vy-sidebar .vy-logo-icono {
         display: none;
+    }
+}
+
+
+/* ==============================
+TELEFONOS
+
+Lo de arriba resuelve la barra lateral y la cabecera. Esto es lo que
+queda cuando el ancho baja de los 480px, que es donde entran 320, 375,
+390 y 430: las cinco tarjetas de resumen en dos columnas, el relleno de
+24px del contenido y el de 18px de cada tarjeta.
+
+No se oculta ningun control. Lo unico que cambia es como se reparte el
+espacio; en escritorio no se toca una sola regla.
+============================== */
+
+@media (max-width: 480px) {
+
+    /*
+    main lleva p-6 de Tailwind: 24px por lado, 48px de los 320 de un
+    telefono pequeno. Se gana ancho util sin que el contenido quede
+    pegado al borde. Un selector de elemento + clase gana a la clase
+    sola, asi que no hace falta !important.
+    */
+    main.p-6 {
+        padding: 14px;
+    }
+
+    /*
+    Cinco tarjetas en dos columnas dejaban 128px por tarjeta a 320px:
+    menos de lo que ocupan el numero grande y su icono juntos. En
+    columna unica cada una tiene el ancho entero y su pie cabe.
+    */
+    #stats-section {
+        grid-template-columns: 1fr;
+        gap: 12px;
+    }
+
+    /* El relleno va en el atributo style de cada tarjeta */
+    .summary-card {
+        padding: 15px !important;
+    }
+
+    /*
+    Ningun contenedor con desplazamiento propio puede ser mas ancho
+    que su sitio: si lo fuera, el desplazamiento se lo comeria la
+    pagina entera en vez de la tabla, que es justo lo que se quiere
+    evitar.
+    */
+    .overflow-x-auto {
+        max-width: 100%;
+    }
+
+    /* La tarjeta de acceso: 32px de relleno sobre 272px utiles */
+    #login-screen > div {
+        padding: 22px !important;
+    }
+
+    #login-screen {
+        padding: 14px;
+    }
+
+    /*
+    Medido en Chrome a 320px: este grupo llegaba hasta el pixel 324,
+    cuatro fuera de la pantalla, en las SEIS vistas. Lleva
+    flex-shrink:0, asi que no cedia ni un pixel aunque el titulo de
+    al lado tuviera sitio de sobra.
+
+    Se le deja encoger y partirse. No se quita ningun control.
+    */
+    /* Y la cabecera entera puede partirse: el titulo arriba, las
+       acciones debajo. Con una sola fila no hay reparto posible. */
+    .vy-header {
+        flex-wrap: wrap;
+    }
+
+    .vy-header-acciones {
+        flex-shrink: 1;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        gap: 8px;
+        min-width: 0;
+    }
+}
+
+
+/*
+Objetivos tactiles.
+
+Un dedo no acierta en un boton de 24px. La recomendacion habitual son
+44px; aqui se piden 40 de alto, que es lo que cabe sin deformar la
+interfaz de escritorio, y solo en dispositivos de puntero grueso: en
+un raton los botones se quedan como estan.
+*/
+@media (pointer: coarse) {
+
+    .vy-btn,
+    .vy-btn-icono,
+    .vy-nav-item {
+        min-height: 40px;
+    }
+}
+
+
+/*
+Area segura.
+
+En un telefono con muesca o barra inferior, la barra lateral fija y la
+cabecera pegajosa quedan por debajo del recorte.
+
+Va DENTRO de la consulta de movil a proposito: el primer intento lo
+dejo suelto y con eso el relleno de la cabecera y del contenido
+cambiaba tambien en escritorio, que es justo lo que no debe pasar.
+env() vale 0 donde no hay recorte, pero max(14px, 0) seguia siendo
+14px y ahi la cabecera tiene 24.
+*/
+@media (max-width: 767px) {
+
+    @supports (padding: env(safe-area-inset-left)) {
+
+        .vy-sidebar {
+            padding-left: env(safe-area-inset-left);
+        }
+
+        .vy-header,
+        .vy-publico-nav {
+            padding-left: max(14px, env(safe-area-inset-left));
+            padding-right: max(14px, env(safe-area-inset-right));
+        }
+    }
+}
+
+@media (max-width: 480px) {
+
+    @supports (padding: env(safe-area-inset-bottom)) {
+
+        main.p-6 {
+            padding-bottom: max(14px, env(safe-area-inset-bottom));
+        }
+    }
+}
+
+
+/*
+La fila de filtros de Equipos a 768px.
+
+Medido en Chrome: el grupo de selectores llegaba al pixel 792, con la
+pantalla en 768. A partir de 640px Tailwind lo pone en fila (sm:), y
+tres controles con sus etiquetas no caben en una tableta en vertical.
+
+Se le deja partirse. En pantallas mas anchas sigue en una sola fila,
+que es donde cabe.
+*/
+@media (min-width: 640px) and (max-width: 860px) {
+
+    .flex.flex-col.sm\:flex-row {
+        flex-wrap: wrap;
+    }
+
+    .flex.flex-col.sm\:flex-row > * {
+        min-width: 0;
+    }
+}
+
+
+/* ==============================
+TECLAS ESPECIALES DEL REMOTO
+
+Van sobre la barra oscura de la ventana de control, no sobre el fondo
+del panel: por eso no usan las variables del tema.
+============================== */
+
+.vy-tecla-remota {
+    display: inline-flex;
+    align-items: center;
+    padding: 5px 11px;
+
+    font-size: 12px;
+    font-weight: 500;
+    font-family: inherit;
+    color: #E2E8F0;
+
+    background: #334155;
+    border: 1px solid #475569;
+    border-radius: 7px;
+
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.vy-tecla-remota:hover {
+    background: #475569;
+    color: #FFFFFF;
+}
+
+.vy-tecla-remota:active {
+    background: #1E293B;
+}
+
+.vy-tecla-remota:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+/* Un dedo no acierta en un boton de 24px */
+@media (pointer: coarse) {
+
+    .vy-tecla-remota {
+        min-height: 40px;
+        padding: 5px 14px;
+    }
+}
+
+
+/* ==============================
+VENTANA DE CONTROL REMOTO
+
+No es una ventana flotante: vive en el flujo de la pagina, como
+estaba. Lo que se añade es poder plegarla y cambiarle el tamaño.
+============================== */
+
+/*
+Plegada.
+
+max-height en vez de display:none a proposito: la imagen tiene que
+seguir EXISTIENDO y renderizandose, porque es un <img> con una
+transmision MJPEG abierta. Con display:none el navegador puede dejar
+de decodificarla, y al restaurar habria que reconectar; asi la sesion
+no se entera de que la han plegado.
+*/
+.vy-remoto-cuerpo {
+    max-height: 4000px;
+    overflow: hidden;
+    transition: max-height 0.18s ease;
+}
+
+.vy-remoto-cuerpo.is-plegada {
+    max-height: 0;
+}
+
+/*
+El marco redimensionable.
+
+resize de CSS da el agarre de la esquina inferior derecha, que es el
+unico que ofrecen los navegadores. Para arrastrar los cuatro bordes
+haria falta codigo propio de arrastre, y no compensa: la esquina
+cubre el caso real de agrandar y reducir.
+*/
+.vy-remoto-marco {
+    /*
+    Sin 'resize: both': los navegadores solo dan el agarre de la
+    esquina inferior derecha, y aqui hacen falta los ocho. Los pone
+    el propio codigo, en la franja de relleno.
+    */
+    position: relative;
+    overflow: hidden;
+
+    /*
+    La franja por la que se agarra. La imagen ocupa el hueco de
+    dentro, asi que los tiradores NUNCA caen encima de ella: el raton
+    del control remoto no los pisa ni ellos a el.
+    */
+    padding: 12px;
+    box-sizing: border-box;
+
+    width: 100%;
+    height: 60vh;
+
+    min-width: 280px;
+    min-height: 180px;
+
+    max-width: 100%;
+
+    background: #000000;
+}
+
+/*
+La imagen dentro del marco.
+
+object-fit: contain conserva la proporcion y añade bandas negras
+donde sobra sitio, en vez de estirar la pantalla del cliente. El
+mapeo del raton ya contaba con esto: getRenderedImageRect() calcula
+la escala y el centrado por su cuenta, asi que las coordenadas
+siguen cayendo donde deben a cualquier tamaño.
+*/
+.vy-remoto-imagen {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+}
+
+/* En un telefono el alto fijo deja la imagen diminuta */
+@media (max-width: 767px) {
+
+    .vy-remoto-marco {
+        height: 42vh;
+        min-width: 0;
+    }
+}
+
+
+/* ==============================
+TIRADORES DE LA VENTANA REMOTA
+
+Ocho: cuatro bordes y cuatro esquinas. Viven en la franja de relleno
+del marco, fuera de la imagen, para no robarle ni un pixel al raton
+del control remoto.
+============================== */
+
+.vy-remoto-tirador {
+    position: absolute;
+    z-index: 20;
+
+    /* Invisibles hasta que se pasa por encima: la ventana no debe
+       parecer un formulario lleno de cuadraditos. */
+    background: transparent;
+}
+
+.vy-remoto-marco:hover > .vy-remoto-tirador {
+    background: rgba(59, 130, 246, 0.18);
+}
+
+.vy-remoto-tirador:hover,
+.vy-remoto-tirador.is-arrastrando {
+    background: rgba(59, 130, 246, 0.55) !important;
+}
+
+/* Bordes */
+.vy-remoto-tirador[data-lado="n"],
+.vy-remoto-tirador[data-lado="s"] {
+    left: 12px;
+    right: 12px;
+    height: 12px;
+    cursor: ns-resize;
+}
+
+.vy-remoto-tirador[data-lado="n"] { top: 0; }
+.vy-remoto-tirador[data-lado="s"] { bottom: 0; }
+
+.vy-remoto-tirador[data-lado="o"],
+.vy-remoto-tirador[data-lado="e"] {
+    top: 12px;
+    bottom: 12px;
+    width: 12px;
+    cursor: ew-resize;
+}
+
+.vy-remoto-tirador[data-lado="o"] { left: 0; }
+.vy-remoto-tirador[data-lado="e"] { right: 0; }
+
+/* Esquinas: van encima de los bordes */
+.vy-remoto-tirador[data-lado="no"],
+.vy-remoto-tirador[data-lado="ne"],
+.vy-remoto-tirador[data-lado="so"],
+.vy-remoto-tirador[data-lado="se"] {
+    /*
+    Del MISMO tamaño que la franja de relleno, no mas.
+    
+    Con 14px sobre una franja de 9 las cuatro esquinas se metian 5px
+    dentro de la imagen, y ahi un clic iba al redimensionado en vez
+    de al equipo administrado. Lo detecto la prueba comparando los
+    rectangulos; a ojo no se habria visto.
+    */
+    width: 12px;
+    height: 12px;
+    z-index: 21;
+}
+
+.vy-remoto-tirador[data-lado="no"] {
+    top: 0; left: 0; cursor: nwse-resize;
+}
+
+.vy-remoto-tirador[data-lado="ne"] {
+    top: 0; right: 0; cursor: nesw-resize;
+}
+
+.vy-remoto-tirador[data-lado="so"] {
+    bottom: 0; left: 0; cursor: nesw-resize;
+}
+
+.vy-remoto-tirador[data-lado="se"] {
+    bottom: 0; right: 0; cursor: nwse-resize;
+}
+
+/* Mientras se arrastra, que no se seleccione texto por ahi */
+body.vy-redimensionando {
+    user-select: none;
+    cursor: inherit;
+}
+
+/*
+En pantalla tactil los tiradores estorban mas de lo que ayudan: no
+hay puntero que los encuentre y ocupan sitio. Se esconden.
+*/
+@media (pointer: coarse) {
+
+    .vy-remoto-tirador {
+        display: none;
+    }
+
+    .vy-remoto-marco {
+        padding: 0;
     }
 }

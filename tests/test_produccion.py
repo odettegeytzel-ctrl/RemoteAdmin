@@ -354,8 +354,22 @@ def test_actualizar_no_borra_la_identidad():
         and not linea.strip().startswith("#")
     ]
 
+    # Lo que SI puede borrarse, y por que:
+    #
+    #   $EnrollmentTokenFile  el temporal de la credencial, que no
+    #                         debe quedar recuperable en disco
+    #   $RuntimeDestino       el interprete de una instalacion
+    #                         anterior, antes de copiar el nuevo. Es
+    #                         la carpeta runtime: carpeta propia,
+    #                         hermana de config, recordings, logs y
+    #                         .env, y no toca ninguna
+    #
+    # Lista explicita a proposito: cualquier otro borrado tiene que
+    # pasar por aqui y justificarse.
+    PERMITIDOS = ("$EnrollmentTokenFile", "$RuntimeDestino")
+
     indebidos = [b for b in borrados
-                 if "$EnrollmentTokenFile" not in b]
+                 if not any(x in b for x in PERMITIDOS)]
 
     comprobar("Solo borra el temporal de la credencial",
               not indebidos, str(indebidos))

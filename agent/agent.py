@@ -2005,53 +2005,121 @@ def get_mouse_position():
     }
 
 
+# Un contexto de captura por hilo, reutilizado.
+#
+# Antes se creaba uno nuevo en cada fotograma: medido, eso costaba
+# unos 58 de los 117 ms que tardaba capture_screen(). Abrir el
+# contexto reserva recursos graficos de Windows y cerrarlos los
+# devuelve; hacerlo 12 veces por segundo es puro desperdicio.
+#
+# Va en un threading.local porque un contexto de mss NO se puede
+# compartir entre hilos: cada hilo del ejecutor se hace el suyo la
+# primera vez y lo conserva.
+_captura_local = threading.local()
+
+
+ANCHO_MAXIMO = 1280
+ALTO_MAXIMO = 720
+
+
+def _contexto_de_captura():
+
+    contexto = getattr(_captura_local, "mss", None)
+
+    if contexto is None:
+        contexto = mss.mss()
+        _captura_local.mss = contexto
+
+    return contexto
+
+
 def capture_screen():
+    """
+    Un fotograma de la pantalla, en JPEG y base64.
 
-    with mss.mss() as screen:
+    SINCRONA y lenta: ~60 ms. No debe llamarse desde el bucle de
+    eventos, porque mientras tanto el Agent no atiende nada mas.
+    screen_stream la lanza en un hilo por eso.
+    """
 
-        monitor = screen.monitors[1]
+    screen = _contexto_de_captura()
 
-        screenshot = screen.grab(
-            monitor
+
+    monitor = screen.monitors[1]
+
+    screenshot = screen.grab(
+        monitor
+    )
+
+    image = Image.frombytes(
+        "RGB",
+        screenshot.size,
+        screenshot.rgb
+    )
+
+    # BILINEAR en vez de thumbnail(): medido, 18 ms frente a 30.
+    # El filtro fino de thumbnail no se nota porque justo despues
+    # se comprime a JPEG de calidad 50.
+    if image.width > ANCHO_MAXIMO or image.height > ALTO_MAXIMO:
+
+        escala = min(ANCHO_MAXIMO / image.width,
+                     ALTO_MAXIMO / image.height)
+
+        image = image.resize(
+            (max(1, int(image.width * escala)),
+             max(1, int(image.height * escala))),
+            Image.Resampling.BILINEAR
         )
 
-        image = Image.frombytes(
-            "RGB",
-            screenshot.size,
-            screenshot.rgb
-        )
+    screen_geometry.update({
+        "left": monitor["left"],
+        "top": monitor["top"],
+        "real_width": screenshot.size[0],
+        "real_height": screenshot.size[1],
+        "width": image.width,
+        "height": image.height
+    })
 
-        image.thumbnail(
-            (1280, 720)
-        )
+    buffer = io.BytesIO()
 
-        screen_geometry.update({
-            "left": monitor["left"],
-            "top": monitor["top"],
-            "real_width": screenshot.size[0],
-            "real_height": screenshot.size[1],
-            "width": image.width,
-            "height": image.height
-        })
+    image.save(
+        buffer,
+        format="JPEG",
+        quality=50
+    )
 
-        buffer = io.BytesIO()
+    return base64.b64encode(
+        buffer.getvalue()
+    ).decode("utf-8")
 
-        image.save(
-            buffer,
-            format="JPEG",
-            quality=50
-        )
 
-        return base64.b64encode(
-            buffer.getvalue()
-        ).decode("utf-8")
+# Periodo objetivo entre fotogramas. 12 por segundo es suficiente
+# para seguir un raton y deja sitio al resto del trabajo del Agent.
+PERIODO_FOTOGRAMA = 1 / 12
 
 
 async def screen_stream(websocket):
+    """
+    Transmite la pantalla sin bloquear el resto del Agent.
+
+    Las dos cosas que cambian respecto a antes:
+
+      - la captura corre en un HILO. Antes se hacia aqui mismo, y
+        durante esos ~117 ms el bucle de eventos no podia leer los
+        'mouse_move:' que llegaban por el mismo WebSocket. El raton
+        iba a tirones por eso, no por la red.
+
+      - la espera DESCUENTA lo que tardo el fotograma. Antes se
+        dormia 0.08 s despues de capturar, asi que el periodo real
+        era captura + 0.08: unos 5 fps en vez de los 12 que se
+        pretendian.
+    """
 
     while True:
 
-        screen_data = capture_screen()
+        inicio = time.monotonic()
+
+        screen_data = await asyncio.to_thread(capture_screen)
 
         mouse_position = get_mouse_position()
 
@@ -2066,9 +2134,17 @@ async def screen_stream(websocket):
             f"screen_info:{json.dumps(message)}"
         )
 
-        await asyncio.sleep(
-            0.08
-        )
+        # Si el fotograma ya tardo mas que el periodo, se sigue sin
+        # dormir: aqui no se gana nada esperando, y acumular retraso
+        # es justo lo que hace que el remoto se sienta pegajoso.
+        resto = PERIODO_FOTOGRAMA - (time.monotonic() - inicio)
+
+        if resto > 0:
+            await asyncio.sleep(resto)
+        else:
+            # Cede el control igualmente: sin esto, un equipo lento
+            # dejaria el bucle sin respirar entre fotogramas.
+            await asyncio.sleep(0)
 
 
 # ==============================
@@ -2741,6 +2817,14 @@ async def websocket_connection():
                                 pass
 
                             screen_stream_task = None
+
+                    elif (message.startswith("maintenance_on:")
+                          or message == "maintenance_off"):
+
+                        # Va al ayudante, que es quien tiene
+                        # escritorio. El servicio corre en la Sesion
+                        # 0 y alli una ventana no la ve nadie.
+                        reenviar_al_ayudante(message)
 
                     elif message.startswith(
                         "mouse_move:"

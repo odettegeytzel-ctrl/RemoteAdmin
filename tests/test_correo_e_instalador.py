@@ -495,11 +495,30 @@ def test_se_conserva_la_identidad_de_un_equipo_ya_dado_de_alta():
     comprobar("El script conserva identity.json",
               "$yaEnrolado = Test-Path $IdentityFile" in GUION)
 
+    # Lo que SI puede borrar el instalador, y por que:
+    #
+    #   $EnrollmentTokenFile  el temporal de la credencial, que no
+    #                         debe quedar recuperable en disco
+    #   $RuntimeDestino       el interprete de una instalacion
+    #                         anterior, antes de copiar el nuevo. Es
+    #                         una carpeta propia, hermana de config,
+    #                         recordings, logs y .env: no toca
+    #                         ninguna
+    #
+    # La lista es explicita a proposito: cualquier otro borrado en el
+    # instalador tiene que pasar por aqui y justificarse.
+    borrados = [
+        linea.strip() for linea in GUION.split(chr(10))
+        if "Remove-Item" in linea and not linea.strip().startswith("#")
+    ]
+
+    PERMITIDOS = ("$EnrollmentTokenFile", "$RuntimeDestino")
+
+    indebidos = [b for b in borrados
+                 if not any(x in b for x in PERMITIDOS)]
+
     comprobar("Y no borra la carpeta de datos",
-              "Remove-Item" not in GUION.replace(
-                  "Remove-Item -Path $EnrollmentTokenFile -Force "
-                  "-ErrorAction SilentlyContinue", ""
-              ))
+              not indebidos, str(indebidos))
 
 
 def test_la_interfaz_usa_el_script_probado():
@@ -883,9 +902,25 @@ def test_el_constructor_del_exe_es_correcto():
     comprobar("E informa del SHA-256 de lo construido",
               "Get-FileHash" in CONSTRUCTOR)
 
-    comprobar("No empaqueta el Agent dentro del .exe",
-              "lleva el Agent" in CONSTRUCTOR
-              and "--add-data" not in CONSTRUCTOR)
+    # Esta comprobacion decia lo contrario hasta que el instalador
+    # paso a ser UN SOLO ARCHIVO. Antes el .exe se ponia junto al
+    # paquete descomprimido; ahora lo lleva dentro, que es lo que
+    # permite descargarlo del panel y ejecutarlo sin nada mas.
+    comprobar("Empaqueta el Agent dentro del .exe",
+              '--add-data "$Agente;agent"' in CONSTRUCTOR)
+
+    comprobar("Y el interprete, para no exigir Python en el equipo",
+              '--add-data "$Runtime;runtime"' in CONSTRUCTOR)
+
+    comprobar("Se niega a construir sin el interprete",
+              "Falta el Python embebido" in CONSTRUCTOR)
+
+    # Lo que NO puede empaquetar
+    comprobar("No mete el .env en el ejecutable",
+              ".env;" not in CONSTRUCTOR)
+
+    comprobar("Ni ninguna clave",
+              ".pem" not in CONSTRUCTOR and ".key" not in CONSTRUCTOR)
 
     dev = io.open(RAIZ / "requirements-dev.txt", encoding="utf-8").read()
 

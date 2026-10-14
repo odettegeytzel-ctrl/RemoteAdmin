@@ -42,6 +42,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import commands
 import ipc
+import maintenance
 
 
 # Espera entre intentos de conexion. Creciente hasta un tope, por lo
@@ -204,6 +205,13 @@ class Ayudante:
             agente.mouse_up(
                 datos["x"], datos["y"], datos.get("button", "left")
             )
+
+        elif orden.startswith("maintenance_on:"):
+            datos = json.loads(orden.split(":", 1)[1])
+            maintenance.activar(datos.get("seconds"))
+
+        elif orden == "maintenance_off":
+            maintenance.desactivar()
 
         elif orden.startswith("keyboard:"):
             datos = json.loads(orden.split(":", 1)[1])
