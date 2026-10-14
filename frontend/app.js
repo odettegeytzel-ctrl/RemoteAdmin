@@ -1859,8 +1859,13 @@ if (tipos) {
 
     const porTipo = {};
 
+    // El tipo se normaliza ANTES de contar. Sin esto, una alerta
+    // sin 'type' creaba la clave undefined, y al recorrer el objeto
+    // ese nombre volvia convertido en la cadena "undefined", que es
+    // lo que se leia en el panel.
     alerts.forEach(a => {
-        porTipo[a.type] = (porTipo[a.type] || 0) + 1;
+        const tipo = a.type || "desconocido";
+        porTipo[tipo] = (porTipo[tipo] || 0) + 1;
     });
 
     const entradas = Object.entries(porTipo);
@@ -1875,7 +1880,7 @@ if (tipos) {
                 return `
                     <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-50 border border-slate-200 text-xs">
                         <span class="w-2 h-2 rounded-full ${apariencia.dot}"></span>
-                        ${apariencia.icon}
+                        ${icono(apariencia.icono || "info")}
                         <span class="text-slate-600">${apariencia.label || tipo}</span>
                         <strong class="text-slate-900">${n}</strong>
                     </span>
@@ -1905,10 +1910,10 @@ recientes.innerHTML =
 
                 <span class="w-2 h-2 rounded-full ${apariencia.dot} shrink-0"></span>
 
-                ${apariencia.icon ? `<span class="text-sm shrink-0">${apariencia.icon}</span>` : ""}
+                <span class="text-sm shrink-0">${icono(apariencia.icono || "info")}</span>
 
                 <div class="flex-1 min-w-0">
-                    <p class="text-sm text-slate-900 truncate">${alert.message}</p>
+                    <p class="text-sm text-slate-900 truncate">${alert.message || "Alerta sin descripción"}</p>
                     <p class="text-xs text-slate-500 mt-0.5">${formatDate(alert.created_at)}</p>
                 </div>
 
@@ -2932,22 +2937,25 @@ try {
 
             // En la ficha se omite la etiqueta de categoría: el espacio es
             // estrecho y el icono ya distingue el tipo.
-            const icono =
-                apariencia.icon
-                    ? `<span class="text-sm shrink-0" title="${apariencia.label}">${apariencia.icon}</span>`
-                    : "";
+            // Se llama 'simbolo' y no 'icono' porque icono() es el
+            // ayudante global que lo dibuja: un local con ese nombre
+            // lo tapaba y no se podia invocar aqui.
+            const simbolo =
+                `<span class="text-sm shrink-0"`
+                + ` title="${apariencia.label || alert.type}">`
+                + `${icono(apariencia.icono || "info")}</span>`;
 
             return `
                 <div class="px-5 py-3 flex items-center gap-3 ${unread}">
 
                     <span class="w-2 h-2 rounded-full ${apariencia.dot} shrink-0"></span>
 
-                    ${icono}
+                    ${simbolo}
 
                     <div class="flex-1 min-w-0">
 
                         <p class="text-sm text-slate-900 truncate">
-                            ${alert.message}
+                            ${alert.message || "Alerta sin descripción"}
                         </p>
 
                         <p class="text-xs text-slate-500 mt-1">
@@ -6080,6 +6088,14 @@ try {
 
     image.focus();
 
+    // Cada sesion empieza desplegada, aunque la anterior se cerrara
+    // minimizada: abrir el remoto y no ver nada seria desconcertante.
+    plegarRemoto(false);
+
+    colocarTiradoresRemotos();
+
+    recordarTamanoRemoto();
+
     startCursorPolling();
 
 } catch (error) {
@@ -6092,33 +6108,548 @@ try {
 
 }
 
+/* ==============================
+TECLAS ESPECIALES DEL REMOTO
+============================== */
+
+// Windows, Alt+Tab y Ctrl+Esc las atiende el shell de Windows por
+// debajo del navegador: preventDefault() no llega ahi y se ejecutan
+// en la maquina de QUIEN MIRA. Ninguna pagina web puede evitarlo, y
+// no es un fallo del codigo: ya estaban mapeadas y ya se enviaban.
+//
+// Por boton si llegan al equipo remoto, porque no pasan por el
+// teclado local: es una peticion normal al Agent, que ya sabe
+// reproducir combinaciones con la accion "hotkey".
+//
+// Ctrl+Alt+Del no esta, y no es un olvido: es la secuencia de
+// atencion segura de Windows y ninguna aplicacion puede capturarla
+// ni reproducirla sin cambiar la politica de seguridad del equipo.
+async function enviarTeclasRemotas(teclas, boton) {
+
+    if (!selectedDevice) {
+        return;
+    }
+
+    const estado =
+        document.getElementById("remote-keys-estado");
+
+    if (boton) {
+        boton.disabled = true;
+    }
+
+    try {
+
+        await postKeyboard({
+            action: "hotkey",
+            keys: teclas
+        });
+
+        if (estado) {
+            estado.textContent = "Enviado: " + teclas.join("+");
+        }
+
+    } catch (error) {
+
+        if (estado) {
+            estado.textContent = "No se pudo enviar";
+        }
+
+    } finally {
+
+        if (boton) {
+            boton.disabled = false;
+        }
+    }
+}
+
+
+function enlazarTeclasRemotas() {
+
+    const barra =
+        document.getElementById("remote-keys");
+
+    if (!barra) {
+        return;
+    }
+
+    // Un solo oyente en la barra, no uno por boton: asi no hay que
+    // soltarlos al cerrar la sesion ni se acumulan al reabrirla.
+    barra.addEventListener("click", (evento) => {
+
+        const boton =
+            evento.target.closest(".vy-tecla-remota");
+
+        if (!boton) {
+            return;
+        }
+
+        const teclas =
+            (boton.dataset.teclas || "")
+                .split(",")
+                .map(t => t.trim())
+                .filter(Boolean);
+
+        if (teclas.length) {
+            enviarTeclasRemotas(teclas, boton);
+        }
+    });
+}
+
+
+/* ==============================
+AVISO DE MANTENIMIENTO
+============================== */
+
+// El aviso se muestra HASTA UNA HORA, no indefinidamente: el equipo
+// lleva su propio plazo y lo retira solo al cumplirse. Mientras el
+// tecnico sigue trabajando, esto lo renueva.
+//
+// Asi una desconexion breve no hace parpadear el aviso, y una caida
+// del navegador, del servidor o de la red no lo deja puesto en la
+// pantalla de un cliente para siempre.
+const MANTENIMIENTO_RENUEVA_MS = 90 * 1000;
+
+let mantenimientoActivo = false;
+let mantenimientoTemporizador = null;
+
+
+async function pedirMantenimiento(encendido) {
+
+    if (!selectedDevice) {
+        return false;
+    }
+
+    const respuesta =
+        await fetch(
+            `/api/devices/${selectedDevice.device_id}/maintenance`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ enabled: encendido })
+            }
+        );
+
+    return respuesta.ok;
+}
+
+
+function pintarMantenimiento() {
+
+    const boton =
+        document.getElementById("remote-mantenimiento");
+
+    if (!boton) {
+        return;
+    }
+
+    boton.textContent =
+        mantenimientoActivo
+            ? "Quitar aviso"
+            : "Avisar mantenimiento";
+
+    boton.setAttribute(
+        "aria-pressed",
+        mantenimientoActivo ? "true" : "false"
+    );
+
+    boton.style.background = mantenimientoActivo ? "#B45309" : "";
+    boton.style.borderColor = mantenimientoActivo ? "#D97706" : "";
+}
+
+
+async function alternarMantenimiento() {
+
+    const boton =
+        document.getElementById("remote-mantenimiento");
+
+    const estado =
+        document.getElementById("remote-keys-estado");
+
+    if (boton) {
+        boton.disabled = true;
+    }
+
+    const queremos = !mantenimientoActivo;
+
+    try {
+
+        const bien = await pedirMantenimiento(queremos);
+
+        if (!bien) {
+
+            if (estado) {
+                estado.textContent =
+                    "No se pudo cambiar el aviso";
+            }
+
+            return;
+        }
+
+        mantenimientoActivo = queremos;
+
+        if (estado) {
+            estado.textContent =
+                queremos
+                    ? "Aviso mostrado en el equipo"
+                    : "Aviso retirado";
+        }
+
+        pintarMantenimiento();
+
+        detenerRenovacionDeMantenimiento();
+
+        if (queremos) {
+
+            mantenimientoTemporizador =
+                setInterval(
+                    () => pedirMantenimiento(true),
+                    MANTENIMIENTO_RENUEVA_MS
+                );
+        }
+
+    } catch (error) {
+
+        if (estado) {
+            estado.textContent = "No se pudo cambiar el aviso";
+        }
+
+    } finally {
+
+        if (boton) {
+            boton.disabled = false;
+        }
+    }
+}
+
+
+function detenerRenovacionDeMantenimiento() {
+
+    if (mantenimientoTemporizador) {
+
+        clearInterval(mantenimientoTemporizador);
+
+        mantenimientoTemporizador = null;
+    }
+}
+
+
+// Al cerrar la sesion remota se deja de renovar y se pide retirarlo.
+//
+// Si esa peticion no llega —el servidor caido, la red cortada— no
+// pasa nada grave: el equipo tiene su propio plazo y lo retira igual.
+function olvidarMantenimiento() {
+
+    detenerRenovacionDeMantenimiento();
+
+    if (mantenimientoActivo) {
+
+        mantenimientoActivo = false;
+
+        pintarMantenimiento();
+    }
+}
+
+
+/* ==============================
+LA VENTANA: PLEGAR Y REDIMENSIONAR
+============================== */
+
+// Donde se recuerda el tamaño que dejo el operador.
+const REMOTO_TAMANO = "veyra-remoto-tamano";
+
+let remotoPlegado = false;
+
+
+// Minimizar NO es cerrar.
+//
+// Al plegar, el <img> sigue en el documento y sigue mostrandose: su
+// contenedor se queda con max-height 0, no con display:none. Esa
+// diferencia es la que mantiene viva la transmision MJPEG, que es
+// una descarga en curso sobre ese mismo elemento. Con display:none
+// el navegador puede dejar de decodificarla y al restaurar habria
+// que reconectar.
+//
+// Asi que la sesion no se entera: ni el Agent, ni el servidor, ni el
+// teclado, ni el aviso de mantenimiento.
+function plegarRemoto(plegar) {
+
+    const cuerpo =
+        document.getElementById("remote-cuerpo");
+
+    const teclas =
+        document.getElementById("remote-keys");
+
+    const archivos =
+        document.getElementById("file-transfer");
+
+    const boton =
+        document.getElementById("remote-minimizar");
+
+    if (!cuerpo) {
+        return;
+    }
+
+    remotoPlegado = Boolean(plegar);
+
+    cuerpo.classList.toggle("is-plegada", remotoPlegado);
+
+    // La barra de teclas y la transferencia se esconden con la
+    // pantalla: plegado solo debe quedar el encabezado.
+    for (const seccion of [teclas, archivos]) {
+
+        if (seccion) {
+            seccion.classList.toggle("hidden", remotoPlegado);
+        }
+    }
+
+    if (boton) {
+
+        boton.textContent = remotoPlegado ? "Restaurar" : "Minimizar";
+
+        boton.setAttribute(
+            "aria-expanded",
+            remotoPlegado ? "false" : "true"
+        );
+
+        boton.title = remotoPlegado
+            ? "Volver a ver la pantalla"
+            : "Plegar sin cerrar la sesion";
+    }
+}
+
+
+function alternarPlegadoRemoto() {
+
+    plegarRemoto(!remotoPlegado);
+}
+
+
+// El tamaño sobrevive a cerrar y volver a abrir. Es una comodidad de
+// este navegador y nada mas, asi que va en localStorage y cualquier
+// fallo al leerlo se ignora: en una ventana privada o con el
+// almacenamiento bloqueado, simplemente se usa el tamaño por defecto.
+function recordarTamanoRemoto() {
+
+    const marco =
+        document.getElementById("remote-screen-container");
+
+    if (!marco || typeof ResizeObserver === "undefined") {
+        return;
+    }
+
+    try {
+
+        const guardado =
+            JSON.parse(localStorage.getItem(REMOTO_TAMANO) || "null");
+
+        if (guardado && guardado.alto > 120) {
+            marco.style.height = guardado.alto + "px";
+
+            if (guardado.ancho > 240) {
+                marco.style.width = guardado.ancho + "px";
+            }
+        }
+
+    } catch (error) {
+        // Sin tamaño recordado: se usa el de la hoja de estilos
+    }
+
+    let pendiente = null;
+
+    const observador = new ResizeObserver(() => {
+
+        // Se escribe al parar de arrastrar, no en cada pixel
+        clearTimeout(pendiente);
+
+        pendiente = setTimeout(() => {
+
+            try {
+
+                localStorage.setItem(
+                    REMOTO_TAMANO,
+                    JSON.stringify({
+                        ancho: Math.round(marco.offsetWidth),
+                        alto: Math.round(marco.offsetHeight)
+                    })
+                );
+
+            } catch (error) {
+                // Almacenamiento no disponible: no pasa nada
+            }
+
+        }, 400);
+    });
+
+    observador.observe(marco);
+}
+
+
+/* ==============================
+REDIMENSIONAR POR LOS OCHO LADOS
+============================== */
+
+// Los ocho tiradores, con el signo de cuanto crece el marco al
+// arrastrarlos.
+//
+// El factor horizontal es 2 y el vertical 1, y no es un capricho: el
+// marco esta CENTRADO en su caja, asi que al ensancharlo crece por
+// los dos lados y cada borde se mueve la mitad. Multiplicando por
+// dos, el borde sigue al puntero exacto. En vertical el marco crece
+// solo hacia abajo, asi que ahi el factor es 1.
+const TIRADORES_REMOTOS = [
+    { lado: "n",  fx: 0,  fy: -1 },
+    { lado: "s",  fx: 0,  fy: 1 },
+    { lado: "o",  fx: -2, fy: 0 },
+    { lado: "e",  fx: 2,  fy: 0 },
+    { lado: "no", fx: -2, fy: -1 },
+    { lado: "ne", fx: 2,  fy: -1 },
+    { lado: "so", fx: -2, fy: 1 },
+    { lado: "se", fx: 2,  fy: 1 }
+];
+
+const REMOTO_ANCHO_MINIMO = 280;
+const REMOTO_ALTO_MINIMO = 180;
+
+
+function colocarTiradoresRemotos() {
+
+    const marco =
+        document.getElementById("remote-screen-container");
+
+    if (!marco || marco.querySelector(".vy-remoto-tirador")) {
+        return;
+    }
+
+    for (const tirador of TIRADORES_REMOTOS) {
+
+        const nodo = document.createElement("div");
+
+        nodo.className = "vy-remoto-tirador";
+        nodo.dataset.lado = tirador.lado;
+
+        // No son botones ni texto: no aportan nada a quien usa lector
+        // de pantalla, y el tamaño se puede cambiar igual sin ellos.
+        nodo.setAttribute("aria-hidden", "true");
+
+        nodo.addEventListener(
+            "pointerdown",
+            (evento) => empezarAArrastrar(evento, marco, tirador)
+        );
+
+        marco.appendChild(nodo);
+    }
+}
+
+
+function empezarAArrastrar(evento, marco, tirador) {
+
+    // Solo el boton principal, y nunca con un dedo: en tactil los
+    // tiradores estan escondidos.
+    if (evento.button !== 0) {
+        return;
+    }
+
+    // Que no llegue a la imagen: ahi debajo esta el control remoto, y
+    // un arrastre de redimensionado no es un arrastre del raton del
+    // equipo administrado.
+    evento.preventDefault();
+    evento.stopPropagation();
+
+    const inicioX = evento.clientX;
+    const inicioY = evento.clientY;
+
+    const anchoInicial = marco.offsetWidth;
+    const altoInicial = marco.offsetHeight;
+
+    // El tope: lo que da de si la caja que lo contiene. Sin esto, el
+    // marco podria crecer mas que la pagina y sacar una barra de
+    // desplazamiento horizontal.
+    const anchoMaximo =
+        marco.parentElement
+            ? marco.parentElement.clientWidth
+            : anchoInicial;
+
+    evento.target.classList.add("is-arrastrando");
+    document.body.classList.add("vy-redimensionando");
+
+    // Se captura el puntero: si se sale del tirador a mitad de
+    // arrastre, los eventos siguen llegando aqui.
+    try {
+        evento.target.setPointerCapture(evento.pointerId);
+
+    } catch (error) {
+        // Sin captura de puntero se sigue igual, solo menos comodo
+    }
+
+    function mover(e) {
+
+        const ancho =
+            Math.max(
+                REMOTO_ANCHO_MINIMO,
+                Math.min(
+                    anchoMaximo,
+                    anchoInicial + (e.clientX - inicioX) * tirador.fx
+                )
+            );
+
+        const alto =
+            Math.max(
+                REMOTO_ALTO_MINIMO,
+                altoInicial + (e.clientY - inicioY) * tirador.fy
+            );
+
+        if (tirador.fx) {
+            marco.style.width = ancho + "px";
+        }
+
+        if (tirador.fy) {
+            marco.style.height = alto + "px";
+        }
+    }
+
+    function soltar(e) {
+
+        evento.target.classList.remove("is-arrastrando");
+        document.body.classList.remove("vy-redimensionando");
+
+        try {
+            evento.target.releasePointerCapture(evento.pointerId);
+
+        } catch (error) {
+            // Ya estaba suelto
+        }
+
+        evento.target.removeEventListener("pointermove", mover);
+        evento.target.removeEventListener("pointerup", soltar);
+        evento.target.removeEventListener("pointercancel", soltar);
+    }
+
+    evento.target.addEventListener("pointermove", mover);
+    evento.target.addEventListener("pointerup", soltar);
+    evento.target.addEventListener("pointercancel", soltar);
+}
+
+
 async function stopRemoteDesktop() {
 
 stopCursorPolling();
 
 disableRemoteKeyboard();
 
-if (!selectedDevice) {
-    return;
-}
+const habiaMantenimiento = mantenimientoActivo;
 
-try {
+olvidarMantenimiento();
 
-    await fetch(
-        `/api/devices/${selectedDevice.device_id}/screen/stop`,
-        {
-            method: "POST"
-        }
-    );
-
-} catch (error) {
-
-    console.error(
-        "Error deteniendo escritorio remoto:",
-        error
-    );
-}
-
+// PRIMERO se cierra, y despues se avisa al Agent.
+//
+// Antes era al reves: se esperaba la respuesta del servidor y solo
+// entonces se ocultaba la ventana. Si esa peticion tardaba —y
+// tardaba, porque el Agent tenia el bucle bloqueado capturando— la X
+// no hacia nada visible durante segundos.
+//
+// Cerrar es una decision local del operador y no depende de que el
+// equipo remoto conteste. Si el Agent esta caido, la ventana debe
+// cerrarse igual.
 const remoteScreen =
     document.getElementById(
         "remote-screen"
@@ -6136,11 +6667,55 @@ if (remoteScreen) {
 }
 
 if (image) {
-    image.src = "";
+
+    // removeAttribute, NO src = "".
+    //
+    // Con la cadena vacia el navegador la toma por una URL relativa
+    // y vuelve a pedir la PAGINA como si fuera una imagen, dejando
+    // ademas la descarga MJPEG anterior abierta: sesion huerfana en
+    // el servidor y trafico que no para.
+    image.removeAttribute("src");
 }
 
 isDragging = false;
 pressedMouseButton = "left";
+
+const equipo = selectedDevice;
+
+if (!equipo) {
+    return;
+}
+
+try {
+
+    // El aviso no se queda puesto al terminar la sesion. Si esto
+    // falla, el plazo del propio equipo lo retira igual.
+    if (habiaMantenimiento) {
+
+        await fetch(
+            `/api/devices/${equipo.device_id}/maintenance`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ enabled: false })
+            }
+        ).catch(() => {});
+    }
+
+    await fetch(
+        `/api/devices/${equipo.device_id}/screen/stop`,
+        {
+            method: "POST"
+        }
+    );
+
+} catch (error) {
+
+    console.error(
+        "Error deteniendo escritorio remoto:",
+        error
+    );
+}
 
 }
 
@@ -7717,6 +8292,10 @@ if (view === "dashboard") {
     if (install) {
         install.classList.remove("hidden");
         cargarCredencialesDeInstalacion();
+
+        // Que version instalaria el .exe. Se consulta al abrir la
+        // vista y no al cargar la pagina: hasta aqui no hace falta.
+        mostrarVersionDelInstalador();
     }
 
 } else if (view === "settings") {
@@ -9079,28 +9658,37 @@ try {
                         ? ""
                         : "bg-slate-50";
 
-                const icono =
-                    apariencia.icon
-                        ? `<span class="text-base shrink-0">${apariencia.icon}</span>`
-                        : "";
+                // Igual que arriba: 'simbolo', para no tapar icono().
+                const simbolo =
+                    `<span class="text-base shrink-0">`
+                    + `${icono(apariencia.icono || "info", "vy-icon-sm")}`
+                    + `</span>`;
 
                 // Etiqueta de categoría junto a la fecha
+                // Un tipo que el panel no conoce todavia no tiene
+                // etiqueta propia. Se enseña el tipo tal cual: es
+                // feo, pero es informacion, y callarse no lo es.
+                //
+                // alert.type lo fija el servidor con literales del
+                // codigo, nunca el equipo: no hay nada que escapar.
+                const nombreDelTipo =
+                    apariencia.label || alert.type || "Alerta";
+
                 const etiqueta =
-                    apariencia.label
-                        ? `<span class="px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">${apariencia.label}</span>`
-                        : "";
+                    `<span class="px-2 py-0.5 rounded-full bg-slate-100`
+                    + ` text-slate-600">${nombreDelTipo}</span>`;
 
                 return `
                     <div class="px-6 py-4 flex items-center gap-3 ${unread}">
 
                         <span class="w-2.5 h-2.5 rounded-full ${apariencia.dot} shrink-0"></span>
 
-                        ${icono}
+                        ${simbolo}
 
                         <div class="flex-1 min-w-0">
 
                             <p class="text-sm text-slate-900">
-                                ${alert.message}
+                                ${alert.message || "Alerta sin descripción"}
                             </p>
 
                             <p class="text-xs text-slate-500 mt-1 flex items-center gap-2">
@@ -9657,6 +10245,18 @@ document
 stopRecording
 );
 
+enlazarTeclasRemotas();
+
+document
+.getElementById("remote-minimizar")
+?.addEventListener("click", alternarPlegadoRemoto);
+
+
+document
+.getElementById("remote-mantenimiento")
+?.addEventListener("click", alternarMantenimiento);
+
+
 document
 .getElementById(
 "close-remote-button"
@@ -10048,6 +10648,161 @@ function mensajeDeInstalacion(elemento, texto, error) {
 }
 
 
+/* ==============================
+EL INSTALADOR .EXE
+============================== */
+
+// Que version instalaria, antes de bajar 76 MB. La version la decide
+// el manifiesto FIRMADO del servidor, no el nombre del archivo.
+async function mostrarVersionDelInstalador() {
+
+    const texto = document.getElementById("install-exe-version");
+    const boton = document.getElementById("install-download-exe");
+
+    // El ZIP es para administracion tecnica, no para clientes:
+    // exige Python en el equipo y una consola. Se enseña solo al
+    // operador de la plataforma.
+    const avanzado =
+        document.getElementById("install-zip-avanzado");
+
+    if (avanzado) {
+
+        avanzado.classList.toggle(
+            "hidden",
+            !(sesionActual && sesionActual.is_platform_owner)
+        );
+    }
+
+    if (!texto || !boton) {
+        return;
+    }
+
+    texto.textContent = "Consultando la version disponible...";
+
+    try {
+
+        const respuesta = await fetch("/api/agent-installer/info");
+
+        if (!respuesta.ok) {
+            throw new Error("sin respuesta");
+        }
+
+        const datos = await respuesta.json();
+
+        if (!datos.available || !datos.installer) {
+
+            // Dos motivos distintos y conviene distinguirlos: que no
+            // se haya subido el .exe, o que no haya una version
+            // firmada con la que decir QUE instala. En los dos casos
+            // se deshabilita, pero quien lo lea sabra que hacer.
+            texto.textContent =
+                "El instalador no está disponible todavía. "
+                + "Avisa al administrador de la plataforma.";
+
+            texto.title = "";
+
+            boton.disabled = true;
+            boton.classList.add("opacity-50", "cursor-not-allowed");
+
+            return;
+        }
+
+        const mb = (datos.installer.size / 1048576).toFixed(1);
+
+        // La huella se enseña entera y en su sitio: sirve para
+        // comprobar que lo descargado es lo que el servidor tiene.
+        texto.textContent =
+            `Version ${datos.installer.version} · ${mb} MB`;
+
+        texto.title = "SHA-256: " + datos.installer.sha256;
+
+        boton.disabled = false;
+        boton.classList.remove("opacity-50", "cursor-not-allowed");
+
+    } catch (error) {
+
+        // Sin saber que version instalaria, no se ofrece la
+        // descarga: bajar 76 MB sin saber que traen es justo lo que
+        // lleva a instalar la equivocada.
+        texto.textContent =
+            "No se pudo comprobar el instalador. Intentalo de nuevo.";
+
+        if (boton) {
+            boton.disabled = true;
+            boton.classList.add("opacity-50", "cursor-not-allowed");
+        }
+    }
+}
+
+
+async function descargarInstaladorExe() {
+
+    const boton = document.getElementById("install-download-exe");
+    const estado = document.getElementById("install-exe-status");
+
+    if (!boton) {
+        return;
+    }
+
+    const original = boton.textContent;
+
+    boton.disabled = true;
+    boton.textContent = "Descargando...";
+
+    mensajeDeInstalacion(estado, "Preparando la descarga...", false);
+
+    try {
+
+        const respuesta = await fetch("/api/agent-installer");
+
+        if (!respuesta.ok) {
+
+            let motivo = "No se pudo descargar el instalador.";
+
+            try {
+                const datos = await respuesta.json();
+                motivo = datos.message || motivo;
+            } catch (error) {
+                // Respuesta sin JSON: se deja el mensaje generico
+            }
+
+            mensajeDeInstalacion(estado, motivo, true);
+            return;
+        }
+
+        const blob = await respuesta.blob();
+
+        const enlace = document.createElement("a");
+        enlace.href = URL.createObjectURL(blob);
+        enlace.download = "VEYRA-Instalador.exe";
+
+        document.body.appendChild(enlace);
+        enlace.click();
+        document.body.removeChild(enlace);
+
+        URL.revokeObjectURL(enlace.href);
+
+        mensajeDeInstalacion(
+            estado,
+            "Descargado. Abrelo en el equipo que quieras administrar y "
+            + "acepta el aviso de Windows.",
+            false
+        );
+
+    } catch (error) {
+
+        mensajeDeInstalacion(
+            estado, "No se pudo descargar el instalador.", true
+        );
+
+    } finally {
+
+        boton.disabled = false;
+        boton.textContent = original;
+    }
+}
+
+
 async function descargarInstalador() {
 
     const boton =
@@ -10276,6 +11031,10 @@ async function cargarCredencialesDeInstalacion() {
     }
 }
 
+
+document
+    .getElementById("install-download-exe")
+    ?.addEventListener("click", descargarInstaladorExe);
 
 document
     .getElementById("install-download")

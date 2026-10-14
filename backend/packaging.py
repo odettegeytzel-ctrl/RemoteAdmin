@@ -48,6 +48,18 @@ PACKAGE_FILES = (
     "agent/helper.py",
     "agent/inventory.py",
     "agent/ipc.py",
+
+    # El aviso de mantenimiento. Tiene que estar aqui aunque sea una
+    # ventana y no parezca parte del "programa": helper.py lo importa
+    # al arrancar.
+    #
+    # Sin el, una actualizacion dejaria la carpeta agent con un
+    # helper.py que importa un modulo que no existe —el actualizador
+    # reemplaza la carpeta entera— y el ayudante no arrancaria en
+    # ningun equipo. Se perderian la pantalla en vivo, la grabacion y
+    # el raton, que es todo lo que necesita escritorio.
+    "agent/maintenance.py",
+
     "agent/paths.py",
     "agent/release.py",
     "agent/power.py",

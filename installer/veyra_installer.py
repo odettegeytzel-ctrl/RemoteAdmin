@@ -110,6 +110,19 @@ def carpeta_del_paquete():
     """
 
     if getattr(sys, "frozen", False):
+
+        # Empaquetado con --add-data, el contenido viaja DENTRO del
+        # .exe y PyInstaller lo extrae a una carpeta temporal cuya
+        # ruta deja en sys._MEIPASS. Es el caso del instalador que se
+        # descarga del panel: un solo archivo, sin nada alrededor.
+        interna = getattr(sys, "_MEIPASS", None)
+
+        if interna and os.path.isdir(os.path.join(interna, "agent")):
+            return interna
+
+        # Sin carga util dentro, se usa la carpeta del .exe: es el
+        # modo antiguo, el .exe junto al paquete descomprimido. Se
+        # conserva para no romper lo que ya funciona.
         return os.path.dirname(os.path.abspath(sys.executable))
 
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -119,6 +132,23 @@ def guion_de_instalacion():
     return os.path.join(
         carpeta_del_paquete(), "installer", "install-agent.ps1"
     )
+
+
+def runtime_empaquetado():
+    """
+    Carpeta del Python embebido que trae el instalador, o None.
+
+    Cuando esta, el equipo destino no necesita Python de ninguna
+    clase y no se ejecuta ningun pip. Cuando no, se instala como
+    siempre, con el Python del sistema.
+    """
+
+    carpeta = os.path.join(carpeta_del_paquete(), "runtime")
+
+    if os.path.isfile(os.path.join(carpeta, "python.exe")):
+        return carpeta
+
+    return None
 
 
 def servidor_del_paquete():
@@ -367,6 +397,15 @@ def instalar(url, credencial, registrar):
 
     if archivo_credencial:
         argumentos += ["-EnrollmentTokenFile", archivo_credencial]
+
+    # El interprete, si este instalador lo trae. No es un secreto:
+    # es una ruta temporal, y puede ir como argumento sin problema.
+    runtime = runtime_empaquetado()
+
+    if runtime:
+        argumentos += ["-RuntimeDir", runtime]
+        registrar("Este instalador trae su propio Python: "
+                  "no hace falta instalarlo en el equipo.")
 
     registrar("Pidiendo permisos de administrador a Windows...")
 

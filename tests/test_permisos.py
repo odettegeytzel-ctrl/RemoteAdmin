@@ -43,7 +43,12 @@ ENDPOINTS = {
     # Dar de baja un equipo. Sobre un identificador que no existe: a
     # quien tiene el permiso le respondera 404, que es distinto de
     # 403, y es justo lo que estas pruebas comparan.
-    "devices.manage": ("POST", "/api/devices/equipo-x/decommission")
+    "devices.manage": ("POST", "/api/devices/equipo-x/decommission"),
+
+    # Ver la pantalla de un equipo. Hasta ahora NINGUNA ruta del
+    # control remoto exigia permiso de usuario: bastaba con tener
+    # sesion en la organizacion.
+    "remote.control": ("GET", "/api/devices/equipo-x/screen-stream")
 }
 
 

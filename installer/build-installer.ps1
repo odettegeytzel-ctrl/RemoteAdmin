@@ -63,6 +63,25 @@ Write-Host "Empaquetando..."
 #                del sistema. Marcar el .exe como "requiere
 #                administrador" obligaria a elevar solo para abrir la
 #                ventana y comprobar la conexion, que no lo necesitan.
+# La carga util va DENTRO del .exe, para que se descargue un solo
+# archivo del panel y funcione solo:
+#
+#   agent\       el programa
+#   installer\   install-agent.ps1 y su desinstalador
+#   runtime\     Python y TODAS las dependencias ya resueltas
+#
+# El runtime es lo que quita la exigencia de tener Python en el
+# equipo destino. Se arma aparte con installer\build-runtime.py
+# porque pesa mas de 150 MB y no tiene sentido rehacerlo cada vez.
+$Runtime = Join-Path $Raiz "installer\runtime"
+
+if (-not (Test-Path (Join-Path $Runtime "python.exe"))) {
+    throw "Falta el Python embebido en $Runtime. Armalo con: .venv\Scripts\python installer\build-runtime.py"
+}
+
+$Agente = Join-Path $Raiz "agent"
+$Scripts = Join-Path $Raiz "installer"
+
 & $Python -m PyInstaller `
     --onefile `
     --noconsole `
@@ -71,6 +90,12 @@ Write-Host "Empaquetando..."
     --workpath $Trabajo `
     --specpath $Trabajo `
     --noconfirm `
+    --add-data "$Agente;agent" `
+    --add-data "$Scripts\install-agent.ps1;installer" `
+    --add-data "$Scripts\uninstall-agent.ps1;installer" `
+    --add-data "$Raiz\requirements-base.txt;." `
+    --add-data "$Raiz\requirements-agent-windows.txt;." `
+    --add-data "$Runtime;runtime" `
     $Guion
 
 if ($LASTEXITCODE -ne 0) {

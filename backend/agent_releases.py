@@ -20,6 +20,7 @@ Si no hay nada publicado, los endpoints lo dicen y los Agents siguen
 con su version. No publicar no rompe nada.
 """
 
+import hashlib
 import json
 import os
 
@@ -108,3 +109,60 @@ def published_version():
 
     except ReleaseNotPublished:
         return None
+
+
+# ==============================
+# EL INSTALADOR DE WINDOWS
+# ==============================
+#
+# El .exe que se descarga desde el panel. Vive en la misma carpeta que
+# los paquetes firmados, por la misma razon: lo produce quien publica,
+# en su equipo, y se copia aqui. El servidor no lo construye.
+#
+# No va en el repositorio —pesa decenas de MB y installer/dist/ esta
+# ignorado— asi que se sube igual que agent-<version>.zip.
+
+INSTALLER_NAME = "VEYRA-Instalador.exe"
+
+
+class InstallerNotPublished(LookupError):
+    """No hay instalador publicado."""
+
+
+def installer_path():
+    return os.path.join(RELEASES_DIR, INSTALLER_NAME)
+
+
+def installer_info():
+    """
+    Lo que el panel enseña ANTES de descargar: version, tamano y huella.
+
+    La version NO sale del nombre del archivo ni se escribe a mano:
+    sale del manifiesto firmado, que es lo unico que no se puede
+    falsear sin la clave privada. Si no hay version publicada, el
+    instalador no se ofrece: descargarlo sin saber que instala seria
+    peor que no tenerlo.
+    """
+
+    ruta = installer_path()
+
+    if not os.path.isfile(ruta):
+        raise InstallerNotPublished(
+            "No hay instalador publicado en el servidor"
+        )
+
+    manifiesto, _ = load_published()
+
+    resumen = hashlib.sha256()
+
+    with open(ruta, "rb") as archivo:
+
+        for bloque in iter(lambda: archivo.read(1024 * 1024), b""):
+            resumen.update(bloque)
+
+    return {
+        "filename": INSTALLER_NAME,
+        "version": manifiesto["version"],
+        "size": os.path.getsize(ruta),
+        "sha256": resumen.hexdigest()
+    }

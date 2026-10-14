@@ -989,14 +989,38 @@ def test_el_pie_de_una_tarjeta_puede_partir_en_dos_lineas():
     .vy-punto lleva nowrap, que es lo correcto para "Conectados" o
     "Pendientes", de una sola palabra. En el pie de una tarjeta ese
     nowrap sacaba el texto fuera del recuadro.
+
+    Esta prueba fallo en su primera version: comprobaba que la regla
+    ESTUVIERA escrita, y lo estaba. Lo que no comprobaba es que
+    alcanzara al elemento real. El selector era
+    ".vy-metrica-pie .vy-punto" y el pie de la tarjeta "En riesgo"
+    cuelga de un div sin esa clase, asi que la regla no se aplicaba a
+    nada y el texto se seguia saliendo.
+
+    Ahora se parte del marcado: se busca el elemento de verdad y se
+    exige que alguno de los selectores escritos lo alcance.
     """
 
-    comprobar("El pie de la metrica puede partir",
-              ".vy-metrica-pie .vy-punto" in CSS)
+    # El pie que se desbordaba, tal y como esta en la pagina
+    trozo = HTML.split('id="nodata-devices"', 1)[1].split(">", 1)[0]
 
-    bloque = CSS.split(".vy-metrica-pie .vy-punto {", 1)[1].split(
-        "}", 1
-    )[0]
+    comprobar("El pie de 'En riesgo' sigue siendo un .vy-punto",
+              "vy-punto" in trozo, trozo.strip())
+
+    # Y el recuadro que lo contiene
+    antes = HTML.split('id="nodata-devices"', 1)[0]
+
+    comprobar("Vive dentro de una tarjeta de resumen",
+              "summary-card" in antes.rsplit("<div", 6)[0][-4000:]
+              or "summary-card" in antes[-4000:])
+
+    # La regla tiene que nombrar el contexto en el que ESE punto vive.
+    # Con solo ".vy-metrica-pie .vy-punto" no le llegaba.
+    comprobar("Una regla alcanza al punto de la tarjeta de resumen",
+              ".summary-card .vy-punto" in CSS,
+              "el selector no cubre el marcado real")
+
+    bloque = CSS.split(".summary-card .vy-punto {", 1)[1].split("}", 1)[0]
 
     comprobar("Dejando de forzar una sola linea",
               "white-space: normal" in bloque, bloque)
@@ -1009,6 +1033,44 @@ def test_el_pie_de_una_tarjeta_puede_partir_en_dos_lineas():
 
     comprobar("Los pies cortos siguen sin partirse",
               "white-space: nowrap" in general, general)
+
+
+def test_la_cabecera_publica_cabe_en_un_telefono():
+    """
+    A 390px la cabecera de la pagina publica se salia por la derecha.
+
+    Ocultaba los enlaces de seccion por debajo de 900px, pero dejaba en
+    una sola fila el logotipo de 168px, el conmutador de tema y dos
+    botones. No cabian, la fila no podia partirse, y lo que sobraba
+    empujaba la pagina entera: barra de desplazamiento horizontal y
+    boton cortado.
+    """
+
+    comprobar("Hay un punto de ruptura para telefonos",
+              "max-width: 560px" in CSS)
+
+    bloque = CSS.split("@media (max-width: 560px) {", 1)[1].split(
+        chr(10) + "}", 1
+    )[0]
+
+    comprobar("La cabecera puede partirse en dos filas",
+              "flex-wrap: wrap" in bloque, bloque[:200])
+
+    comprobar("Y el logotipo se reduce",
+              "132px" in bloque, bloque[:400])
+
+    # Lo que NO debe pasar: resolverlo escondiendo un boton
+    comprobar("Sin ocultar ninguno de los dos botones",
+              "display: none" not in bloque, bloque)
+
+    # Los dos siguen en la pagina
+    cabecera = INICIO.split("<header", 1)[1].split("</header>", 1)[0]
+
+    comprobar("Iniciar sesion sigue en la cabecera",
+              "Iniciar sesión" in cabecera)
+
+    comprobar("Solicitar acceso sigue en la cabecera",
+              "Solicitar acceso" in cabecera)
 
 
 def test_una_palabra_larga_no_desborda_una_tarjeta():
@@ -1254,6 +1316,7 @@ def main():
         test_el_logotipo_no_se_anuncia_dos_veces,
         test_las_imagenes_reservan_su_sitio,
         test_el_pie_de_una_tarjeta_puede_partir_en_dos_lineas,
+        test_la_cabecera_publica_cabe_en_un_telefono,
         test_una_palabra_larga_no_desborda_una_tarjeta,
         test_el_refresco_no_borra_la_clase_del_tema,
         test_siguen_estando_los_identificadores_del_panel,

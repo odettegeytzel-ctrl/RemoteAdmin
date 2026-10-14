@@ -48,7 +48,16 @@ param(
     [string]$TaskName = "RemoteAdminAgent",
 
     # Tarea del ayudante interactivo
-    [string]$HelperTaskName = "RemoteAdminAgentHelper"
+    [string]$HelperTaskName = "RemoteAdminAgentHelper",
+
+    # Carpeta con el Python embebido que trae el instalador grafico,
+    # ya con todas las dependencias dentro. Si se indica, el equipo
+    # destino NO necesita Python instalado y no se ejecuta ningun pip.
+    #
+    # Vacio = comportamiento de siempre: se busca el Python del
+    # sistema y se instalan las dependencias con pip. Se conserva
+    # para no romper las instalaciones que ya se hacen asi.
+    [string]$RuntimeDir = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -87,13 +96,35 @@ if (-not (Test-Path (Join-Path $SourceDir "agent\agent.py"))) {
     throw "No se encontro agent\agent.py junto a este script. Ejecutalo desde la carpeta del paquete descomprimido."
 }
 
-$Python = (Get-Command python.exe -ErrorAction SilentlyContinue).Source
+# El interprete: el que trae el instalador, o el del sistema.
+#
+# Con $RuntimeDir el equipo destino no necesita Python de ninguna
+# clase. Es el camino del instalador grafico. Sin el, se busca el del
+# sistema como siempre.
+$RuntimeDestino = Join-Path $InstallDir "runtime"
+$UsaRuntimeEmbebido = $false
 
-if (-not $Python) {
-    throw "No se encontro Python. Instalalo desde https://www.python.org/downloads/windows/ marcando 'Add python.exe to PATH' y vuelve a ejecutar este script."
+if ($RuntimeDir) {
+
+    if (-not (Test-Path (Join-Path $RuntimeDir "python.exe"))) {
+        throw "No se encontro python.exe en el runtime indicado: $RuntimeDir"
+    }
+
+    $UsaRuntimeEmbebido = $true
+    $Python = Join-Path $RuntimeDestino "python.exe"
+
+    Write-Host "Python:  embebido ($RuntimeDir)"
+
+} else {
+
+    $Python = (Get-Command python.exe -ErrorAction SilentlyContinue).Source
+
+    if (-not $Python) {
+        throw "No se encontro Python. Instalalo desde https://www.python.org/downloads/windows/ marcando 'Add python.exe to PATH' y vuelve a ejecutar este script."
+    }
+
+    Write-Host "Python:  $Python"
 }
-
-Write-Host "Python:  $Python"
 Write-Host "Destino: $InstallDir"
 
 # --------------------------------------------------------------
@@ -276,14 +307,47 @@ icacls $ConfigDir /inheritance:r /grant:r "SYSTEM:(F)" "Administrators:(F)" | Ou
 # 5. Dependencias
 # --------------------------------------------------------------
 
-Write-Host ""
-Write-Host "Instalando dependencias (puede tardar un par de minutos)..."
+if ($UsaRuntimeEmbebido) {
 
-& $Python -m pip install --quiet --disable-pip-version-check --upgrade pip
-& $Python -m pip install --quiet --disable-pip-version-check -r (Join-Path $InstallDir "requirements-agent-windows.txt")
+    # El interprete y sus dependencias ya vienen resueltos: solo hay
+    # que ponerlos en su sitio. Ni pip, ni red, ni esperas.
+    #
+    # Va a InstallDiruntime, que NO esta en la lista de lo que el
+    # actualizador reemplaza (agent/updater.py, PRESERVED), asi que
+    # una actualizacion del Agent no lo toca.
+    Write-Host ""
+    Write-Host "Copiando el entorno de ejecucion..."
 
-if ($LASTEXITCODE -ne 0) {
-    throw "Fallo la instalacion de dependencias. Revisa la conexion a internet y vuelve a ejecutar el script."
+    if (Test-Path $RuntimeDestino) {
+        Remove-Item -Recurse -Force $RuntimeDestino
+    }
+
+    Copy-Item -Recurse -Force $RuntimeDir $RuntimeDestino
+
+    if (-not (Test-Path $Python)) {
+        throw "No se pudo copiar el entorno de ejecucion a $RuntimeDestino"
+    }
+
+    # Que funcione de verdad, no que los archivos esten ahi
+    & $Python -c "import mss, wmi, cryptography, websockets" 2>$null
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "El entorno de ejecucion copiado no puede importar las dependencias del Agent."
+    }
+
+    Write-Host "Entorno listo. No se ha instalado nada en el sistema."
+
+} else {
+
+    Write-Host ""
+    Write-Host "Instalando dependencias (puede tardar un par de minutos)..."
+
+    & $Python -m pip install --quiet --disable-pip-version-check --upgrade pip
+    & $Python -m pip install --quiet --disable-pip-version-check -r (Join-Path $InstallDir "requirements-agent-windows.txt")
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Fallo la instalacion de dependencias. Revisa la conexion a internet y vuelve a ejecutar el script."
+    }
 }
 
 # --------------------------------------------------------------
@@ -302,7 +366,11 @@ if ($LASTEXITCODE -ne 0) {
 #   RemoteAdminAgentHelper   al INICIAR SESION, como el usuario. Es
 #                            el unico que toca el escritorio.
 
-$Pythonw = (Get-Command pythonw.exe -ErrorAction SilentlyContinue).Source
+if ($UsaRuntimeEmbebido) {
+    $Pythonw = Join-Path $RuntimeDestino "pythonw.exe"
+} else {
+    $Pythonw = (Get-Command pythonw.exe -ErrorAction SilentlyContinue).Source
+}
 
 if (-not $Pythonw) {
     $Pythonw = $Python

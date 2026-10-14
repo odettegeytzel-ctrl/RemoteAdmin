@@ -28,3 +28,7 @@ releases/
 
 # Clave privada de firma de las actualizaciones. Nunca en el repositorio.
 agent-signing.pem
+
+# El Python embebido del instalador: se arma con
+# installer/build-runtime.py y pesa cientos de MB.
+installer/runtime/

@@ -1056,8 +1056,14 @@ def test_el_servidor_solo_necesita_la_release_firmada():
         elif isinstance(nodo, ast.Attribute):
             nombres.add(nodo.attr)
 
-    comprobar("Solo importa lo justo para leer archivos",
-              importados == {"json", "os"}, str(sorted(importados)))
+    # hashlib se usa para la HUELLA del instalador que el panel
+    # enseña antes de descargarlo. Es un resumen, no una firma: no
+    # demuestra quien lo publico, solo que lo descargado es lo que el
+    # servidor tiene. La prohibicion que importa —ninguna operacion
+    # de firma, ninguna clave privada— sigue intacta justo debajo.
+    comprobar("Solo importa lo justo para leer archivos y resumirlos",
+              importados == {"hashlib", "json", "os"},
+              str(sorted(importados)))
 
     comprobar("No importa nada de criptografia",
               "cryptography" not in importados)

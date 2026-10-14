@@ -60,6 +60,12 @@ PERMISSIONS = (
     "recordings.manage",
     "processes.view",
     "services.view",
+
+    # Ver la pantalla de un equipo y mandar raton y teclado sobre el.
+    # Separado del resto a proposito: mirar el inventario o las
+    # grabaciones no es lo mismo que tomar el control de la maquina de
+    # otra persona mientras la esta usando.
+    "remote.control",
     "settings.view",
     "settings.edit",
     "device.lock",
@@ -970,3 +976,53 @@ def is_active(username):
         return True
 
     return bool(fila["active"])
+
+
+def grant_remote_control_to_existing_subadmins():
+    """
+    Concede 'remote.control' a los subadministradores que YA existen.
+
+    Hasta ahora el control remoto no exigia ningun permiso de usuario:
+    bastaba con tener sesion en la organizacion. Al exigirlo, quien
+    hoy da soporte se quedaria sin poder hacerlo de un dia para otro,
+    sin que nadie se lo haya quitado y sin saber por que.
+
+    Asi que a los que ya estan se les concede, y a los NUEVOS hay que
+    marcarselo. El permiso empieza a significar algo desde hoy, sin
+    romper lo que funcionaba ayer.
+
+    Idempotente: se ejecuta en cada arranque y no hace nada la segunda
+    vez. Solo toca usuarios con rol subadmin; owner y platform_owner
+    no usan la tabla de permisos.
+    """
+
+    connection = get_connection()
+
+    try:
+        # Si algun subadmin ya lo tiene, la migracion ya paso
+        ya_hecha = connection.execute(
+            "SELECT 1 FROM user_permissions WHERE permission = ? LIMIT 1",
+            ("remote.control",)
+        ).fetchone()
+
+        if ya_hecha:
+            return 0
+
+        subadmins = connection.execute(
+            "SELECT id FROM users WHERE role = ?",
+            (ROLE_SUBADMIN,)
+        ).fetchall()
+
+        for fila in subadmins:
+            connection.execute(
+                "INSERT OR IGNORE INTO user_permissions (user_id, permission) "
+                "VALUES (?, ?)",
+                (fila["id"], "remote.control")
+            )
+
+        connection.commit()
+
+        return len(subadmins)
+
+    finally:
+        connection.close()
