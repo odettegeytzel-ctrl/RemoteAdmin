@@ -106,20 +106,113 @@ la firma del anterior.
 
 ---
 
-## Antes de pagar nada
+## Antes de pagar nada: de qué es el problema
 
-Merece la pena confirmar que el problema es el que parece. Si el
-`.exe` no llega a descargarse, la firma no cambiará nada.
+Merece la pena confirmar la causa. Si el `.exe` no llega a
+descargarse, la firma no cambiará nada.
 
+Son **tres problemas distintos** que se parecen desde fuera, y cada
+uno se arregla en otro sitio. Esta tabla los separa:
+
+| Lo que se ve | Dónde está el problema | Qué lo arregla |
+|---|---|---|
+| El archivo no aparece en Descargas | La descarga | VEYRA o la red |
+| Aparece y desaparece al poco | **Antivirus** | Firma, o una exclusión |
+| Está, pero Windows avisa al abrirlo | **SmartScreen** | Firma |
+| Está y abre bien | Nada | — |
+
+### 1. ¿Llegó el archivo entero?
+
+```powershell
+Get-Item $env:USERPROFILE\Downloads\VEYRA-Instalador.exe |
+    Select-Object Name, Length, LastWriteTime
+
+Get-FileHash $env:USERPROFILE\Downloads\VEYRA-Instalador.exe `
+    -Algorithm SHA256
 ```
-1. chrome://downloads   ->  ¿dice «Eliminado»?
-2. Seguridad de Windows -> Protección antivirus -> Historial
-3. En el servidor:  ls -l /opt/remoteadmin/RemoteAdmin/releases/
-                    sha256sum .../VEYRA-Instalador.exe
+
+- **No existe** → no es cosa de la firma. Mira el punto 2 y el 4.
+- **Existe pero pesa menos** de lo que dice el panel → se cortó.
+  Problema de red o del servidor, no de Windows.
+- **Pesa lo mismo y el hash coincide** → la descarga funcionó. El
+  problema, si lo hay, viene después: puntos 2 o 3.
+
+### 2. ¿Lo borró el antivirus?
+
+Es lo más probable con un ejecutable de PyInstaller sin firmar.
+
+```powershell
+# El historial de Defender, por si lo puso en cuarentena
+Get-MpThreatDetection |
+    Where-Object { $_.Resources -match "VEYRA" } |
+    Select-Object InitialDetectionTime, ThreatID, Resources
 ```
 
-Si el archivo llega entero y con el SHA-256 correcto, y lo que molesta
-es el aviso al abrirlo, entonces sí: lo que falta es la firma.
+Y a mano: **Seguridad de Windows → Protección antivirus y contra
+amenazas → Historial de protección**.
+
+También en `chrome://downloads`: si dice **«Eliminado»** o
+**«Archivo eliminado»**, el archivo se descargó y algo del equipo lo
+quitó después. **Eso no es VEYRA.**
+
+Para confirmarlo sin desactivar nada, se añade una exclusión
+temporal de la carpeta y se repite la descarga:
+
+```powershell
+# Como administrador. Y se quita despues.
+Add-MpPreference -ExclusionPath "$env:USERPROFILE\Downloads\veyra-prueba"
+# ...descargar ahi y comprobar...
+Remove-MpPreference -ExclusionPath "$env:USERPROFILE\Downloads\veyra-prueba"
+```
+
+Si con la exclusión llega y sin ella desaparece, **está confirmado**
+y lo que falta es la firma.
+
+**No desactives el antivirus.** Una exclusión acotada a una carpeta
+de prueba dice lo mismo sin dejar el equipo expuesto.
+
+### 3. ¿Es solo el aviso al abrirlo?
+
+Si el archivo está, el hash coincide, y al hacer doble clic sale
+**«Windows protegió su PC»** con un botón «Más información» que
+esconde «Ejecutar de todas formas» — eso es **SmartScreen**, y es
+exactamente lo que una firma resuelve.
+
+Se distingue del antivirus en que **el archivo no desaparece**: sigue
+ahí después de cerrar el aviso.
+
+```powershell
+# ¿Esta firmado? Hoy dira NotSigned
+Get-AuthenticodeSignature `
+    $env:USERPROFILE\Downloads\VEYRA-Instalador.exe |
+    Select-Object Status, StatusMessage, SignerCertificate
+
+# La marca de "descargado de internet" que dispara el aviso
+Get-Item $env:USERPROFILE\Downloads\VEYRA-Instalador.exe -Stream *
+```
+
+Si aparece un flujo `Zone.Identifier`, el archivo viene marcado como
+descargado. Quitarlo con `Unblock-File` evita el aviso en **ese**
+equipo, y sirve para confirmar el diagnóstico, pero no es una
+solución: habría que hacerlo en cada cliente.
+
+### 4. ¿Está bien en el servidor?
+
+```bash
+ls -l /opt/remoteadmin/RemoteAdmin/releases/VEYRA-Instalador.exe
+sha256sum /opt/remoteadmin/RemoteAdmin/releases/VEYRA-Instalador.exe
+stat -c '%U:%G %s' /opt/remoteadmin/RemoteAdmin/releases/VEYRA-Instalador.exe
+```
+
+Debe pertenecer a `remoteadmin`, pesar lo esperado y dar el SHA-256
+del artefacto construido. Si el archivo no está o el dueño es otro,
+el problema es de la publicación y no llega a ser de Windows.
+
+### Resumen
+
+**Solo los casos 2 y 3 se arreglan firmando.** Si el archivo no llega
+o llega a medias, el certificado no cambiaría nada y el dinero estaría
+mal gastado.
 
 ## Mi recomendación
 
