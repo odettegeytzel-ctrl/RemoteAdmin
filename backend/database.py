@@ -489,6 +489,47 @@ def init_db():
             "ALTER TABLE recordings ADD COLUMN storage_state TEXT"
         )
 
+    # Tramos de actividad de cada modalidad de grabacion.
+    #
+    # Un segmento de 15 minutos puede empezar sosteniendolo solo la
+    # programada y terminar con las dos modalidades activas.
+    # Atribuirlo entero a una seria falso en la mitad del archivo, asi
+    # que se guarda QUIEN sostenia la captura y CUANDO, y el reparto
+    # se calcula cruzando tramos con el rango del segmento.
+    #
+    # 'ended_at' en NULL significa tramo ABIERTO: la modalidad sigue
+    # activa. Se cierra cuando el Agent informa de su fin. No se
+    # inventa un fin al guardarlo.
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS recording_intervals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id TEXT NOT NULL,
+            origin TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            ended_at TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # La identidad de un tramo es (equipo, modalidad, inicio).
+    #
+    # Una modalidad no puede tomar la captura dos veces en el mismo
+    # instante, asi que esos tres campos la identifican sin que el
+    # Agent tenga que inventar ningun identificador.
+    #
+    # El indice UNICO es lo que hace que reintentar sea inofensivo: el
+    # mismo tramo informado diez veces —al reconectar, al reintentar
+    # una subida, al reiniciar el Agent— sigue siendo una sola fila.
+    connection.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_intervals_identidad
+        ON recording_intervals (device_id, origin, started_at)
+    """)
+
+    connection.execute("""
+        CREATE INDEX IF NOT EXISTS idx_intervals_equipo_fecha
+        ON recording_intervals (device_id, started_at)
+    """)
+
     connection.execute("""
         CREATE INDEX IF NOT EXISTS idx_recordings_storage_state
         ON recordings (device_id, storage_state)

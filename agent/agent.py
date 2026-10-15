@@ -15,7 +15,7 @@ import re
 import urllib.parse
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import psutil
 import requests
@@ -513,6 +513,46 @@ def _retention_loop():
         time.sleep(RETENTION_CHECK_SECONDS)
 
 
+def report_recording_intervals():
+    """
+    Manda al servidor los tramos de actividad de cada modalidad.
+
+    Va por el WebSocket, que ya esta autenticado con el token de este
+    equipo: el servidor usa el device_id de la CONEXION, no uno que
+    venga en el mensaje. Un equipo no puede informar tramos de otro.
+
+    Reenviar es inofensivo. La identidad de un tramo es (equipo,
+    modalidad, inicio), y el servidor la respeta: el mismo tramo
+    informado diez veces sigue siendo una fila. Por eso se reenvian
+    enteros al reconectar, sin llevar cuenta de cuales llegaron antes
+    de la caida.
+
+    El tramo ABIERTO se manda con su fin en None y el servidor lo
+    guarda asi. Cerrarlo aqui con la hora actual inventaria un final
+    distinto en cada envio para una grabacion que sigue en marcha.
+    """
+
+    tramos = duenos.para_informar()
+
+    if not tramos:
+        return False
+
+    enviado = send_ws_threadsafe(
+        "recording_intervals:" + json.dumps({"intervals": tramos})
+    )
+
+    if enviado:
+        # Los ya cerrados y viejos se olvidan para que la lista no
+        # crezca sin limite en un equipo encendido semanas. Nunca se
+        # tira el tramo abierto ni uno reciente: se perderia la
+        # atribucion del segmento en curso.
+        duenos.olvidar_antes_de(
+            datetime.now(timezone.utc) - timedelta(hours=6)
+        )
+
+    return enviado
+
+
 def report_recording_catalog(segment):
     """
     Avisa al servidor de que existe una grabacion nueva, sin subirla.
@@ -901,6 +941,11 @@ def on_segment_complete(segment):
 
     # Solo la ficha: nombre, fechas y tamano. El video se queda aqui.
     report_recording_catalog(segment)
+
+    # Y quien sostenia la captura mientras se grababa ese segmento.
+    # Va despues de la ficha a proposito: primero que exista la
+    # grabacion, luego su reparto.
+    report_recording_intervals()
 
     report_status_threadsafe()
 
@@ -2666,6 +2711,16 @@ async def websocket_connection():
                     # el equipo seguira siendo administrable aunque no
                     # se sepa su modelo.
                     print(f"[inventario] no se pudo enviar: {error}")
+
+                # Los tramos que no llegaron mientras no habia
+                # conexion. Reenviarlos enteros es seguro: el
+                # servidor los reconoce por su identidad y no los
+                # duplica.
+                try:
+                    report_recording_intervals()
+
+                except Exception as error:
+                    print(f"[tramos] no se pudieron enviar: {error}")
 
                 # Y el catalogo completo: mientras no hubo conexion se han
                 # podido grabar segmentos cuya ficha no llego al servidor.

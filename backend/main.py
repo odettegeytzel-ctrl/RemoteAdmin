@@ -55,6 +55,8 @@ from backend.auth import (
     TOKEN_HOURS
 )
 from backend.recordings import (
+    guardar_tramos,
+    tramos_de_grabacion,
     add_recording,
     register_local_recording,
     get_recording_by_path,
@@ -2189,6 +2191,34 @@ async def agent_websocket(websocket: WebSocket):
 
                 except json.JSONDecodeError:
                     print(f"[grabaciones] ficha ilegible de {device_id}")
+
+
+            elif message.startswith("recording_intervals:"):
+
+                # Tramos de actividad de cada modalidad.
+                #
+                # Llegan por el WebSocket del Agent, que ya esta
+                # autenticado con su token individual: device_id es
+                # el de la conexion, NO uno que mande el mensaje. Un
+                # equipo no puede informar tramos de otro.
+                try:
+                    carga = json.loads(message.split(":", 1)[1])
+
+                    nuevos, actualizados, malos = guardar_tramos(
+                        device_id, carga.get("intervals") or []
+                    )
+
+                    if nuevos or malos:
+                        print(
+                            f"[tramos] {device_id}: {nuevos} nuevos, "
+                            f"{actualizados} al dia, {malos} descartados"
+                        )
+
+                except json.JSONDecodeError:
+                    print(f"[tramos] carga ilegible de {device_id}")
+
+                except Exception as error:
+                    print(f"[tramos] no se pudieron guardar: {error}")
 
 
             elif message.startswith("recording_catalog_full:"):
@@ -5052,6 +5082,56 @@ def agent_package(request: Request, organization_id: int = None):
                 f'attachment; filename="{packaging.PACKAGE_FILENAME}"'
         }
     )
+
+
+@app.get("/api/recordings/{recording_id}/intervals")
+def recording_intervals(recording_id: int, request: Request):
+    """
+    Como se reparte un archivo entre las modalidades.
+
+    Exige el mismo permiso que ver la grabacion: los tramos dicen
+    cuando alguien estuvo mirando una pantalla ajena, que no es menos
+    sensible que el video.
+
+    Para las grabaciones historicas no hay tramos, y se responde
+    'sin_datos' en vez de atribuirlas a una modalidad inventada.
+    """
+
+    usuario, error = require_permission(request, "recordings.view")
+
+    if error:
+        return error
+
+    grabacion = get_recording(recording_id)
+
+    if grabacion is None:
+        return JSONResponse(
+            status_code=404,
+            content={"status": "error",
+                     "message": "Grabación no encontrada"}
+        )
+
+    # El aislamiento entre empresas: una grabacion de otra
+    # organizacion no se mira, ni siquiera su reparto por modalidad.
+    if not same_organization(
+        usuario, organization_of_device(grabacion["device_id"])
+    ):
+        return JSONResponse(
+            status_code=404,
+            content={"status": "error",
+                     "message": "Grabación no encontrada"}
+        )
+
+    reparto = tramos_de_grabacion(recording_id)
+
+    if reparto is None:
+        return JSONResponse(
+            status_code=404,
+            content={"status": "error",
+                     "message": "Grabación no encontrada"}
+        )
+
+    return {"status": "ok", **reparto}
 
 
 @app.get("/api/agent-installer/info")

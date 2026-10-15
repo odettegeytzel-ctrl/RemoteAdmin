@@ -9069,6 +9069,127 @@ return params.toString();
 
 }
 
+/* ==============================
+MODALIDAD DE CADA GRABACION
+============================== */
+
+// Como se llama cada modalidad en la tabla.
+const NOMBRE_DE_LA_MODALIDAD = {
+    manual: "Manual",
+    programada: "Programada",
+    continua: "Continua"
+};
+
+const COLOR_DE_LA_MODALIDAD = {
+    manual: "bg-blue-100 text-blue-700",
+    programada: "bg-emerald-100 text-emerald-700",
+    continua: "bg-violet-100 text-violet-700"
+};
+
+// Lo ya consultado, para no volver a pedirlo al repaginar.
+const modalidadesCargadas = new Map();
+
+
+// Se consulta BAJO DEMANDA, no al pintar la tabla.
+//
+// Con veinte filas por pagina, cargarlo solo seria veinte peticiones
+// cada vez que alguien cambia un filtro. El reparto interesa de una
+// grabacion concreta, no de todas a la vez.
+function celdaDeModalidad(rec) {
+
+    const guardado = modalidadesCargadas.get(rec.id);
+
+    if (guardado) {
+        return guardado;
+    }
+
+    return `
+        <button
+            type="button"
+            class="text-xs text-slate-500 hover:text-slate-800 underline decoration-dotted"
+            data-modalidad="${rec.id}"
+        >Ver</button>
+    `;
+}
+
+
+function pintarModalidad(reparto) {
+
+    if (!reparto || reparto.sin_datos || !reparto.tramos.length) {
+
+        // Las grabaciones anteriores a los tramos no tienen reparto.
+        // Se dice; no se les atribuye una modalidad inventada.
+        return `<span class="text-xs text-slate-400"
+                      title="Esta grabación es anterior al registro de modalidades">
+                    Sin datos
+                </span>`;
+    }
+
+    const porOrigen = new Map();
+
+    for (const tramo of reparto.tramos) {
+
+        porOrigen.set(
+            tramo.origen,
+            (porOrigen.get(tramo.origen) || 0) + (tramo.segundos || 0)
+        );
+    }
+
+    const piezas = [];
+
+    for (const [origen, segundos] of porOrigen) {
+
+        const nombre =
+            NOMBRE_DE_LA_MODALIDAD[origen] || origen;
+
+        const color =
+            COLOR_DE_LA_MODALIDAD[origen] || "bg-slate-100 text-slate-700";
+
+        // Los minutos importan: un archivo puede ser casi todo
+        // programada con tres minutos de manual, y decir solo
+        // "Manual, Programada" lo daria a entender al reves.
+        const minutos = Math.max(1, Math.round(segundos / 60));
+
+        piezas.push(
+            `<span class="inline-block px-2 py-0.5 rounded-full text-xs ${color}"
+                   title="${segundos} segundos">${nombre} ${minutos}m</span>`
+        );
+    }
+
+    return `<span class="flex flex-wrap gap-1">${piezas.join("")}</span>`;
+}
+
+
+async function cargarModalidad(id, celda) {
+
+    celda.innerHTML =
+        `<span class="text-xs text-slate-400">Consultando...</span>`;
+
+    try {
+
+        const respuesta =
+            await fetch(`/api/recordings/${id}/intervals`);
+
+        if (!respuesta.ok) {
+            throw new Error("sin respuesta");
+        }
+
+        const datos = await respuesta.json();
+
+        const html = pintarModalidad(datos);
+
+        modalidadesCargadas.set(id, html);
+
+        celda.innerHTML = html;
+
+    } catch (error) {
+
+        celda.innerHTML =
+            `<span class="text-xs text-red-500">No se pudo consultar</span>`;
+    }
+}
+
+
 async function loadRecordings() {
 
 const table =
@@ -9153,6 +9274,9 @@ try {
                 <td class="px-6 py-4">
                     ${insigniaDeAlmacenamiento(rec)}
                 </td>
+                <td class="px-6 py-4 whitespace-nowrap">
+                    ${celdaDeModalidad(rec)}
+                </td>
                 <td class="px-6 py-4 whitespace-nowrap">${keepCell}</td>
                 <td class="px-6 py-4 whitespace-nowrap">
                     ${accionesDeGrabacion(rec)}
@@ -9163,6 +9287,28 @@ try {
     }).join("");
 
     renderTimeline(recordings);
+
+    // Un solo oyente en la tabla, no uno por fila: asi no hay que
+    // soltarlos al repaginar ni se acumulan.
+    if (!table.dataset.modalidadEnlazada) {
+
+        table.dataset.modalidadEnlazada = "si";
+
+        table.addEventListener("click", (evento) => {
+
+            const boton =
+                evento.target.closest("[data-modalidad]");
+
+            if (!boton) {
+                return;
+            }
+
+            cargarModalidad(
+                Number(boton.dataset.modalidad),
+                boton.parentElement
+            );
+        });
+    }
 
 } catch (error) {
 

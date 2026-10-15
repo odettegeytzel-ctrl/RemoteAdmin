@@ -230,6 +230,23 @@ class Duenos:
 
         return salida
 
+    def para_informar(self):
+        """
+        Los tramos tal cual, para mandarlos al servidor.
+
+        A diferencia de tramos(), el tramo ABIERTO conserva su
+        'hasta' en None. Importa: el servidor lo guarda sin fin y lo
+        cierra cuando llegue el aviso. Si aqui se cerrara con la hora
+        actual, cada envio inventaria un fin distinto para la misma
+        grabacion en curso.
+
+        La identidad de un tramo es (equipo, origen, desde). El mismo
+        tramo informado diez veces es el mismo tramo: el servidor lo
+        reconoce y no lo duplica.
+        """
+
+        return [dict(t) for t in self._tramos]
+
     def tramos_entre(self, desde, hasta):
         """
         Los tramos que solapan con [desde, hasta], recortados.
