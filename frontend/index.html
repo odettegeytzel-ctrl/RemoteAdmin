@@ -2234,13 +2234,75 @@
 
                                 <div class="bg-slate-50 rounded-lg p-4">
 
-                                    <p class="text-xs text-slate-500 mb-1">
-                                        Equipo
-                                    </p>
+                                    <div class="flex items-start justify-between gap-2">
 
-                                    <strong id="detail-hostname">
-                                        -
-                                    </strong>
+                                        <div class="min-w-0">
+
+                                            <p class="text-xs text-slate-500 mb-1">
+                                                Equipo
+                                            </p>
+
+                                            <strong id="detail-hostname">
+                                                -
+                                            </strong>
+
+                                            <!--
+                                            El nombre de Windows, debajo y
+                                            en pequeño. Solo aparece si hay
+                                            un alias: sin el, seria el mismo
+                                            texto dos veces.
+                                            -->
+                                            <p id="detail-hostname-real"
+                                               class="hidden text-xs text-slate-500 mt-0.5"></p>
+
+                                        </div>
+
+                                        <button
+                                            type="button"
+                                            id="detail-alias-editar"
+                                            class="shrink-0 text-xs text-slate-500 hover:text-slate-900 underline decoration-dotted"
+                                            title="Ponerle un nombre que se entienda"
+                                        >Editar nombre</button>
+
+                                    </div>
+
+                                    <!--
+                                    Un formulario compacto, dentro de la
+                                    misma tarjeta: abrir una ventana para
+                                    cambiar un texto de una linea seria
+                                    desproporcionado.
+                                    -->
+                                    <div id="detail-alias-form" class="hidden mt-3">
+
+                                        <input
+                                            id="detail-alias-input"
+                                            type="text"
+                                            maxlength="60"
+                                            placeholder="Recepción, Almacén Norte..."
+                                            class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm"
+                                        >
+
+                                        <div class="flex items-center gap-2 mt-2">
+
+                                            <button type="button" id="detail-alias-guardar"
+                                                class="px-3 py-1.5 bg-slate-900 text-white rounded-lg text-xs font-medium hover:bg-slate-800 transition"
+                                            >Guardar</button>
+
+                                            <button type="button" id="detail-alias-cancelar"
+                                                class="px-3 py-1.5 border border-slate-300 text-slate-700 rounded-lg text-xs hover:bg-slate-50 transition"
+                                            >Cancelar</button>
+
+                                            <button type="button" id="detail-alias-quitar"
+                                                class="px-3 py-1.5 text-xs text-slate-500 hover:text-red-600 transition"
+                                                title="Volver a usar el nombre de Windows"
+                                            >Quitar nombre</button>
+
+                                        </div>
+
+                                        <p id="detail-alias-estado"
+                                           class="hidden text-xs mt-2"></p>
+
+                                    </div>
 
                                 </div>
 

@@ -466,6 +466,22 @@ def init_db():
             "ALTER TABLE devices ADD COLUMN system_info_at TEXT"
         )
 
+    # Nombre que le pone la empresa al equipo.
+    #
+    # Es una ETIQUETA de VEYRA, no el nombre de Windows. "Recepcion"
+    # se entiende; "DESKTOP-7XK92AB", no.
+    #
+    # Va en una columna APARTE y nunca sustituye al hostname: el
+    # nombre real se sigue guardando, se sigue enseñando debajo, y el
+    # Agent lo sigue actualizando sin tocar el alias. El identificador
+    # tecnico del equipo es device_id y tampoco cambia.
+    #
+    # NULL significa "sin alias": se enseña el nombre de Windows.
+    if "alias" not in columnas_devices:
+        connection.execute(
+            "ALTER TABLE devices ADD COLUMN alias TEXT"
+        )
+
     if "invalid_reason" not in columnas_recordings:
         connection.execute(
             "ALTER TABLE recordings ADD COLUMN invalid_reason TEXT"
