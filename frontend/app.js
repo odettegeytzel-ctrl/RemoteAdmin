@@ -1,5 +1,215 @@
 let selectedDevice = null;
 
+
+/* ==============================
+EDITAR EL NOMBRE DE UN EQUIPO
+============================== */
+
+function abrirEdicionDeNombre() {
+
+    const form = document.getElementById("detail-alias-form");
+    const campo = document.getElementById("detail-alias-input");
+
+    if (!form || !campo || !selectedDevice) {
+        return;
+    }
+
+    // Se parte del alias actual, no del nombre que se ve: si no hay
+    // alias el campo debe estar vacio, no relleno con el nombre de
+    // Windows, que invitaria a guardarlo como si fuera propio.
+    campo.value = selectedDevice.alias || "";
+
+    form.classList.remove("hidden");
+
+    mensajeDeAlias("", false);
+
+    campo.focus();
+    campo.select();
+}
+
+
+function cerrarEdicionDeNombre() {
+
+    const form = document.getElementById("detail-alias-form");
+
+    if (form) {
+        form.classList.add("hidden");
+    }
+}
+
+
+function mensajeDeAlias(texto, error) {
+
+    const estado = document.getElementById("detail-alias-estado");
+
+    if (!estado) {
+        return;
+    }
+
+    estado.textContent = texto;
+
+    estado.className =
+        "text-xs mt-2 " + (error ? "text-red-600" : "text-emerald-600");
+
+    estado.classList.toggle("hidden", !texto);
+}
+
+
+async function guardarNombreDelEquipo(alias) {
+
+    if (!selectedDevice) {
+        return;
+    }
+
+    const guardar = document.getElementById("detail-alias-guardar");
+
+    if (guardar) {
+        guardar.disabled = true;
+    }
+
+    try {
+
+        const respuesta =
+            await fetch(
+                `/api/devices/${selectedDevice.device_id}/alias`,
+                {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ alias: alias })
+                }
+            );
+
+        const datos =
+            await respuesta.json().catch(() => ({}));
+
+        if (!respuesta.ok) {
+
+            mensajeDeAlias(
+                datos.message || "No se pudo guardar el nombre.",
+                true
+            );
+
+            return;
+        }
+
+        // Se refresca en memoria y en pantalla sin recargar la
+        // pagina entera: cambiar un texto de una linea no justifica
+        // volver a pedirlo todo.
+        selectedDevice.alias = datos.alias || null;
+
+        renderDeviceInfoFields(selectedDevice);
+
+        mensajeDeAlias(
+            datos.alias
+                ? "Nombre guardado."
+                : "Nombre quitado. Se vuelve a usar el de Windows.",
+            false
+        );
+
+        // Y el listado, para que no diga otra cosa que la ficha
+        loadDevices();
+
+        setTimeout(cerrarEdicionDeNombre, 900);
+
+    } catch (error) {
+
+        mensajeDeAlias("No se pudo guardar el nombre.", true);
+
+    } finally {
+
+        if (guardar) {
+            guardar.disabled = false;
+        }
+    }
+}
+
+
+function enlazarEdicionDeNombre() {
+
+    const boton = document.getElementById("detail-alias-editar");
+
+    if (boton) {
+        boton.addEventListener("click", abrirEdicionDeNombre);
+    }
+
+    const cancelar = document.getElementById("detail-alias-cancelar");
+
+    if (cancelar) {
+        cancelar.addEventListener("click", cerrarEdicionDeNombre);
+    }
+
+    const guardar = document.getElementById("detail-alias-guardar");
+
+    if (guardar) {
+        guardar.addEventListener("click", () => {
+
+            const campo =
+                document.getElementById("detail-alias-input");
+
+            guardarNombreDelEquipo(campo ? campo.value : "");
+        });
+    }
+
+    const quitar = document.getElementById("detail-alias-quitar");
+
+    if (quitar) {
+        quitar.addEventListener("click", () => guardarNombreDelEquipo(""));
+    }
+
+    const campo = document.getElementById("detail-alias-input");
+
+    if (campo) {
+
+        campo.addEventListener("keydown", (evento) => {
+
+            if (evento.key === "Enter") {
+                evento.preventDefault();
+                guardarNombreDelEquipo(campo.value);
+            }
+
+            if (evento.key === "Escape") {
+                cerrarEdicionDeNombre();
+            }
+        });
+    }
+}
+
+
+/* ==============================
+COMO SE LLAMA UN EQUIPO
+============================== */
+
+// El alias si lo tiene; el nombre de Windows si no.
+//
+// En un solo sitio a proposito: estaba repetido como
+// `x.hostname || x.device_id` en casi veinte puntos, y con dos
+// nombres por equipo eso serian veinte oportunidades de que una
+// vista enseñe uno y otra enseñe otro.
+//
+// El alias NUNCA sustituye al hostname en los datos: es solo como se
+// presenta. El identificador tecnico sigue siendo device_id.
+function nombreDeEquipo(equipo) {
+
+    if (!equipo) {
+        return "";
+    }
+
+    const alias = (equipo.alias || "").trim();
+
+    return alias || equipo.hostname || equipo.device_id || "";
+}
+
+
+// Para cuando hay sitio para los dos: el nombre y, debajo, el real.
+function nombreRealSiHayAlias(equipo) {
+
+    if (!equipo || !(equipo.alias || "").trim()) {
+        return "";
+    }
+
+    return equipo.hostname || "";
+}
+
 /* ==============================
 ICONOS
 
@@ -692,8 +902,14 @@ return devices.filter(device => {
         return true;
     }
 
-    // Busca en hostname, IP y usuario
+    // Busca en el alias, el nombre de Windows, la IP y el usuario.
+    //
+    // Los DOS nombres a proposito: quien puso "Recepcion" lo busca
+    // asi, y quien tiene el inventario en la mano busca por
+    // "DESKTOP-7XK92AB". Dejar fuera uno de los dos obligaria a
+    // saber cual se uso al registrarlo.
     const campos = [
+        device.alias,
         device.hostname,
         device.ip_address,
         device.username
@@ -1153,8 +1369,14 @@ table.innerHTML = "";
             <td class="px-6 py-4">
                 <div>
                     <p class="font-medium text-slate-900">
-                        ${device.hostname}${recordingBadge}
+                        ${nombreDeEquipo(device)}${recordingBadge}
                     </p>
+
+                    ${nombreRealSiHayAlias(device)
+                        ? `<p class="text-xs text-slate-500 mt-0.5">
+                               ${nombreRealSiHayAlias(device)}
+                           </p>`
+                        : ""}
 
                     <p class="text-xs text-slate-500 mt-1">
                         ${device.device_id}
@@ -1812,7 +2034,7 @@ lista.innerHTML =
                 <div class="flex-1 min-w-0">
 
                     <p class="text-sm font-medium text-slate-900 truncate">
-                        ${device.hostname || device.device_id}
+                        ${nombreDeEquipo(device)}
                     </p>
 
                     <div class="flex flex-wrap gap-1.5 mt-1">${etiquetas}</div>
@@ -2004,7 +2226,7 @@ recientes.innerHTML =
 
             <div class="flex-1 min-w-0">
                 <p class="text-sm text-slate-900 truncate">
-                    ${rec.hostname || rec.device_id}
+                    ${nombreDeEquipo(rec)}
                 </p>
                 <p class="text-xs text-slate-500 mt-0.5">
                     ${textoDeFecha(rec.started_at)} · ${formatDuration(rec.duration_sec)}
@@ -2053,7 +2275,7 @@ function renderActivityPanel(alerts) {
             fecha: rec.started_at,
             icono: icono("grabacion"),
             punto: "bg-slate-400",
-            texto: `Grabación de ${rec.hostname || rec.device_id}`
+            texto: `Grabación de ${nombreDeEquipo(rec)}`
                 + ` (${formatDuration(rec.duration_sec)})`
         });
 
@@ -2657,7 +2879,22 @@ function renderDeviceInfoFields(device) {
 document.getElementById(
     "detail-hostname"
 ).textContent =
-    device.hostname || "Sin información";
+    nombreDeEquipo(device) || "Sin información";
+
+// El nombre de Windows, debajo, solo si hay alias: sin el seria el
+// mismo texto repetido.
+const hostnameReal =
+    document.getElementById("detail-hostname-real");
+
+if (hostnameReal) {
+
+    const real = nombreRealSiHayAlias(device);
+
+    hostnameReal.textContent =
+        real ? ("Nombre de Windows: " + real) : "";
+
+    hostnameReal.classList.toggle("hidden", !real);
+}
 
 document.getElementById(
     "detail-username"
@@ -3437,7 +3674,7 @@ try {
     if (result.status === "sent") {
 
         statusElement.textContent =
-            `Grabación iniciada en ${selectedDevice.hostname}`;
+            `Grabación iniciada en ${nombreDeEquipo(selectedDevice)}`;
 
         statusElement.className =
             "px-4 py-3 rounded-lg text-sm bg-emerald-50 text-emerald-700";
@@ -5162,7 +5399,7 @@ function pintarVinculacion() {
 
         // textContent y no innerHTML: el nombre lo puso el equipo.
         opcion.textContent =
-            (equipo.hostname || equipo.device_id)
+            nombreDeEquipo(equipo)
             + "  ·  baja del "
             + textoDeFecha(equipo.decommissioned_at);
 
@@ -5191,11 +5428,11 @@ async function vincularHistorial() {
     );
 
     const nombreAnterior =
-        (anterior && (anterior.hostname || anterior.device_id))
+        (anterior && nombreDeEquipo(anterior))
         || lista.value;
 
     const nombreActual =
-        selectedDevice.hostname || selectedDevice.device_id;
+        nombreDeEquipo(selectedDevice);
 
     const seguro = window.confirm(
         `¿Vincular "${nombreActual}" con el historial de `
@@ -5364,7 +5601,7 @@ async function darDeBajaEquipo() {
         return;
     }
 
-    const nombre = selectedDevice.hostname || selectedDevice.device_id;
+    const nombre = nombreDeEquipo(selectedDevice);
 
     // La confirmacion nombra el equipo y dice que se conserva. Un
     // "¿seguro?" a secas no deja decidir nada.
@@ -5427,7 +5664,7 @@ async function reincorporarEquipo() {
         return;
     }
 
-    const nombre = selectedDevice.hostname || selectedDevice.device_id;
+    const nombre = nombreDeEquipo(selectedDevice);
 
     const seguro = window.confirm(
         `¿Reincorporar "${nombre}"?\n\n`
@@ -5541,7 +5778,7 @@ async function ejecutarAccionDeEquipo(definicion) {
 
     if (definicion.confirmacion) {
 
-        const equipo = selectedDevice.hostname || deviceId;
+        const equipo = nombreDeEquipo(selectedDevice);
 
         if (!confirm(definicion.confirmacion + "\n\nEquipo: " + equipo)) {
             return;
@@ -5864,7 +6101,7 @@ try {
     if (result.status === "sent") {
 
         statusElement.textContent =
-            `Ping enviado correctamente a ${selectedDevice.hostname}`;
+            `Ping enviado correctamente a ${nombreDeEquipo(selectedDevice)}`;
 
         statusElement.className =
             "px-4 py-3 rounded-lg text-sm bg-emerald-50 text-emerald-700";
@@ -8639,7 +8876,7 @@ const groups = {};
 recordings.forEach(r => {
     const key = r.device_id;
     if (!groups[key]) {
-        groups[key] = { hostname: r.hostname || r.device_id, items: [] };
+        groups[key] = { hostname: nombreDeEquipo(r), items: [] };
     }
     groups[key].items.push(r);
 });
@@ -8751,7 +8988,7 @@ highlightTimelineBlock(id);
 
 const start = formatRecordingDate(rec.started_at);
 const end = formatRecordingDate(rec.ended_at);
-const pc = rec.hostname || rec.device_id || "-";
+const pc = nombreDeEquipo(rec) || "-";
 
 detail.innerHTML = `
     <div class="flex items-start justify-between gap-4 mb-3">
@@ -9247,7 +9484,7 @@ try {
 
         const start = formatRecordingDate(rec.started_at);
         const end = formatRecordingDate(rec.ended_at);
-        const pc = rec.hostname || rec.device_id || "-";
+        const pc = nombreDeEquipo(rec) || "-";
 
         const kept = Boolean(rec.keep);
 
@@ -10476,6 +10713,7 @@ stopRecording
 );
 
 enlazarTeclasRemotas();
+enlazarEdicionDeNombre();
 
 document
 .getElementById("remote-minimizar")
@@ -10990,61 +11228,83 @@ async function descargarInstaladorExe() {
         return;
     }
 
-    const original = boton.textContent;
-
-    boton.disabled = true;
-    boton.textContent = "Descargando...";
-
-    mensajeDeInstalacion(estado, "Preparando la descarga...", false);
+    mensajeDeInstalacion(estado, "Comprobando el instalador...", false);
 
     try {
 
-        const respuesta = await fetch("/api/agent-installer");
+        // Primero se confirma que hay algo que descargar. Si no, se
+        // dice por que en vez de lanzar al navegador contra un 503.
+        const respuesta =
+            await fetch("/api/agent-installer/info");
 
         if (!respuesta.ok) {
 
-            let motivo = "No se pudo descargar el instalador.";
+            mensajeDeInstalacion(
+                estado,
+                respuesta.status === 403
+                    ? "Solo el propietario de la organización puede "
+                      + "descargar el instalador."
+                    : "No se pudo comprobar el instalador.",
+                true
+            );
 
-            try {
-                const datos = await respuesta.json();
-                motivo = datos.message || motivo;
-            } catch (error) {
-                // Respuesta sin JSON: se deja el mensaje generico
-            }
-
-            mensajeDeInstalacion(estado, motivo, true);
             return;
         }
 
-        const blob = await respuesta.blob();
+        const datos = await respuesta.json();
 
+        if (!datos.available || !datos.installer) {
+
+            mensajeDeInstalacion(
+                estado,
+                "El instalador no está publicado en el servidor.",
+                true
+            );
+
+            return;
+        }
+
+        // Y ahora la descarga, por NAVEGACION DIRECTA.
+        //
+        // Antes se bajaba con fetch, se construia un Blob y se
+        // pinchaba un enlace a blob:. Tres problemas con 76 MB:
+        //
+        //   - la pestaña se guardaba el archivo entero en memoria;
+        //   - no habia barra de progreso ni reanudacion, aunque el
+        //     servidor manda Accept-Ranges y Content-Length;
+        //   - y se llamaba a revokeObjectURL JUSTO despues del
+        //     click, antes de que el navegador hubiera confirmado la
+        //     descarga. Revocar el blob ahi la deja a medias.
+        //
+        // Una navegacion normal lo escribe en disco segun llega. La
+        // sesion viaja en la cookie, asi que el endpoint sigue
+        // igual de protegido: no se abre ninguna ruta anonima.
         const enlace = document.createElement("a");
-        enlace.href = URL.createObjectURL(blob);
-        enlace.download = "VEYRA-Instalador.exe";
+
+        enlace.href = "/api/agent-installer";
+        enlace.download = datos.installer.filename
+            || "VEYRA-Instalador.exe";
+        enlace.rel = "noopener";
 
         document.body.appendChild(enlace);
         enlace.click();
         document.body.removeChild(enlace);
 
-        URL.revokeObjectURL(enlace.href);
+        const mb = (datos.installer.size / 1048576).toFixed(1);
 
         mensajeDeInstalacion(
             estado,
-            "Descargado. Abrelo en el equipo que quieras administrar y "
-            + "acepta el aviso de Windows.",
+            `Descargando la versión ${datos.installer.version} `
+            + `(${mb} MB). Ábrelo en el equipo que quieras administrar `
+            + "y acepta el aviso de Windows.",
             false
         );
 
     } catch (error) {
 
         mensajeDeInstalacion(
-            estado, "No se pudo descargar el instalador.", true
+            estado, "No se pudo iniciar la descarga.", true
         );
-
-    } finally {
-
-        boton.disabled = false;
-        boton.textContent = original;
     }
 }
 

@@ -14,6 +14,7 @@ from fastapi.responses import (
 
 from backend.database import init_db, get_connection
 from backend.models import DeviceRegister, DeviceHeartbeat
+from backend import devices as devices_mod
 from backend.devices import (
     register_device,
     enroll_device,
@@ -973,6 +974,75 @@ def devices(request: Request):
     # Detecta cambios de estado antes de devolver la lista
     detect_alerts()
     return get_devices()
+
+
+@app.put("/api/devices/{device_id}/alias")
+def set_device_alias(device_id: str, data: dict, request: Request):
+    """
+    Pone, cambia o quita el nombre con que la empresa llama al equipo.
+
+    Es una etiqueta de VEYRA. No toca el nombre de Windows, ni el
+    device_id, ni el token, ni la organizacion, ni el historial: solo
+    como se le llama en el panel.
+
+    Exige devices.manage y no devices.view a proposito: ver el
+    inventario y renombrar lo que hay en el no son la misma
+    responsabilidad. Es el mismo permiso que dar de baja un equipo.
+
+    Un alias vacio lo QUITA, y el panel vuelve a enseñar el nombre de
+    Windows. No se borra nada mas.
+    """
+
+    usuario, error = require_permission(request, "devices.manage")
+
+    if error:
+        return error
+
+    if not device_exists(device_id):
+        return JSONResponse(
+            status_code=404,
+            content={"status": "error",
+                     "message": "Dispositivo no encontrado"}
+        )
+
+    # Un equipo de otra empresa no se renombra, ni aunque se conozca
+    # su identificador.
+    if not same_organization(usuario, organization_of_device(device_id)):
+        return JSONResponse(
+            status_code=404,
+            content={"status": "error",
+                     "message": "Dispositivo no encontrado"}
+        )
+
+    try:
+        resultado = devices_mod.set_alias(device_id, data.get("alias"))
+
+    except devices_mod.AliasError as problema:
+
+        log_audit(
+            "device.alias", request=request, device_id=device_id,
+            status=STATUS_ERROR, details="Nombre rechazado: %s" % problema
+        )
+
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "message": str(problema)}
+        )
+
+    if resultado is None:
+        return JSONResponse(
+            status_code=404,
+            content={"status": "error",
+                     "message": "Dispositivo no encontrado"}
+        )
+
+    log_audit(
+        "device.alias", request=request, device_id=device_id,
+        status=STATUS_SUCCESS,
+        details={"alias": resultado["alias"] or "(sin nombre propio)"}
+    )
+
+    return {"status": "ok", **resultado}
 
 
 @app.post("/api/devices/{device_id}/decommission")
@@ -5205,10 +5275,19 @@ def agent_installer_download(request: Request, organization_id: int = None):
     )
 
     # FileResponse transmite por bloques: 76 MB no caben comodos en
-    # memoria, y menos con varias descargas a la vez.
+    # memoria, y menos con varias descargas a la vez. Ademas pone
+    # Content-Length y Accept-Ranges, asi que el navegador sabe
+    # cuanto espera y puede reanudar una descarga cortada.
+    #
+    # application/octet-stream y no el tipo propio de los ejecutables
+    # de Windows: es el tipo estandar para "esto se descarga, no se
+    # interpreta". Un tipo especifico de ejecutable invita a que
+    # proxies, antivirus de correo y extensiones le den un trato
+    # distinto, y aqui no aporta nada: el nombre del archivo ya va en
+    # Content-Disposition.
     return FileResponse(
         agent_releases.installer_path(),
-        media_type="application/vnd.microsoft.portable-executable",
+        media_type="application/octet-stream",
         filename=agent_releases.INSTALLER_NAME
     )
 
