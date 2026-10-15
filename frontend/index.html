@@ -2013,6 +2013,15 @@
                                     <span id="remote-keys-estado"
                                         class="text-xs text-slate-400 ml-1"></span>
 
+                                    <!--
+                                    Sin esto, escribir y que no pase
+                                    nada no tiene explicacion visible.
+                                    -->
+                                    <span
+                                        id="remote-foco"
+                                        class="text-xs px-2 py-1 rounded-md"
+                                    ></span>
+
                                     <span class="flex-1"></span>
 
                                     <!--
@@ -2044,6 +2053,9 @@
                                     <div
                                         id="remote-screen-container"
                                         class="relative max-w-full vy-remoto-marco"
+                                        tabindex="0"
+                                        role="application"
+                                        aria-label="Escritorio remoto. El teclado se envia al equipo."
                                     >
 
                                         <img
@@ -2051,7 +2063,6 @@
                                             class="block rounded vy-remoto-imagen"
                                             alt="Escritorio remoto"
                                             draggable="false"
-                                            tabindex="0"
                                         >
 
                                         <svg

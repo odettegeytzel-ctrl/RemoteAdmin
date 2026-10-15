@@ -6086,7 +6086,7 @@ try {
 
     enableRemoteKeyboard();
 
-    image.focus();
+    recuperarFocoRemoto();
 
     // Cada sesion empieza desplegada, aunque la anterior se cerrara
     // minimizada: abrir el remoto y no ver nada seria desconcertante.
@@ -6192,6 +6192,10 @@ function enlazarTeclasRemotas() {
         if (teclas.length) {
             enviarTeclasRemotas(teclas, boton);
         }
+
+        // El boton se queda con el foco tras pulsarlo, y entonces el
+        // teclado fisico dejaria de llegar al equipo.
+        recuperarFocoRemoto();
     });
 }
 
@@ -6295,6 +6299,10 @@ async function alternarMantenimiento() {
         }
 
         pintarMantenimiento();
+
+        // Igual que las teclas: el boton se queda con el foco y el
+        // teclado fisico dejaria de llegar al equipo.
+        recuperarFocoRemoto();
 
         detenerRenovacionDeMantenimiento();
 
@@ -7671,16 +7679,33 @@ if (pressedRemoteKeys.size) {
     releaseAllRemoteKeys();
 }
 
+// El aviso tiene que decir la verdad tambien al perder el foco.
+// Sin esto seguia diciendo "Teclado -> equipo remoto" mientras lo
+// que se tecleara no llegaba a ninguna parte.
+pintarFocoRemoto();
+
 }
+
+// Donde se escucha el teclado.
+//
+// Antes eran los oyentes de la IMAGEN, con tabindex en ella. Escribir
+// solo funcionaba mientras esa imagen tenia el foco, y en cuanto se
+// pulsaba un boton de la barra de teclas, "Avisar mantenimiento" o un
+// tirador de redimensionado, el foco se iba y el teclado dejaba de
+// llegar: en silencio y sin ninguna pista de por que.
+//
+// Ahora escucha el MARCO, que contiene a los dos, y cualquier pulsacion
+// dentro de la ventana le devuelve el foco.
+function marcoRemoto() {
+    return document.getElementById("remote-screen-container");
+}
+
 
 function enableRemoteKeyboard() {
 
-const image =
-    document.getElementById(
-        "remote-screen-image"
-    );
+const marco = marcoRemoto();
 
-if (!image) {
+if (!marco) {
     return;
 }
 
@@ -7691,24 +7716,83 @@ keyboardDeviceId =
         ? selectedDevice.device_id
         : null;
 
-image.addEventListener("keydown", onRemoteKeyDown);
-image.addEventListener("keyup", onRemoteKeyUp);
-image.addEventListener("blur", onRemoteKeyboardBlur);
+marco.addEventListener("keydown", onRemoteKeyDown);
+marco.addEventListener("keyup", onRemoteKeyUp);
+marco.addEventListener("blur", onRemoteKeyboardBlur);
+marco.addEventListener("focus", pintarFocoRemoto);
+
+// Pulsar en cualquier parte de la ventana remota devuelve el teclado
+// al equipo: es lo que espera quien acaba de usar un boton.
+marco.addEventListener("pointerdown", recuperarFocoRemoto);
+
 window.addEventListener("blur", onRemoteKeyboardBlur);
 
+pintarFocoRemoto();
+
+}
+
+
+function recuperarFocoRemoto() {
+
+    const marco = marcoRemoto();
+
+    if (!marco) {
+        return;
+    }
+
+    // En el siguiente ciclo: si se llama durante un pointerdown, el
+    // navegador mueve el foco DESPUES y desharia esto.
+    setTimeout(() => {
+
+        try {
+            marco.focus({ preventScroll: true });
+
+        } catch (error) {
+            marco.focus();
+        }
+
+        pintarFocoRemoto();
+
+    }, 0);
+}
+
+
+// Que se vea a donde va lo que se teclea.
+function pintarFocoRemoto() {
+
+    const aviso = document.getElementById("remote-foco");
+    const marco = marcoRemoto();
+
+    if (!aviso || !marco) {
+        return;
+    }
+
+    const tieneElFoco =
+        document.activeElement === marco
+        || marco.contains(document.activeElement);
+
+    aviso.textContent =
+        tieneElFoco
+            ? "Teclado -> equipo remoto"
+            : "Pulsa la pantalla para escribir";
+
+    aviso.className =
+        "text-xs px-2 py-1 rounded-md "
+        + (tieneElFoco
+            ? "bg-emerald-900 text-emerald-200"
+            : "bg-slate-700 text-slate-300");
 }
 
 function disableRemoteKeyboard(releaseKeys = true) {
 
-const image =
-    document.getElementById(
-        "remote-screen-image"
-    );
+const marco = marcoRemoto();
 
-if (image) {
-    image.removeEventListener("keydown", onRemoteKeyDown);
-    image.removeEventListener("keyup", onRemoteKeyUp);
-    image.removeEventListener("blur", onRemoteKeyboardBlur);
+if (marco) {
+    marco.removeEventListener("keydown", onRemoteKeyDown);
+    marco.removeEventListener("keyup", onRemoteKeyUp);
+    marco.removeEventListener("blur", onRemoteKeyboardBlur);
+    marco.removeEventListener("focus", pintarFocoRemoto);
+    marco.removeEventListener("pointerdown", recuperarFocoRemoto);
 }
 
 window.removeEventListener("blur", onRemoteKeyboardBlur);
