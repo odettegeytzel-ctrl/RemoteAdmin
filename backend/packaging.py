@@ -60,6 +60,16 @@ PACKAGE_FILES = (
     # el raton, que es todo lo que necesita escritorio.
     "agent/maintenance.py",
 
+    # Quien sostiene la captura: la grabacion manual y la continua
+    # comparten un solo grabador y este modulo lleva la cuenta.
+    # agent.py lo importa al arrancar.
+    #
+    # Igual que maintenance.py, tiene que estar aqui aunque no
+    # parezca "el programa": el actualizador reemplaza la carpeta
+    # agent ENTERA, asi que un modulo que falte deja un agent.py que
+    # no se puede importar y un equipo que no arranca.
+    "agent/owners.py",
+
     "agent/paths.py",
     "agent/release.py",
     "agent/power.py",
