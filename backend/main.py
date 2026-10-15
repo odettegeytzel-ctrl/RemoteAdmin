@@ -14,6 +14,7 @@ from fastapi.responses import (
 
 from backend.database import init_db, get_connection
 from backend.models import DeviceRegister, DeviceHeartbeat
+from backend import devices as devices_mod
 from backend.devices import (
     register_device,
     enroll_device,
@@ -55,6 +56,8 @@ from backend.auth import (
     TOKEN_HOURS
 )
 from backend.recordings import (
+    guardar_tramos,
+    tramos_de_grabacion,
     add_recording,
     register_local_recording,
     get_recording_by_path,
@@ -971,6 +974,75 @@ def devices(request: Request):
     # Detecta cambios de estado antes de devolver la lista
     detect_alerts()
     return get_devices()
+
+
+@app.put("/api/devices/{device_id}/alias")
+def set_device_alias(device_id: str, data: dict, request: Request):
+    """
+    Pone, cambia o quita el nombre con que la empresa llama al equipo.
+
+    Es una etiqueta de VEYRA. No toca el nombre de Windows, ni el
+    device_id, ni el token, ni la organizacion, ni el historial: solo
+    como se le llama en el panel.
+
+    Exige devices.manage y no devices.view a proposito: ver el
+    inventario y renombrar lo que hay en el no son la misma
+    responsabilidad. Es el mismo permiso que dar de baja un equipo.
+
+    Un alias vacio lo QUITA, y el panel vuelve a enseñar el nombre de
+    Windows. No se borra nada mas.
+    """
+
+    usuario, error = require_permission(request, "devices.manage")
+
+    if error:
+        return error
+
+    if not device_exists(device_id):
+        return JSONResponse(
+            status_code=404,
+            content={"status": "error",
+                     "message": "Dispositivo no encontrado"}
+        )
+
+    # Un equipo de otra empresa no se renombra, ni aunque se conozca
+    # su identificador.
+    if not same_organization(usuario, organization_of_device(device_id)):
+        return JSONResponse(
+            status_code=404,
+            content={"status": "error",
+                     "message": "Dispositivo no encontrado"}
+        )
+
+    try:
+        resultado = devices_mod.set_alias(device_id, data.get("alias"))
+
+    except devices_mod.AliasError as problema:
+
+        log_audit(
+            "device.alias", request=request, device_id=device_id,
+            status=STATUS_ERROR, details="Nombre rechazado: %s" % problema
+        )
+
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "message": str(problema)}
+        )
+
+    if resultado is None:
+        return JSONResponse(
+            status_code=404,
+            content={"status": "error",
+                     "message": "Dispositivo no encontrado"}
+        )
+
+    log_audit(
+        "device.alias", request=request, device_id=device_id,
+        status=STATUS_SUCCESS,
+        details={"alias": resultado["alias"] or "(sin nombre propio)"}
+    )
+
+    return {"status": "ok", **resultado}
 
 
 @app.post("/api/devices/{device_id}/decommission")
@@ -2191,6 +2263,34 @@ async def agent_websocket(websocket: WebSocket):
                     print(f"[grabaciones] ficha ilegible de {device_id}")
 
 
+            elif message.startswith("recording_intervals:"):
+
+                # Tramos de actividad de cada modalidad.
+                #
+                # Llegan por el WebSocket del Agent, que ya esta
+                # autenticado con su token individual: device_id es
+                # el de la conexion, NO uno que mande el mensaje. Un
+                # equipo no puede informar tramos de otro.
+                try:
+                    carga = json.loads(message.split(":", 1)[1])
+
+                    nuevos, actualizados, malos = guardar_tramos(
+                        device_id, carga.get("intervals") or []
+                    )
+
+                    if nuevos or malos:
+                        print(
+                            f"[tramos] {device_id}: {nuevos} nuevos, "
+                            f"{actualizados} al dia, {malos} descartados"
+                        )
+
+                except json.JSONDecodeError:
+                    print(f"[tramos] carga ilegible de {device_id}")
+
+                except Exception as error:
+                    print(f"[tramos] no se pudieron guardar: {error}")
+
+
             elif message.startswith("recording_catalog_full:"):
 
                 # Catalogo completo, al reconectar: pone al dia las fichas
@@ -2306,6 +2406,14 @@ async def ping_agent(device_id: str, request: Request):
 
 @app.post("/api/devices/{device_id}/system-info")
 async def request_system_info(device_id: str, request: Request):
+
+    # Pedir la ficha manda una orden al Agent, asi que exige permiso
+    # igual que las demas. No lo exigia: cualquier usuario con sesion
+    # en la organizacion podia hacer trabajar a cualquier equipo.
+    _, error = require_permission(request, "devices.view")
+
+    if error:
+        return error
 
     # Queda constancia de que la acción se PIDIÓ. No se marca como
     # completada: el Agent recibe la orden por WebSocket y no confirma.
@@ -5046,6 +5154,56 @@ def agent_package(request: Request, organization_id: int = None):
     )
 
 
+@app.get("/api/recordings/{recording_id}/intervals")
+def recording_intervals(recording_id: int, request: Request):
+    """
+    Como se reparte un archivo entre las modalidades.
+
+    Exige el mismo permiso que ver la grabacion: los tramos dicen
+    cuando alguien estuvo mirando una pantalla ajena, que no es menos
+    sensible que el video.
+
+    Para las grabaciones historicas no hay tramos, y se responde
+    'sin_datos' en vez de atribuirlas a una modalidad inventada.
+    """
+
+    usuario, error = require_permission(request, "recordings.view")
+
+    if error:
+        return error
+
+    grabacion = get_recording(recording_id)
+
+    if grabacion is None:
+        return JSONResponse(
+            status_code=404,
+            content={"status": "error",
+                     "message": "Grabación no encontrada"}
+        )
+
+    # El aislamiento entre empresas: una grabacion de otra
+    # organizacion no se mira, ni siquiera su reparto por modalidad.
+    if not same_organization(
+        usuario, organization_of_device(grabacion["device_id"])
+    ):
+        return JSONResponse(
+            status_code=404,
+            content={"status": "error",
+                     "message": "Grabación no encontrada"}
+        )
+
+    reparto = tramos_de_grabacion(recording_id)
+
+    if reparto is None:
+        return JSONResponse(
+            status_code=404,
+            content={"status": "error",
+                     "message": "Grabación no encontrada"}
+        )
+
+    return {"status": "ok", **reparto}
+
+
 @app.get("/api/agent-installer/info")
 def agent_installer_info(request: Request, organization_id: int = None):
     """
@@ -5117,10 +5275,19 @@ def agent_installer_download(request: Request, organization_id: int = None):
     )
 
     # FileResponse transmite por bloques: 76 MB no caben comodos en
-    # memoria, y menos con varias descargas a la vez.
+    # memoria, y menos con varias descargas a la vez. Ademas pone
+    # Content-Length y Accept-Ranges, asi que el navegador sabe
+    # cuanto espera y puede reanudar una descarga cortada.
+    #
+    # application/octet-stream y no el tipo propio de los ejecutables
+    # de Windows: es el tipo estandar para "esto se descarga, no se
+    # interpreta". Un tipo especifico de ejecutable invita a que
+    # proxies, antivirus de correo y extensiones le den un trato
+    # distinto, y aqui no aporta nada: el nombre del archivo ya va en
+    # Content-Disposition.
     return FileResponse(
         agent_releases.installer_path(),
-        media_type="application/vnd.microsoft.portable-executable",
+        media_type="application/octet-stream",
         filename=agent_releases.INSTALLER_NAME
     )
 

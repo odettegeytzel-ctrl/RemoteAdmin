@@ -15,7 +15,7 @@ import re
 import urllib.parse
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import psutil
 import requests
@@ -331,6 +331,7 @@ import storage
 import inventory
 
 from scheduler import RecordingScheduler
+import owners
 import power
 
 # ---- Estado del Agent (leído por el bucle asíncrono, escrito por hilos) ----
@@ -510,6 +511,46 @@ def _retention_loop():
             print(f"[retencion] Error al aplicar la retencion: {error}")
 
         time.sleep(RETENTION_CHECK_SECONDS)
+
+
+def report_recording_intervals():
+    """
+    Manda al servidor los tramos de actividad de cada modalidad.
+
+    Va por el WebSocket, que ya esta autenticado con el token de este
+    equipo: el servidor usa el device_id de la CONEXION, no uno que
+    venga en el mensaje. Un equipo no puede informar tramos de otro.
+
+    Reenviar es inofensivo. La identidad de un tramo es (equipo,
+    modalidad, inicio), y el servidor la respeta: el mismo tramo
+    informado diez veces sigue siendo una fila. Por eso se reenvian
+    enteros al reconectar, sin llevar cuenta de cuales llegaron antes
+    de la caida.
+
+    El tramo ABIERTO se manda con su fin en None y el servidor lo
+    guarda asi. Cerrarlo aqui con la hora actual inventaria un final
+    distinto en cada envio para una grabacion que sigue en marcha.
+    """
+
+    tramos = duenos.para_informar()
+
+    if not tramos:
+        return False
+
+    enviado = send_ws_threadsafe(
+        "recording_intervals:" + json.dumps({"intervals": tramos})
+    )
+
+    if enviado:
+        # Los ya cerrados y viejos se olvidan para que la lista no
+        # crezca sin limite en un equipo encendido semanas. Nunca se
+        # tira el tramo abierto ni uno reciente: se perderia la
+        # atribucion del segmento en curso.
+        duenos.olvidar_antes_de(
+            datetime.now(timezone.utc) - timedelta(hours=6)
+        )
+
+    return enviado
 
 
 def report_recording_catalog(segment):
@@ -901,6 +942,11 @@ def on_segment_complete(segment):
     # Solo la ficha: nombre, fechas y tamano. El video se queda aqui.
     report_recording_catalog(segment)
 
+    # Y quien sostenia la captura mientras se grababa ese segmento.
+    # Va despues de la ficha a proposito: primero que exista la
+    # grabacion, luego su reparto.
+    report_recording_intervals()
+
     report_status_threadsafe()
 
 
@@ -922,44 +968,107 @@ screen_recorder = ScreenRecorder(
 # cumpliendose con el navegador cerrado y hasta sin conexion.
 recording_scheduler = RecordingScheduler()
 
+# Quien sostiene la captura ahora mismo.
+#
+# La pantalla se graba mientras AL MENOS UNA modalidad la reclame.
+# Antes habia un solo grabador y dos modalidades usandolo a ciegas:
+# iniciar una manual dentro de la franja no hacia nada, y detenerla
+# paraba la captura entera, matando la programada.
+duenos = owners.Duenos()
+
 # Cada cuanto se comprueba si toca empezar o terminar. Treinta segundos dan
 # una precision mas que suficiente para un horario en minutos y no gastan
 # nada.
 SCHEDULE_CHECK_SECONDS = 30
 
 
-def start_screen_recording(manual=True):
+def start_screen_recording(manual=True, origen=None):
+    """
+    Una modalidad reclama la captura.
+
+    Si ya estaba grabando porque la sostiene otra, NO se arranca una
+    segunda: se anota el dueno nuevo y se sigue con la misma. Grabar
+    dos veces la misma pantalla daria dos videos identicos por el
+    doble de CPU y de disco.
+    """
+
     global agent_state
-    result = screen_recorder.start()
+
+    if origen is None:
+        origen = owners.MANUAL if manual else owners.PROGRAMADA
+
+    hay_que_arrancar = duenos.tomar(origen)
+
+    if hay_que_arrancar:
+        result = screen_recorder.start()
+
+    else:
+        # Ya grabando: se informa de lo que hay, sin tocarlo
+        result = {
+            "status": "already_recording",
+            "path": screen_recorder.current_segment_path()
+        }
+
     with _state_lock:
         agent_state = "recording"
 
-    # Si lo ha pedido una persona, la programacion no le lleva la
-    # contraria durante el resto de la franja en curso.
-    if manual:
-        recording_scheduler.notify_manual(True)
-    else:
-        recording_scheduler.notify_state(True)
+    # El planificador necesita saber el estado real para no intentar
+    # arrancar algo que ya corre.
+    recording_scheduler.notify_state(True)
+
+    log_duenos("toma " + origen)
 
     return result
 
 
-def stop_screen_recording(manual=True):
+def stop_screen_recording(manual=True, origen=None):
+    """
+    Una modalidad deja de reclamar la captura.
+
+    Solo se para de verdad si no queda nadie sosteniendola. Detener
+    la manual mientras el horario sigue vigente ya no corta la
+    grabacion: la continua sigue sin perder un fotograma.
+    """
+
     global agent_state
-    result = screen_recorder.stop()
+
+    if origen is None:
+        origen = owners.MANUAL if manual else owners.PROGRAMADA
+
+    if origen in owners.DEL_HORARIO:
+        hay_que_parar = duenos.soltar_el_horario()
+
+    else:
+        hay_que_parar = duenos.soltar(origen)
+
+    if hay_que_parar:
+        result = screen_recorder.stop()
+
+    else:
+        # Sigue grabando para otro dueno: no se toca el archivo
+        result = {
+            "status": "still_recording",
+            "owners": list(duenos.activos())
+        }
+
     with _state_lock:
         if not screen_recorder.is_recording():
             agent_state = "idle"
 
-    # Parar a mano dentro de una franja programada NO destruye el horario:
-    # simplemente no se reanuda hasta la siguiente. Nadie quiere que el
-    # programa le vuelva a arrancar la grabacion medio minuto despues.
-    if manual:
-        recording_scheduler.notify_manual(False)
-    else:
-        recording_scheduler.notify_state(False)
+    recording_scheduler.notify_state(screen_recorder.is_recording())
+
+    log_duenos("suelta " + origen)
 
     return result
+
+
+def log_duenos(que):
+    """Deja en el registro quien sostiene la captura tras cada cambio."""
+
+    activos = duenos.activos()
+
+    print("[grabacion] %s -> sostienen: %s"
+          % (que, ", ".join(activos) if activos else "nadie"))
 
 
 def apply_schedule(horario):
@@ -974,21 +1083,43 @@ def apply_schedule(horario):
 
 
 def _aplicar_decision_del_horario():
-    """Arranca o detiene la grabacion si el horario lo pide."""
+    """
+    El horario toma o suelta SU turno sobre la captura.
+
+    Lo que cambia respecto a antes: se pregunta por la INTENCION del
+    horario, no por si se esta grabando. Con una manual en marcha,
+    decide() concluia que no habia nada que hacer al empezar la
+    franja —ya se grababa— asi que el horario nunca tomaba su turno,
+    y al parar la manual se paraba todo.
+
+    Ahora el horario reclama su turno igual, y si la captura ya corre
+    por la manual, simplemente se suma.
+    """
+
+    # Primero, la realidad: si el grabador se ha caido, aqui no puede
+    # constar que alguien lo sostiene.
+    if duenos.reconciliar(screen_recorder.is_recording()):
+        print("[grabacion] El grabador no estaba activo: duenos al dia")
 
     recording_scheduler.notify_state(screen_recorder.is_recording())
 
-    decision = recording_scheduler.decide()
+    quiere, fuente = recording_scheduler.intencion()
 
-    if decision == "start":
-        print("[horario] Empieza la franja programada: grabando")
-        start_screen_recording(manual=False)
+    if quiere:
 
-    elif decision == "stop":
-        print("[horario] Termina la franja programada: deteniendo")
-        stop_screen_recording(manual=False)
+        if not duenos.sostiene(fuente):
+            print("[horario] Empieza la franja (%s)" % fuente)
+            start_screen_recording(manual=False, origen=fuente)
 
-    return decision
+        return "start"
+
+    if any(duenos.sostiene(o) for o in owners.DEL_HORARIO):
+        print("[horario] Termina la franja")
+        stop_screen_recording(manual=False, origen=owners.PROGRAMADA)
+
+        return "stop"
+
+    return None
 
 
 def _schedule_loop():
@@ -2556,6 +2687,40 @@ async def websocket_connection():
                 await websocket.send(
                     "recording_status:" + json.dumps(build_recording_status())
                 )
+
+                # La ficha del equipo, SIN que nadie la pida.
+                #
+                # Hasta ahora solo se mandaba al recibir
+                # 'get_system_info', que dispara el boton "Actualizar
+                # informacion" del panel. Un equipo donde nunca se
+                # pulsaba se quedaba para siempre con hostname,
+                # sistema operativo e IP —lo unico que escriben el
+                # alta y el latido— y el resto en blanco.
+                #
+                # Va en un hilo porque consulta WMI, que tarda, y el
+                # bucle de eventos no puede quedarse esperando.
+                try:
+                    ficha = await asyncio.to_thread(get_system_info)
+
+                    await websocket.send(
+                        "system_info:" + json.dumps(ficha)
+                    )
+
+                except Exception as error:
+                    # Que falle la ficha no puede tumbar la conexion:
+                    # el equipo seguira siendo administrable aunque no
+                    # se sepa su modelo.
+                    print(f"[inventario] no se pudo enviar: {error}")
+
+                # Los tramos que no llegaron mientras no habia
+                # conexion. Reenviarlos enteros es seguro: el
+                # servidor los reconoce por su identidad y no los
+                # duplica.
+                try:
+                    report_recording_intervals()
+
+                except Exception as error:
+                    print(f"[tramos] no se pudieron enviar: {error}")
 
                 # Y el catalogo completo: mientras no hubo conexion se han
                 # podido grabar segmentos cuya ficha no llego al servidor.

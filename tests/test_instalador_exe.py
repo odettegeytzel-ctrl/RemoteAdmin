@@ -80,8 +80,13 @@ def test_el_paquete_de_actualizacion_sigue_sin_interprete():
               not any("runtime" in f for f in packaging.PACKAGE_FILES),
               str([f for f in packaging.PACKAGE_FILES if "runtime" in f]))
 
-    comprobar("Tiene los 20 archivos del Agent",
-              len(packaging.PACKAGE_FILES) == 20,
+    # Sin numero fijo: cada modulo nuevo del Agent rompia esta
+    # comprobacion sin que nada estuviera mal. Quien decide si la
+    # lista esta COMPLETA es test_paquete_completo, que calcula los
+    # imports de verdad; aqui solo se mira que no se haya quedado en
+    # nada.
+    comprobar("La lista no esta vacia ni mutilada",
+              len(packaging.PACKAGE_FILES) >= 20,
               str(len(packaging.PACKAGE_FILES)))
 
     # Lo que de verdad importa de esta lista: que no falte nada que

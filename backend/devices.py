@@ -125,6 +125,23 @@ def get_continuous_recording(device_id):
 
 
 def update_system_info(device_id, system_info):
+    """
+    Guarda la ficha del equipo sin perder lo que ya se sabia.
+
+    Cada campo va con COALESCE: si la ficha no lo trae, se conserva
+    el valor anterior en vez de dejarlo en blanco.
+
+    Importa porque las fichas no siempre vienen completas. Un Agent
+    antiguo manda menos campos; una consulta a WMI puede fallar y
+    dejar fuera el fabricante o el modelo. Con la version anterior
+    —que escribia todos los campos siempre— una sola ficha incompleta
+    borraba datos buenos y el panel pasaba a decir "Sin informacion"
+    sobre algo que si se sabia.
+
+    system_info_at guarda CUANDO se supo, para poder avisar de que un
+    dato es viejo en lugar de presentarlo como actual.
+    """
+
     connection = get_connection()
 
     disks = system_info.get("disks", [])
@@ -147,27 +164,35 @@ def update_system_info(device_id, system_info):
         storage_free = system_disk.get("free")
         storage_used = system_disk.get("used")
 
-        cursor = connection.execute(
+    # El UPDATE va FUERA del 'if disks'.
+    #
+    # Estaba dentro, asi que una ficha sin discos no guardaba NADA y
+    # despues reventaba al leer cursor.rowcount, que no existia. Una
+    # consulta de discos que falle no puede impedir que se guarden el
+    # procesador, la memoria y el modelo.
+
+    cursor = connection.execute(
         """
         UPDATE devices
         SET
-            hostname = ?,
-            username = ?,
-            operating_system = ?,
-            ip_address = ?,
-            processor = ?,
-            cpu_count = ?,
-            ram_total = ?,
-            ram_available = ?,
-            ram_used = ?,
-            ram_percent = ?,
-            storage_total = ?,
-            storage_free = ?,
-            storage_used = ?,
-            windows_version = ?,
-            architecture = ?,
-            manufacturer = ?,
-            model = ?
+            hostname        = COALESCE(?, hostname),
+            username        = COALESCE(?, username),
+            operating_system = COALESCE(?, operating_system),
+            ip_address      = COALESCE(?, ip_address),
+            processor       = COALESCE(?, processor),
+            cpu_count       = COALESCE(?, cpu_count),
+            ram_total       = COALESCE(?, ram_total),
+            ram_available   = COALESCE(?, ram_available),
+            ram_used        = COALESCE(?, ram_used),
+            ram_percent     = COALESCE(?, ram_percent),
+            storage_total   = COALESCE(?, storage_total),
+            storage_free    = COALESCE(?, storage_free),
+            storage_used    = COALESCE(?, storage_used),
+            windows_version = COALESCE(?, windows_version),
+            architecture    = COALESCE(?, architecture),
+            manufacturer    = COALESCE(?, manufacturer),
+            model           = COALESCE(?, model),
+            system_info_at  = ?
         WHERE device_id = ?
         """,
         (
@@ -188,6 +213,7 @@ def update_system_info(device_id, system_info):
             system_info.get("architecture"),
             system_info.get("manufacturer"),
             system_info.get("model"),
+            datetime.now(timezone.utc).isoformat(),
             device_id
         )
     )
@@ -277,6 +303,7 @@ def get_devices():
              id,
              device_id,
              hostname,
+             alias,
              operating_system,
              ip_address,
              username,
@@ -904,3 +931,132 @@ def enroll_device(hostname, operating_system, ip_address,
 
     finally:
         connection.close()
+
+
+# ==============================
+# ALIAS: EL NOMBRE QUE LE PONE LA EMPRESA
+# ==============================
+#
+# Una etiqueta de VEYRA, no el nombre de Windows. Va en su propia
+# columna y nunca sustituye al hostname: el nombre real se sigue
+# guardando y enseñando, y el identificador tecnico sigue siendo
+# device_id.
+
+ALIAS_MAXIMO = 60
+
+
+class AliasError(ValueError):
+    """Alias rechazado, con un motivo legible."""
+
+
+def limpiar_alias(valor):
+    """
+    Deja el alias en algo que se pueda guardar y enseñar, o lanza.
+
+    Devuelve None para "sin alias", que es lo que hace que el panel
+    vuelva a enseñar el nombre de Windows.
+
+    Lo que se quita y por que:
+
+      - los espacios de los extremos, porque " Recepcion " y
+        "Recepcion" son el mismo sitio y tenerlos distintos solo
+        confunde al buscar;
+
+      - los caracteres de control, que no se ven pero rompen los
+        registros y las exportaciones.
+
+    Lo que NO se toca: acentos, ñ, mayusculas y espacios interiores.
+    "Almacen Norte" y "Recepcion 1" son nombres normales en español
+    y tienen que pasar tal cual.
+
+    Aqui NO se escapa HTML. El escapado es cosa de quien pinta, y
+    hacerlo al guardar dejaria "Mart&iacute;nez" dentro de la base
+    para siempre. El frontend usa textContent.
+    """
+
+    if valor is None:
+        return None
+
+    if not isinstance(valor, str):
+        raise AliasError("El nombre debe ser texto")
+
+    limpio = valor.strip()
+
+    if not limpio:
+        return None
+
+    # Caracteres de control: invisibles y rompen todo lo que los toca
+    if any(ord(c) < 32 or ord(c) == 127 for c in limpio):
+        raise AliasError("El nombre no puede llevar caracteres de control")
+
+    if len(limpio) > ALIAS_MAXIMO:
+        raise AliasError(
+            "El nombre no puede pasar de %d caracteres" % ALIAS_MAXIMO
+        )
+
+    return limpio
+
+
+def set_alias(device_id, alias):
+    """
+    Pone, cambia o quita el alias de un equipo.
+
+    Un alias vacio lo QUITA: la columna vuelve a NULL y el panel
+    vuelve a enseñar el nombre de Windows. No se borra nada mas.
+
+    No toca el hostname, ni el device_id, ni el token, ni la
+    organizacion, ni el historial.
+    """
+
+    limpio = limpiar_alias(alias)
+
+    connection = get_connection()
+
+    try:
+        cursor = connection.execute(
+            "UPDATE devices SET alias = ? WHERE device_id = ?",
+            (limpio, device_id)
+        )
+
+        connection.commit()
+
+    finally:
+        connection.close()
+
+    if cursor.rowcount == 0:
+        return None
+
+    return {"device_id": device_id, "alias": limpio}
+
+
+def get_alias(device_id):
+    """El alias de un equipo, o None si no tiene."""
+
+    connection = get_connection()
+
+    try:
+        fila = connection.execute(
+            "SELECT alias FROM devices WHERE device_id = ?",
+            (device_id,)
+        ).fetchone()
+
+    finally:
+        connection.close()
+
+    return fila["alias"] if fila else None
+
+
+def nombre_visible(device):
+    """
+    Como se llama un equipo en la interfaz.
+
+    El alias si lo tiene; el nombre de Windows si no. En un solo
+    sitio para que todas las vistas digan lo mismo.
+    """
+
+    if not device:
+        return ""
+
+    alias = (device.get("alias") or "").strip()
+
+    return alias or (device.get("hostname") or device.get("device_id") or "")

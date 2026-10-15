@@ -716,3 +716,191 @@ def list_invalid_recordings(device_id=None):
     connection.close()
 
     return [dict(f) for f in filas]
+
+
+# ==============================
+# TRAMOS DE ACTIVIDAD
+# ==============================
+#
+# Que modalidad sostenia la captura, y cuando. Un archivo de 15
+# minutos puede repartirse entre la programada y la manual; sin esto
+# habria que atribuirlo entero a una, y seria falso en la mitad.
+
+ORIGENES_VALIDOS = ("manual", "programada", "continua")
+
+
+def guardar_tramos(device_id, tramos):
+    """
+    Guarda o actualiza los tramos que informa un Agent.
+
+    La identidad de un tramo es (equipo, modalidad, inicio). Volver a
+    informarlo NO crea otro: actualiza su fin, que es justo lo que
+    pasa cuando un tramo abierto se cierra mas tarde.
+
+    Asi, reintentar una y otra vez es inofensivo. Y hace falta que lo
+    sea: el Agent reenvia sus tramos al reconectar, sin saber cuales
+    llegaron antes de la caida.
+
+    Devuelve (nuevos, actualizados, descartados).
+    """
+
+    if not device_id or not tramos:
+        return (0, 0, 0)
+
+    nuevos = 0
+    actualizados = 0
+    descartados = 0
+
+    connection = get_connection()
+
+    try:
+        for tramo in tramos:
+
+            if not isinstance(tramo, dict):
+                descartados += 1
+                continue
+
+            origen = str(tramo.get("origen") or "").strip()
+            desde = str(tramo.get("desde") or "").strip()
+
+            # Un origen que no se conoce no se guarda: la lista es
+            # cerrada y viene del propio Agent, no de una persona.
+            if origen not in ORIGENES_VALIDOS or not desde:
+                descartados += 1
+                continue
+
+            hasta = tramo.get("hasta")
+            hasta = str(hasta).strip() if hasta else None
+
+            # Un tramo que termina antes de empezar esta mal medido:
+            # guardarlo ensuciaria el reparto del archivo.
+            if hasta and hasta < desde:
+                descartados += 1
+                continue
+
+            cursor = connection.execute(
+                """
+                INSERT INTO recording_intervals
+                    (device_id, origin, started_at, ended_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(device_id, origin, started_at) DO UPDATE SET
+                    ended_at = COALESCE(excluded.ended_at, ended_at)
+                """,
+                (device_id, origen, desde, hasta)
+            )
+
+            # rowcount 1 en un INSERT nuevo; en el UPDATE tambien,
+            # asi que se distingue mirando si la fila ya existia.
+            if cursor.lastrowid and cursor.rowcount == 1:
+                nuevos += 1
+            else:
+                actualizados += 1
+
+        connection.commit()
+
+    finally:
+        connection.close()
+
+    return (nuevos, actualizados, descartados)
+
+
+def tramos_de_grabacion(recording_id):
+    """
+    Como se reparte un archivo entre las modalidades.
+
+    Se cruzan los tramos del equipo con el rango del segmento y se
+    recortan a sus limites: un tramo que empezo antes del archivo
+    solo cuenta desde que el archivo empieza.
+
+    Para las grabaciones historicas no hay tramos, y eso se dice
+    —'sin datos de modalidad'— en vez de atribuirlas a una.
+    """
+
+    connection = get_connection()
+
+    try:
+        fila = connection.execute(
+            "SELECT device_id, started_at, ended_at "
+            "FROM recordings WHERE id = ?",
+            (recording_id,)
+        ).fetchone()
+
+        if fila is None:
+            return None
+
+        inicio = _momento(fila["started_at"])
+        fin = _momento(fila["ended_at"])
+
+        if inicio is None:
+            return {"recording_id": recording_id, "tramos": [],
+                    "sin_datos": True}
+
+        if fin is None or fin <= inicio:
+            # Sin fin conocido no se puede recortar nada
+            return {"recording_id": recording_id, "tramos": [],
+                    "sin_datos": True}
+
+        filas = connection.execute(
+            """
+            SELECT origin, started_at, ended_at
+            FROM recording_intervals
+            WHERE device_id = ?
+              AND started_at < ?
+              AND (ended_at IS NULL OR ended_at > ?)
+            ORDER BY started_at
+            """,
+            (fila["device_id"], fila["ended_at"], fila["started_at"])
+        ).fetchall()
+
+    finally:
+        connection.close()
+
+    tramos = []
+
+    for t in filas:
+
+        t_inicio = _momento(t["started_at"])
+
+        # Un tramo abierto se considera vigente hasta el fin del
+        # archivo: es lo unico que se sabe con certeza.
+        t_fin = _momento(t["ended_at"]) or fin
+
+        if t_inicio is None:
+            continue
+
+        recorte_inicio = max(inicio, t_inicio)
+        recorte_fin = min(fin, t_fin)
+
+        if recorte_fin <= recorte_inicio:
+            continue
+
+        tramos.append({
+            "origen": t["origin"],
+            "desde": recorte_inicio.isoformat(),
+            "hasta": recorte_fin.isoformat(),
+            "segundos": int((recorte_fin - recorte_inicio).total_seconds()),
+            "abierto": t["ended_at"] is None
+        })
+
+    return {
+        "recording_id": recording_id,
+        "tramos": tramos,
+        "sin_datos": not tramos
+    }
+
+
+def _momento(texto):
+
+    if not texto:
+        return None
+
+    try:
+        valor = datetime.fromisoformat(str(texto))
+
+    except (TypeError, ValueError):
+        return None
+
+    if valor.tzinfo is None:
+        valor = valor.replace(tzinfo=timezone.utc)
+
+    return valor

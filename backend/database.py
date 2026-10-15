@@ -450,6 +450,38 @@ def init_db():
         for column in connection.execute("PRAGMA table_info(recordings)")
     }
 
+    # Cuando se recibio por ultima vez la ficha del equipo.
+    #
+    # Hace falta para poder decir "estos datos son de hace tres
+    # semanas" en vez de presentarlos como si fueran de ahora. Las
+    # filas anteriores quedan en NULL, que se lee como "nunca se
+    # supo", y no se inventa una fecha.
+    columnas_devices = {
+        column["name"]
+        for column in connection.execute("PRAGMA table_info(devices)")
+    }
+
+    if "system_info_at" not in columnas_devices:
+        connection.execute(
+            "ALTER TABLE devices ADD COLUMN system_info_at TEXT"
+        )
+
+    # Nombre que le pone la empresa al equipo.
+    #
+    # Es una ETIQUETA de VEYRA, no el nombre de Windows. "Recepcion"
+    # se entiende; "DESKTOP-7XK92AB", no.
+    #
+    # Va en una columna APARTE y nunca sustituye al hostname: el
+    # nombre real se sigue guardando, se sigue enseñando debajo, y el
+    # Agent lo sigue actualizando sin tocar el alias. El identificador
+    # tecnico del equipo es device_id y tampoco cambia.
+    #
+    # NULL significa "sin alias": se enseña el nombre de Windows.
+    if "alias" not in columnas_devices:
+        connection.execute(
+            "ALTER TABLE devices ADD COLUMN alias TEXT"
+        )
+
     if "invalid_reason" not in columnas_recordings:
         connection.execute(
             "ALTER TABLE recordings ADD COLUMN invalid_reason TEXT"
@@ -472,6 +504,47 @@ def init_db():
         connection.execute(
             "ALTER TABLE recordings ADD COLUMN storage_state TEXT"
         )
+
+    # Tramos de actividad de cada modalidad de grabacion.
+    #
+    # Un segmento de 15 minutos puede empezar sosteniendolo solo la
+    # programada y terminar con las dos modalidades activas.
+    # Atribuirlo entero a una seria falso en la mitad del archivo, asi
+    # que se guarda QUIEN sostenia la captura y CUANDO, y el reparto
+    # se calcula cruzando tramos con el rango del segmento.
+    #
+    # 'ended_at' en NULL significa tramo ABIERTO: la modalidad sigue
+    # activa. Se cierra cuando el Agent informa de su fin. No se
+    # inventa un fin al guardarlo.
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS recording_intervals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id TEXT NOT NULL,
+            origin TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            ended_at TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # La identidad de un tramo es (equipo, modalidad, inicio).
+    #
+    # Una modalidad no puede tomar la captura dos veces en el mismo
+    # instante, asi que esos tres campos la identifican sin que el
+    # Agent tenga que inventar ningun identificador.
+    #
+    # El indice UNICO es lo que hace que reintentar sea inofensivo: el
+    # mismo tramo informado diez veces —al reconectar, al reintentar
+    # una subida, al reiniciar el Agent— sigue siendo una sola fila.
+    connection.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_intervals_identidad
+        ON recording_intervals (device_id, origin, started_at)
+    """)
+
+    connection.execute("""
+        CREATE INDEX IF NOT EXISTS idx_intervals_equipo_fecha
+        ON recording_intervals (device_id, started_at)
+    """)
 
     connection.execute("""
         CREATE INDEX IF NOT EXISTS idx_recordings_storage_state

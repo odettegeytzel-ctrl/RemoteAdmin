@@ -1491,6 +1491,12 @@ def test_ninguna_ruta_QUE_MODIFIQUE_queda_sin_clasificar():
 
         # Inventario y administracion de la propia organizacion
         "/api/devices/{device_id}/decommission": "inventario",
+
+        # Ponerle a un equipo un nombre que se entienda es ordenar
+        # el propio inventario, no una funcion que se venda
+        # aparte. Cobrar por poder llamar "Recepcion" a un equipo
+        # seria absurdo, y dejarlo sin decidir habria sido peor.
+        "/api/devices/{device_id}/alias": "inventario",
         "/api/devices/{device_id}/reinstate": "inventario",
         "/api/devices/{device_id}/link-history": "inventario",
         "/api/devices/{device_id}/unlink-history": "inventario",
@@ -1747,6 +1753,12 @@ def test_ninguna_ruta_de_accion_queda_sin_clasificar():
         "/api/devices/{device_id}/recording/stop":
             "detener siempre debe poderse",
         "/api/devices/{device_id}/decommission": "inventario",
+
+        # Ponerle a un equipo un nombre que se entienda es ordenar
+        # el propio inventario, no una funcion que se venda
+        # aparte. Cobrar por poder llamar "Recepcion" a un equipo
+        # seria absurdo, y dejarlo sin decidir habria sido peor.
+        "/api/devices/{device_id}/alias": "inventario",
         "/api/devices/{device_id}/reinstate": "inventario",
         "/api/devices/{device_id}/link-history": "inventario",
         "/api/devices/{device_id}/unlink-history": "inventario",

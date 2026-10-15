@@ -36,13 +36,62 @@ from fastapi.testclient import TestClient
 
 COOKIE = "remoteadmin_token"
 
-OWNER = "odette"
+# El propietario es QUIEN DIGA backend.auth, no un nombre fijo.
+#
+# auth lee AUTH_USERNAME al importarse. Este banco lo fija con
+# setdefault, pero si otra suite importo backend.auth ANTES, la
+# variable ya valia su valor por defecto y el propietario que se crea
+# no se llama "odette". Entonces get_user("odette") devuelve None y
+# todas las peticiones responden 401, lejos de la causa.
+OWNER = auth.AUTH_USERNAME
 CLAVE_OWNER = "ClaveDelOwnerDePrueba!"
 CLAVE_SUBADMIN = "ClaveDelSubadminPrueba!"
 
 
+def _exigir_base_de_pruebas():
+    """
+    Se niega a trabajar sobre una base que no sea temporal.
+
+    reiniciar() hace DELETE FROM users y DELETE FROM audit_log. Si
+    DATABASE_PATH apuntara a la base de desarrollo —porque una suite
+    anterior la dejo ahi— esto borraria datos de verdad.
+
+    Paso: una suite devolvia la ruta a donde estaba antes al limpiar
+    sus temporales, y la siguiente vacio el registro de auditoria de
+    la base local.
+
+    La comprobacion es barata y la alternativa es perder datos sin
+    enterarse hasta mucho despues.
+    """
+
+    ruta = str(database.DATABASE_PATH)
+
+    temporal = str(Path(tempfile.gettempdir()).resolve()).lower()
+
+    if not str(Path(ruta).resolve()).lower().startswith(temporal):
+        raise RuntimeError(
+            "Las pruebas no se ejecutan sobre %s: no es una base "
+            "temporal. Apunta DATABASE_PATH a un directorio temporal "
+            "antes de llamar a reiniciar()." % ruta
+        )
+
+
 def reiniciar():
     """Estado limpio: solo el owner, sembrado como en una instalacion real."""
+
+    # El banco usa SIEMPRE su propia base, pase lo que pase antes.
+    #
+    # Otra suite puede haber movido DATABASE_PATH a la suya, o a un
+    # temporal vacio al limpiar. Si se diera por buena esa ruta, aqui
+    # se trabajaria sobre una base ajena o sobre uno sin tablas.
+    #
+    # Reclamar la propia es lo unico que hace que estas pruebas den
+    # el mismo resultado solas que en un lanzador unico.
+    if database.DATABASE_PATH != BASE_TEMPORAL:
+        database.DATABASE_PATH = BASE_TEMPORAL
+        database.init_db()
+
+    _exigir_base_de_pruebas()
 
     conexion = database.get_connection()
     conexion.execute("DELETE FROM user_permissions")
