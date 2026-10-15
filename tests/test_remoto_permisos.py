@@ -222,7 +222,10 @@ def test_de_otra_empresa_no_ve_nada_aunque_tenga_el_permiso():
     if propietario and propietario.get("organization_id"):
         propia = propietario["organization_id"]
 
-    ajena = organizations.create_organization("Otra empresa")
+    # Nombre propio de esta suite: el banco de pruebas comparte
+    # base y reiniciar() no borra organizaciones, asi que dos
+    # suites con el mismo nombre chocarian al ejecutarse juntas.
+    ajena = organizations.create_organization("Otra empresa (remoto)")
 
     if isinstance(ajena, dict):
         ajena = ajena["id"]

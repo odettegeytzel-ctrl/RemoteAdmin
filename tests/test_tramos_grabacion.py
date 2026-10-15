@@ -461,7 +461,10 @@ def test_la_consulta_exige_permiso_y_organizacion():
               "respondio %d" % respuesta.status_code)
 
     # De otra organizacion
-    ajena = organizations.create_organization("Otra")
+    # Nombre propio de esta suite: el banco de pruebas comparte
+    # base y reiniciar() no borra organizaciones, asi que dos
+    # suites con el mismo nombre chocarian al ejecutarse juntas.
+    ajena = organizations.create_organization("Otra empresa (tramos)")
     ajena = ajena["id"] if isinstance(ajena, dict) else ajena
 
     conexion = database.get_connection()
@@ -533,6 +536,15 @@ def test_el_servidor_usa_el_equipo_de_la_conexion():
 
 def principal():
 
+    # Esta suite reclama SU base al empezar, no solo al importarse.
+    #
+    # DATABASE_PATH es global. Con un lanzador unico, la ultima suite
+    # importada se queda con el, y las demas acabarian leyendo y
+    # escribiendo en una base que no es la suya. Reclamarla aqui es
+    # lo que hace que el resultado sea el mismo sola que acompañada.
+    database.DATABASE_PATH = os.path.join(CARPETA, "prueba.db")
+    database.init_db()
+
     pruebas = [
         test_se_guardan_los_tramos,
         test_un_tramo_abierto_se_guarda_sin_fin,
@@ -584,6 +596,26 @@ def principal():
     print()
     print("%d/%d comprobaciones" % (len(resultados) - fallos,
                                     len(resultados)))
+
+    # Se borran los temporales, pero ANTES se aparta DATABASE_PATH a
+    # otro temporal vacio.
+    #
+    # Dos problemas se evitan con esto, y el segundo es grave:
+    #
+    #   1. Si la ruta se quedara dentro de la carpeta recien borrada,
+    #      la siguiente suite moriria con "unable to open database
+    #      file", en un sitio que no tiene nada que ver con la causa.
+    #
+    #   2. Si se devolviera a la ruta que habia ANTES, esa ruta puede
+    #      ser la base de desarrollo real. La siguiente suite llamaria
+    #      a reiniciar(), que hace DELETE FROM users y DELETE FROM
+    #      audit_log, y se cargaria datos de verdad. Paso.
+    #
+    # Por eso no se restaura nada: se apunta a un temporal nuevo, que
+    # no es la base de nadie.
+    database.DATABASE_PATH = os.path.join(
+        tempfile.mkdtemp(prefix="apartado-"), "vacia.db"
+    )
 
     shutil.rmtree(CARPETA, ignore_errors=True)
 
