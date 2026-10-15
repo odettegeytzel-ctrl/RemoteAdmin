@@ -331,6 +331,7 @@ import storage
 import inventory
 
 from scheduler import RecordingScheduler
+import owners
 import power
 
 # ---- Estado del Agent (leído por el bucle asíncrono, escrito por hilos) ----
@@ -922,44 +923,107 @@ screen_recorder = ScreenRecorder(
 # cumpliendose con el navegador cerrado y hasta sin conexion.
 recording_scheduler = RecordingScheduler()
 
+# Quien sostiene la captura ahora mismo.
+#
+# La pantalla se graba mientras AL MENOS UNA modalidad la reclame.
+# Antes habia un solo grabador y dos modalidades usandolo a ciegas:
+# iniciar una manual dentro de la franja no hacia nada, y detenerla
+# paraba la captura entera, matando la programada.
+duenos = owners.Duenos()
+
 # Cada cuanto se comprueba si toca empezar o terminar. Treinta segundos dan
 # una precision mas que suficiente para un horario en minutos y no gastan
 # nada.
 SCHEDULE_CHECK_SECONDS = 30
 
 
-def start_screen_recording(manual=True):
+def start_screen_recording(manual=True, origen=None):
+    """
+    Una modalidad reclama la captura.
+
+    Si ya estaba grabando porque la sostiene otra, NO se arranca una
+    segunda: se anota el dueno nuevo y se sigue con la misma. Grabar
+    dos veces la misma pantalla daria dos videos identicos por el
+    doble de CPU y de disco.
+    """
+
     global agent_state
-    result = screen_recorder.start()
+
+    if origen is None:
+        origen = owners.MANUAL if manual else owners.PROGRAMADA
+
+    hay_que_arrancar = duenos.tomar(origen)
+
+    if hay_que_arrancar:
+        result = screen_recorder.start()
+
+    else:
+        # Ya grabando: se informa de lo que hay, sin tocarlo
+        result = {
+            "status": "already_recording",
+            "path": screen_recorder.current_segment_path()
+        }
+
     with _state_lock:
         agent_state = "recording"
 
-    # Si lo ha pedido una persona, la programacion no le lleva la
-    # contraria durante el resto de la franja en curso.
-    if manual:
-        recording_scheduler.notify_manual(True)
-    else:
-        recording_scheduler.notify_state(True)
+    # El planificador necesita saber el estado real para no intentar
+    # arrancar algo que ya corre.
+    recording_scheduler.notify_state(True)
+
+    log_duenos("toma " + origen)
 
     return result
 
 
-def stop_screen_recording(manual=True):
+def stop_screen_recording(manual=True, origen=None):
+    """
+    Una modalidad deja de reclamar la captura.
+
+    Solo se para de verdad si no queda nadie sosteniendola. Detener
+    la manual mientras el horario sigue vigente ya no corta la
+    grabacion: la continua sigue sin perder un fotograma.
+    """
+
     global agent_state
-    result = screen_recorder.stop()
+
+    if origen is None:
+        origen = owners.MANUAL if manual else owners.PROGRAMADA
+
+    if origen in owners.DEL_HORARIO:
+        hay_que_parar = duenos.soltar_el_horario()
+
+    else:
+        hay_que_parar = duenos.soltar(origen)
+
+    if hay_que_parar:
+        result = screen_recorder.stop()
+
+    else:
+        # Sigue grabando para otro dueno: no se toca el archivo
+        result = {
+            "status": "still_recording",
+            "owners": list(duenos.activos())
+        }
+
     with _state_lock:
         if not screen_recorder.is_recording():
             agent_state = "idle"
 
-    # Parar a mano dentro de una franja programada NO destruye el horario:
-    # simplemente no se reanuda hasta la siguiente. Nadie quiere que el
-    # programa le vuelva a arrancar la grabacion medio minuto despues.
-    if manual:
-        recording_scheduler.notify_manual(False)
-    else:
-        recording_scheduler.notify_state(False)
+    recording_scheduler.notify_state(screen_recorder.is_recording())
+
+    log_duenos("suelta " + origen)
 
     return result
+
+
+def log_duenos(que):
+    """Deja en el registro quien sostiene la captura tras cada cambio."""
+
+    activos = duenos.activos()
+
+    print("[grabacion] %s -> sostienen: %s"
+          % (que, ", ".join(activos) if activos else "nadie"))
 
 
 def apply_schedule(horario):
@@ -974,21 +1038,43 @@ def apply_schedule(horario):
 
 
 def _aplicar_decision_del_horario():
-    """Arranca o detiene la grabacion si el horario lo pide."""
+    """
+    El horario toma o suelta SU turno sobre la captura.
+
+    Lo que cambia respecto a antes: se pregunta por la INTENCION del
+    horario, no por si se esta grabando. Con una manual en marcha,
+    decide() concluia que no habia nada que hacer al empezar la
+    franja —ya se grababa— asi que el horario nunca tomaba su turno,
+    y al parar la manual se paraba todo.
+
+    Ahora el horario reclama su turno igual, y si la captura ya corre
+    por la manual, simplemente se suma.
+    """
+
+    # Primero, la realidad: si el grabador se ha caido, aqui no puede
+    # constar que alguien lo sostiene.
+    if duenos.reconciliar(screen_recorder.is_recording()):
+        print("[grabacion] El grabador no estaba activo: duenos al dia")
 
     recording_scheduler.notify_state(screen_recorder.is_recording())
 
-    decision = recording_scheduler.decide()
+    quiere, fuente = recording_scheduler.intencion()
 
-    if decision == "start":
-        print("[horario] Empieza la franja programada: grabando")
-        start_screen_recording(manual=False)
+    if quiere:
 
-    elif decision == "stop":
-        print("[horario] Termina la franja programada: deteniendo")
-        stop_screen_recording(manual=False)
+        if not duenos.sostiene(fuente):
+            print("[horario] Empieza la franja (%s)" % fuente)
+            start_screen_recording(manual=False, origen=fuente)
 
-    return decision
+        return "start"
+
+    if any(duenos.sostiene(o) for o in owners.DEL_HORARIO):
+        print("[horario] Termina la franja")
+        stop_screen_recording(manual=False, origen=owners.PROGRAMADA)
+
+        return "stop"
+
+    return None
 
 
 def _schedule_loop():

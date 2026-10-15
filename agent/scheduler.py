@@ -263,6 +263,41 @@ class RecordingScheduler:
 
         return fuente if deberia else "manual"
 
+    def intencion(self, ahora=None):
+        """
+        Si el HORARIO quiere que se grabe ahora mismo, y por que.
+
+        Devuelve (quiere, fuente). Se diferencia de decide() en que no
+        mira si ya se esta grabando: responde solo por la
+        programacion.
+
+        Hace falta porque la captura puede estar sostenida tambien por
+        una grabacion manual. decide() comparaba con self._grabando y,
+        con una manual en marcha, concluia que no habia nada que hacer
+        al empezar la franja: el horario se quedaba sin tomar su turno
+        y al parar la manual se paraba todo.
+        """
+
+        momento = ahora_en_zona(self.horario, ahora)
+
+        franja = inicio_de_la_franja(self.horario, momento)
+
+        if self._excepcion_activa:
+
+            misma_franja = franja == self._franja_con_excepcion
+
+            if misma_franja and franja is None:
+                misma_franja = momento.date() == self._fecha_con_excepcion
+
+            if misma_franja:
+                return False, None
+
+            self._excepcion_activa = False
+            self._franja_con_excepcion = None
+            self._fecha_con_excepcion = None
+
+        return self._procede(franja)
+
     def decide(self, ahora=None):
         """
         Que habria que hacer ahora mismo: 'start', 'stop' o None.
