@@ -450,6 +450,22 @@ def init_db():
         for column in connection.execute("PRAGMA table_info(recordings)")
     }
 
+    # Cuando se recibio por ultima vez la ficha del equipo.
+    #
+    # Hace falta para poder decir "estos datos son de hace tres
+    # semanas" en vez de presentarlos como si fueran de ahora. Las
+    # filas anteriores quedan en NULL, que se lee como "nunca se
+    # supo", y no se inventa una fecha.
+    columnas_devices = {
+        column["name"]
+        for column in connection.execute("PRAGMA table_info(devices)")
+    }
+
+    if "system_info_at" not in columnas_devices:
+        connection.execute(
+            "ALTER TABLE devices ADD COLUMN system_info_at TEXT"
+        )
+
     if "invalid_reason" not in columnas_recordings:
         connection.execute(
             "ALTER TABLE recordings ADD COLUMN invalid_reason TEXT"

@@ -125,6 +125,23 @@ def get_continuous_recording(device_id):
 
 
 def update_system_info(device_id, system_info):
+    """
+    Guarda la ficha del equipo sin perder lo que ya se sabia.
+
+    Cada campo va con COALESCE: si la ficha no lo trae, se conserva
+    el valor anterior en vez de dejarlo en blanco.
+
+    Importa porque las fichas no siempre vienen completas. Un Agent
+    antiguo manda menos campos; una consulta a WMI puede fallar y
+    dejar fuera el fabricante o el modelo. Con la version anterior
+    —que escribia todos los campos siempre— una sola ficha incompleta
+    borraba datos buenos y el panel pasaba a decir "Sin informacion"
+    sobre algo que si se sabia.
+
+    system_info_at guarda CUANDO se supo, para poder avisar de que un
+    dato es viejo en lugar de presentarlo como actual.
+    """
+
     connection = get_connection()
 
     disks = system_info.get("disks", [])
@@ -147,27 +164,35 @@ def update_system_info(device_id, system_info):
         storage_free = system_disk.get("free")
         storage_used = system_disk.get("used")
 
-        cursor = connection.execute(
+    # El UPDATE va FUERA del 'if disks'.
+    #
+    # Estaba dentro, asi que una ficha sin discos no guardaba NADA y
+    # despues reventaba al leer cursor.rowcount, que no existia. Una
+    # consulta de discos que falle no puede impedir que se guarden el
+    # procesador, la memoria y el modelo.
+
+    cursor = connection.execute(
         """
         UPDATE devices
         SET
-            hostname = ?,
-            username = ?,
-            operating_system = ?,
-            ip_address = ?,
-            processor = ?,
-            cpu_count = ?,
-            ram_total = ?,
-            ram_available = ?,
-            ram_used = ?,
-            ram_percent = ?,
-            storage_total = ?,
-            storage_free = ?,
-            storage_used = ?,
-            windows_version = ?,
-            architecture = ?,
-            manufacturer = ?,
-            model = ?
+            hostname        = COALESCE(?, hostname),
+            username        = COALESCE(?, username),
+            operating_system = COALESCE(?, operating_system),
+            ip_address      = COALESCE(?, ip_address),
+            processor       = COALESCE(?, processor),
+            cpu_count       = COALESCE(?, cpu_count),
+            ram_total       = COALESCE(?, ram_total),
+            ram_available   = COALESCE(?, ram_available),
+            ram_used        = COALESCE(?, ram_used),
+            ram_percent     = COALESCE(?, ram_percent),
+            storage_total   = COALESCE(?, storage_total),
+            storage_free    = COALESCE(?, storage_free),
+            storage_used    = COALESCE(?, storage_used),
+            windows_version = COALESCE(?, windows_version),
+            architecture    = COALESCE(?, architecture),
+            manufacturer    = COALESCE(?, manufacturer),
+            model           = COALESCE(?, model),
+            system_info_at  = ?
         WHERE device_id = ?
         """,
         (
@@ -188,6 +213,7 @@ def update_system_info(device_id, system_info):
             system_info.get("architecture"),
             system_info.get("manufacturer"),
             system_info.get("model"),
+            datetime.now(timezone.utc).isoformat(),
             device_id
         )
     )

@@ -2643,6 +2643,30 @@ async def websocket_connection():
                     "recording_status:" + json.dumps(build_recording_status())
                 )
 
+                # La ficha del equipo, SIN que nadie la pida.
+                #
+                # Hasta ahora solo se mandaba al recibir
+                # 'get_system_info', que dispara el boton "Actualizar
+                # informacion" del panel. Un equipo donde nunca se
+                # pulsaba se quedaba para siempre con hostname,
+                # sistema operativo e IP —lo unico que escriben el
+                # alta y el latido— y el resto en blanco.
+                #
+                # Va en un hilo porque consulta WMI, que tarda, y el
+                # bucle de eventos no puede quedarse esperando.
+                try:
+                    ficha = await asyncio.to_thread(get_system_info)
+
+                    await websocket.send(
+                        "system_info:" + json.dumps(ficha)
+                    )
+
+                except Exception as error:
+                    # Que falle la ficha no puede tumbar la conexion:
+                    # el equipo seguira siendo administrable aunque no
+                    # se sepa su modelo.
+                    print(f"[inventario] no se pudo enviar: {error}")
+
                 # Y el catalogo completo: mientras no hubo conexion se han
                 # podido grabar segmentos cuya ficha no llego al servidor.
                 try:
