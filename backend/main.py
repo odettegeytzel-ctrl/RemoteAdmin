@@ -2307,6 +2307,14 @@ async def ping_agent(device_id: str, request: Request):
 @app.post("/api/devices/{device_id}/system-info")
 async def request_system_info(device_id: str, request: Request):
 
+    # Pedir la ficha manda una orden al Agent, asi que exige permiso
+    # igual que las demas. No lo exigia: cualquier usuario con sesion
+    # en la organizacion podia hacer trabajar a cualquier equipo.
+    _, error = require_permission(request, "devices.view")
+
+    if error:
+        return error
+
     # Queda constancia de que la acción se PIDIÓ. No se marca como
     # completada: el Agent recibe la orden por WebSocket y no confirma.
     log_audit(
