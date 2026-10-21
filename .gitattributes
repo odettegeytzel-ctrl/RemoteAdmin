@@ -1,0 +1,9 @@
+# install-agent.ps1 quedo guardado con CRLF y los demas .ps1 con
+# LF. Con core.autocrlf=true esa mezcla hacia que cualquier
+# edicion del primero apareciera como el archivo entero
+# reescrito, y el cambio real se perdiera entre el ruido.
+#
+# 'text' guarda LF en el repositorio; 'eol=crlf' los entrega como
+# CRLF en el disco, que es lo que esperan PowerShell y el
+# empaquetado del instalador.
+*.ps1 text eol=crlf
