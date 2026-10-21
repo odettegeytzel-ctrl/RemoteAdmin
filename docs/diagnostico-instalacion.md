@@ -40,6 +40,49 @@ comprobación**, y la ventana remite ahí.
 
 ---
 
+## Orden recomendado
+
+Hay dos equipos en juego y **no se prueba lo mismo en cada uno**.
+
+| | Equipo | Qué se hace ahí |
+|---|---|---|
+| **A** | El de Oaxaca, que falló | Recoger la evidencia y **dejarlo instalado** |
+| **B** | Uno de prueba | Los fallos provocados a propósito |
+
+Se empieza por **A**, porque ahí hay alguien esperando que el equipo
+quede funcionando y porque la evidencia del fallo se pierde en cuanto
+se reinstala.
+
+**En el equipo de Oaxaca no se provocan fallos.** Las pruebas de la
+parte 3 —rechazar el aviso de Windows, vaciar la carga útil— se hacen
+en un equipo de prueba, no en uno de cliente.
+
+### Antes de ir: dos cosas que decidir
+
+**1. El ejecutable hay que llevarlo a mano.** El que se descarga del
+panel es el publicado (1.2.0) y **no** lleva estos cambios. El de
+prueba está en `installer\dist\VEYRA-Instalador.exe` y hay que
+pasarlo por USB, carpeta compartida o como se prefiera.
+
+Para comprobar que llegó entero:
+
+```powershell
+Get-FileHash .\VEYRA-Instalador.exe -Algorithm SHA256
+```
+
+Debe dar la huella que anota
+`installer\dist\VEYRA-Instalador.sha256.txt`. Si no coincide, el
+archivo se dañó al copiarlo y no hay que ejecutarlo.
+
+**2. Ese equipo quedaría con el Agent 1.3.0, que todavía no está
+publicado.** No se va a actualizar solo hacia atrás —el actualizador
+se niega a instalar una versión anterior a la que ya tiene— así que
+se quedará en 1.3.0 hasta que publiques. Es una decisión tuya:
+funciona, pero es un equipo de cliente corriendo algo que aún no has
+publicado.
+
+---
+
 ## Parte 1. Qué mirar en el equipo que falló
 
 ### 1.1 La transcripción, si el instalador ya la escribe
@@ -154,13 +197,96 @@ un proceso vivo no se puede borrar y no hay que forzarla.
 
 ---
 
-## Parte 2. Pruebas en un Windows de verdad
+## Parte 2. El equipo de Oaxaca, paso a paso
 
-Lo que las pruebas automáticas **no** pueden demostrar. Ninguna de
-estas se ha ejecutado todavía.
+El orden importa: **la evidencia primero**, porque reinstalar la
+borra.
 
-Hace falta un equipo de prueba —no uno de cliente— y el
-`VEYRA-Instalador.exe` construido desde este código, no el publicado.
+### Etapa 1 · Recoger antes de tocar
+
+Todo de solo lectura. Guarda la salida de cada uno.
+
+```powershell
+# 1. Queda algo de la instalación anterior?
+Test-Path C:\ProgramData\RemoteAdmin
+Test-Path C:\ProgramData\VEYRA-instalacion.log
+
+# 2. Hay tareas registradas?
+Get-ScheduledTask -TaskName RemoteAdminAgent* -ErrorAction SilentlyContinue |
+    Select-Object TaskName, State
+```
+
+Lo esperable, por lo que ya se vio: **las dos primeras en `False`** y
+ninguna tarea. El archivo de registro no va a estar porque la 1.2.0
+no lo escribía.
+
+Después, el inventario de las `_MEI*` (sección 1.3) y el historial de
+Defender (sección 1.4), y la copia de evidencia de la sección 1.5.
+
+> **No borres ninguna `_MEI*` todavía.** Ni siquiera después de
+> instalar: son la única pista de qué pasó aquel día.
+
+### Etapa 2 · Instalar con el ejecutable de prueba
+
+| # | Qué hacer | Qué debe pasar |
+|---|---|---|
+| 1 | Comprobar la huella del `.exe` copiado | Coincide con la constancia |
+| 2 | Doble clic | Se abre la ventana. **El campo Servidor ya trae la dirección** |
+| 3 | Mirar que no diga `localhost` ni `127.0.0.1` | — |
+| 4 | **Comprobar conexión** | *«El servidor responde correctamente»* |
+| 5 | Pegar la credencial `rae_…` del panel | — |
+| 6 | **Instalar** y aceptar el aviso de Windows | Arranca |
+
+**Pase lo que pase en el paso 6**, lo siguiente ya existe:
+
+```powershell
+Get-Content C:\ProgramData\VEYRA-instalacion.log -Tail 60
+```
+
+Ese archivo es el objetivo de todo este trabajo. Si la instalación
+falla otra vez, **el motivo está ahí** y ya no hay que adivinarlo.
+
+### Etapa 3 · Comprobar que quedó bien
+
+| # | Qué mirar | Dónde |
+|---|---|---|
+| 1 | Aparece en el panel | Dispositivos |
+| 2 | Tiene `device_id` | `C:\ProgramData\RemoteAdmin\config\identity.json` |
+| 3 | Las dos tareas, en `Ready` o `Running` | `Get-ScheduledTask RemoteAdminAgent*` |
+| 4 | La transcripción termina en alta correcta | `VEYRA-instalacion.log` |
+| 5 | Informa versión **1.3.0** | Ficha del equipo en el panel |
+
+### Etapa 4 · Reinstalar sin duplicar
+
+Solo si la etapa 3 salió bien. Es la prueba más cara de equivocar.
+
+| # | Qué hacer | Qué debe pasar |
+|---|---|---|
+| 1 | Anotar el `device_id` del paso 2 anterior | — |
+| 2 | Volver a ejecutar el `.exe` | Dice **«ya está dado de alta»** y **no pide credencial**. El botón dice *Actualizar* |
+| 3 | Pulsarlo y esperar | Termina sin error |
+| 4 | Releer `identity.json` | **El `device_id` no cambió** |
+| 5 | Mirar el inventario | **No hay un equipo duplicado** |
+| 6 | Contar los inicios de transcripción | **2 o más**: el intento anterior se conservó |
+
+```powershell
+(Select-String C:\ProgramData\VEYRA-instalacion.log `
+    -Pattern "Inicio de la transcripción").Count
+```
+
+El paso 4 es el que miraría primero. Si el `device_id` cambiara, la
+reinstalación habría tocado `identity.json`, y eso no debería poder
+pasar.
+
+---
+
+## Parte 3. Pruebas en un equipo de prueba
+
+Los fallos que hay que **provocar**, y que por eso no se hacen en un
+equipo de cliente. Ninguna de estas se ha ejecutado todavía.
+
+Hace falta el `VEYRA-Instalador.exe` construido desde este código,
+no el publicado.
 
 ### Antes de empezar
 
@@ -240,28 +366,20 @@ El paso 4 es el que distingue la corrección de un mensaje más bonito.
 | 3 | Dejarlo junto a un paquete con `.env` y volver a abrirlo | Manda el `.env`, no el valor empotrado |
 | 4 | **Comprobar conexión** | Responde correctamente |
 
-### 6. Instalación completa y alta
+### 6. Instalación completa, alta y reinstalación
 
-La que cierra todo. En un equipo de prueba, no de cliente.
+Son las etapas 2 a 4 de la parte 2, que ya están descritas ahí. En un
+equipo de prueba se pueden hacer igual, con una comprobación de más
+que en Oaxaca no conviene provocar:
 
 | # | Qué mirar | Dónde |
 |---|---|---|
-| 1 | La instalación termina sin error | La ventana |
-| 2 | El equipo aparece en el panel | Dispositivos |
-| 3 | `device_id` escrito | `C:\ProgramData\RemoteAdmin\config\identity.json` |
-| 4 | Las dos tareas registradas | `Get-ScheduledTask RemoteAdminAgent*` |
-| 5 | La transcripción termina en éxito | `VEYRA-instalacion.log` |
-| 6 | No quedan `_MEI*` nuevas | `Get-ChildItem $env:TEMP -Filter "_MEI*"` |
+| 1 | No quedan `_MEI*` nuevas tras una instalación correcta | `Get-ChildItem $env:TEMP -Filter "_MEI*"` |
+| 2 | `recordings\` y `config\` sobreviven a reinstalar | `C:\ProgramData\RemoteAdmin\` |
 
-### 7. Reinstalar no pierde la identidad
-
-| # | Qué mirar | Qué debe pasar |
-|---|---|---|
-| 1 | Anotar el `device_id` | — |
-| 2 | Volver a ejecutar el instalador | Dice *«ya está dado de alta»* y no pide credencial |
-| 3 | El `device_id` | **No cambió** |
-| 4 | El inventario del panel | **No aparece un equipo duplicado** |
-| 5 | `recordings\` y `config\` | Siguen ahí |
+Si quedara una `_MEI*` después de una instalación que terminó bien,
+el `.exe` no está limpiando al salir y conviene saberlo antes de que
+se acumulen 62 como en el caso de campo.
 
 ---
 
