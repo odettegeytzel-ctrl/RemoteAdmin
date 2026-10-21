@@ -62,6 +62,33 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# --------------------------------------------------------------
+# 0. Registro de la instalacion
+# --------------------------------------------------------------
+#
+# Se abre ANTES que ninguna comprobacion, porque los fallos que mas
+# cuesta diagnosticar son justo los que ocurren antes de crear nada:
+# el script aborta, la ventana muestra un "codigo 1" sin mas, y en el
+# equipo no queda ni rastro de por que.
+#
+# Va a ProgramData y no a logs\ del destino por la misma razon: esa
+# carpeta puede no existir todavia. La ruta es fija para que el
+# instalador grafico pueda nombrarla sin adivinarla.
+#
+# Se anade al archivo en vez de reemplazarlo: cuando alguien reintenta
+# una instalacion que fallo, lo util es ver los dos intentos.
+$TranscriptFile = Join-Path $env:ProgramData "VEYRA-instalacion.log"
+$Transcribiendo = $false
+
+try {
+    Start-Transcript -Path $TranscriptFile -Append | Out-Null
+    $Transcribiendo = $true
+} catch {
+    # La transcripcion puede estar desactivada por directiva de grupo.
+    # No es motivo para no instalar: solo se pierde el registro.
+    Write-Host "Aviso: no se pudo abrir el registro en $TranscriptFile"
+}
+
 # Carpeta del paquete descomprimido = la superior a installer\
 $SourceDir = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 
@@ -312,7 +339,7 @@ if ($UsaRuntimeEmbebido) {
     # El interprete y sus dependencias ya vienen resueltos: solo hay
     # que ponerlos en su sitio. Ni pip, ni red, ni esperas.
     #
-    # Va a InstallDiruntime, que NO esta en la lista de lo que el
+    # Va a InstallDir\runtime, que NO esta en la lista de lo que el
     # actualizador reemplaza (agent/updater.py, PRESERVED), asi que
     # una actualizacion del Agent no lo toca.
     Write-Host ""
@@ -511,3 +538,8 @@ if ($alta) {
 }
 
 Write-Host ""
+
+if ($Transcribiendo) {
+    Write-Host "Registro de esta instalacion: $TranscriptFile"
+    try { Stop-Transcript | Out-Null } catch {}
+}

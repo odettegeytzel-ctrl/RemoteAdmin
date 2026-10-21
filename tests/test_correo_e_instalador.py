@@ -536,7 +536,15 @@ def test_la_interfaz_usa_el_script_probado():
               "pip install" not in INTERFAZ)
 
     comprobar("Avisa si falta el script",
-              "No se encontro el instalador" in INTERFAZ)
+              "_lo_que_falta_del_paquete" in INTERFAZ
+              and "le falta parte de su contenido" in INTERFAZ)
+
+    # Y lo mira ANTES de elevar: pedir permisos de administrador para
+    # abortar acto seguido no ayuda a nadie, y el mensaje que vuelve
+    # de un proceso elevado es solo su codigo de salida.
+    comprobar("Y lo comprueba antes de pedir la elevacion",
+              INTERFAZ.index("_lo_que_falta_del_paquete()")
+              < INTERFAZ.index("_lanzar_elevado(\"powershell.exe\""))
 
     comprobar("Y se documenta la razon",
               "daria dos versiones de la misma" in INTERFAZ)
@@ -657,8 +665,11 @@ def test_una_instalacion_fallida_remite_al_registro():
 
     comprobar("No se da por instalado", visto["correcto"] is False)
 
-    comprobar("Remite al registro del Agent",
-              "agent-service.log" in visto["mensaje"])
+    comprobar("Remite al registro de la instalacion",
+              "VEYRA-instalacion.log" in visto["mensaje"])
+
+    comprobar("Y no al del Agent, que puede no existir todavia",
+              "agent-service.log" not in visto["mensaje"])
 
 
 def test_actualizar_no_crea_ningun_temporal():

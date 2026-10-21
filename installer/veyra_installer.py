@@ -73,6 +73,15 @@ INSTALL_DIR = os.path.join(
 
 IDENTITY_FILE = os.path.join(INSTALL_DIR, "config", "identity.json")
 
+# Registro que abre install-agent.ps1 nada mas empezar. Esta en
+# ProgramData y no en INSTALL_DIR\logs porque los fallos mas opacos son
+# los que ocurren ANTES de crear la carpeta de destino: ahi logs\
+# todavia no existe. La ruta se repite aqui, en vez de deducirla, para
+# que los dos programas nombren exactamente el mismo archivo.
+REGISTRO_INSTALACION = os.path.join(
+    os.environ.get("ProgramData", r"C:\ProgramData"), "VEYRA-instalacion.log"
+)
+
 TAREA_SERVICIO = "RemoteAdminAgent"
 
 PREFIJO_CREDENCIAL = "rae_"
@@ -152,24 +161,92 @@ def runtime_empaquetado():
 
 
 def servidor_del_paquete():
-    """
-    Direccion que el panel dejo escrita en el .env del paquete.
+    r"""
+    Direccion del panel, para no tener que teclearla al instalar.
 
-    Asi la persona que instala no tiene que saberla ni teclearla.
+    Se mira en dos sitios, por este orden:
+
+      1. El .env del paquete, que es lo que escribe el panel al
+         preparar el ZIP. Es el valor mas fiable: lo puso el servidor
+         que de verdad va a atender a este equipo.
+
+      2. installer\servidor.txt, que graba build-installer.ps1 dentro
+         del .exe autonomo. Ese .exe se descarga suelto, sin ZIP y sin
+         .env, asi que sin esto el campo salia vacio y la direccion
+         habia que dictarsela a quien estuviera delante del equipo.
+
+    Devuelve "" si no hay ninguno: el campo queda vacio y se teclea,
+    que es lo que ha pasado siempre hasta ahora.
     """
 
-    ruta = os.path.join(carpeta_del_paquete(), ".env")
+    paquete = carpeta_del_paquete()
 
     try:
-        with open(ruta, "r", encoding="utf-8", errors="replace") as archivo:
+        with open(os.path.join(paquete, ".env"),
+                  "r", encoding="utf-8", errors="replace") as archivo:
+
             for linea in archivo:
                 if linea.startswith("REMOTEADMIN_SERVER="):
-                    return linea.split("=", 1)[1].strip()
+
+                    direccion = linea.split("=", 1)[1].strip()
+
+                    if direccion:
+                        return direccion
 
     except OSError:
         pass
 
+    try:
+        with open(os.path.join(paquete, "installer", "servidor.txt"),
+                  "r", encoding="utf-8", errors="replace") as archivo:
+
+            direccion = archivo.read(300).strip()
+
+    except OSError:
+        return ""
+
+    # Se comprueba antes de ofrecerla: un archivo con cualquier cosa
+    # dentro no debe acabar rellenando el campo como si fuera buena.
+    if direccion.startswith(("http://", "https://")):
+        return direccion
+
     return ""
+
+
+def _lo_que_falta_del_paquete():
+    """
+    Lista de lo que el instalador deberia traer y no esta.
+
+    Vacia cuando esta todo. Se comprueba el guion, el Agent y el
+    interprete embebido, que es lo que install-agent.ps1 exige antes
+    de crear nada.
+
+    El runtime solo se exige si el instalador dice traerlo: sin el, la
+    instalacion usa el Python del sistema, que es un camino valido.
+    """
+
+    paquete = carpeta_del_paquete()
+
+    falta = []
+
+    if not os.path.isfile(guion_de_instalacion()):
+        falta.append("installer\\install-agent.ps1 (el script de instalacion)")
+
+    if not os.path.isfile(os.path.join(paquete, "agent", "agent.py")):
+        falta.append("agent\\agent.py (el programa)")
+
+    # Empaquetado SIEMPRE lleva runtime dentro. Que exista la carpeta
+    # pero no el python.exe es justo lo que deja un borrado parcial.
+    carpeta_runtime = os.path.join(paquete, "runtime")
+
+    if (getattr(sys, "frozen", False)
+            and os.path.isdir(carpeta_runtime)
+            and not os.path.isfile(
+                os.path.join(carpeta_runtime, "python.exe"))):
+
+        falta.append("runtime\\python.exe (el interprete)")
+
+    return falta
 
 
 def identidad_existente():
@@ -318,14 +395,32 @@ def instalar(url, credencial, registrar):
     temporal que el script borra al leerlo.
     """
 
-    guion = guion_de_instalacion()
+    # Se comprueba la carga util ANTES de pedir la elevacion.
+    #
+    # Empaquetado, todo esto vive en la carpeta temporal que
+    # PyInstaller extrae al arrancar. Si esa carpeta no esta completa
+    # -un antivirus que se llevo parte, una extraccion a medias, el
+    # disco lleno- el script elevado aborta en sus propias
+    # comprobaciones y lo unico que llega a esta ventana es un
+    # "codigo 1" mudo, porque la salida del proceso elevado no vuelve
+    # aqui.
+    #
+    # Mirandolo antes se puede decir QUE falta, y ademas no se le pide
+    # a nadie que acepte un aviso de administrador para nada.
+    falta = _lo_que_falta_del_paquete()
 
-    if not os.path.isfile(guion):
+    if falta:
         return False, (
-            "No se encontro el instalador junto a este programa.\n\n"
-            "Descomprime el paquete completo y vuelve a ejecutarlo "
-            "desde esa carpeta."
+            "Al instalador le falta parte de su contenido y no se "
+            "puede continuar:\n\n  "
+            + "\n  ".join(falta)
+            + "\n\nNo se ha cambiado nada en este equipo.\n\n"
+            "Suele ocurrir cuando un antivirus retira parte del "
+            "archivo descargado. Vuelve a descargarlo desde el panel "
+            "y ejecutalo otra vez."
         )
+
+    guion = guion_de_instalacion()
 
     archivo_credencial = None
 
@@ -431,8 +526,8 @@ def instalar(url, credencial, registrar):
         if codigo != 0:
             return False, (
                 f"La instalacion termino con errores (codigo {codigo})."
-                "\n\nRevisa el registro en:\n"
-                + os.path.join(INSTALL_DIR, "logs", "agent-service.log")
+                "\n\nEl motivo esta al final de este archivo:\n"
+                + REGISTRO_INSTALACION
             )
 
         return True, "Instalacion terminada."

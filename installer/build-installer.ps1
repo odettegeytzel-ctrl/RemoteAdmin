@@ -23,7 +23,23 @@
 
 [CmdletBinding()]
 param(
-    [switch]$Limpiar
+    [switch]$Limpiar,
+
+    # Direccion del panel que el .exe ofrecera ya escrita en su campo
+    # "Servidor".
+    #
+    # Hace falta porque este .exe se descarga SUELTO, sin el ZIP y por
+    # tanto sin el .env que el panel prepara. Sin esto el campo sale
+    # vacio y la direccion hay que dictarsela a quien este delante del
+    # equipo, que es exactamente donde se equivoca la gente.
+    #
+    # Solo es un valor inicial: sigue siendo editable en la ventana, y
+    # si el .exe acompana a un paquete con .env, ese .env manda.
+    #
+    # No se toma del .env de este repositorio a proposito: ahi pone la
+    # direccion de desarrollo, y construir sin pensarlo publicaria un
+    # instalador que apunta a localhost.
+    [string]$Servidor = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -82,6 +98,30 @@ if (-not (Test-Path (Join-Path $Runtime "python.exe"))) {
 $Agente = Join-Path $Raiz "agent"
 $Scripts = Join-Path $Raiz "installer"
 
+# La direccion que vera quien instale, si se indico.
+$ServidorFile = Join-Path $Trabajo "servidor.txt"
+$DatosServidor = @()
+
+if ($Servidor -ne "") {
+
+    if (-not ($Servidor.StartsWith("http://") -or $Servidor.StartsWith("https://"))) {
+        throw "La direccion del servidor debe empezar por http:// o https://"
+    }
+
+    New-Item -ItemType Directory -Force -Path $Trabajo | Out-Null
+
+    # Sin salto de linea al final y sin BOM: lo lee Python tal cual.
+    [IO.File]::WriteAllText($ServidorFile, $Servidor.Trim(), `
+        (New-Object Text.UTF8Encoding $false))
+
+    $DatosServidor = @("--add-data", "$ServidorFile;installer")
+
+    Write-Host "Servidor precargado: $Servidor"
+
+} else {
+    Write-Host "Sin -Servidor: el campo saldra vacio y habra que teclearlo."
+}
+
 & $Python -m PyInstaller `
     --onefile `
     --noconsole `
@@ -96,6 +136,7 @@ $Scripts = Join-Path $Raiz "installer"
     --add-data "$Raiz\requirements-base.txt;." `
     --add-data "$Raiz\requirements-agent-windows.txt;." `
     --add-data "$Runtime;runtime" `
+    @DatosServidor `
     $Guion
 
 if ($LASTEXITCODE -ne 0) {
@@ -122,7 +163,8 @@ $Constancia = Join-Path $Salida "VEYRA-Instalador.sha256.txt"
     "  construido   : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')",
     "  exe SHA-256  : $Huella",
     "  fuente       : installer/veyra_installer.py",
-    "  fuente SHA256: $HuellaFuente"
+    "  fuente SHA256: $HuellaFuente",
+    "  servidor     : $(if ($Servidor -ne '') { $Servidor } else { '(ninguno)' })"
 ) | Set-Content -Encoding UTF8 -Path $Constancia
 
 Write-Host ""
