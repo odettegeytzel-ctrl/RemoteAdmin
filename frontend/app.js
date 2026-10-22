@@ -787,6 +787,15 @@ let pressedMouseButton = "left";
 let cursorPollingTimer = null;
 let cursorRequestPending = false;
 
+/* Orden de las consultas de posicion del cursor.
+
+   Hoy solo hay una en vuelo a la vez, asi que no pueden cruzarse,
+   pero el contador cuesta nada y deja el dibujo a salvo si algun dia
+   se permite mas de una: una respuesta que llega tarde no debe pisar
+   una posicion mas reciente. */
+let cursorRequestSeq = 0;
+let cursorAppliedSeq = 0;
+
 /* ==============================
 SERVIDOR
 ============================== */
@@ -6991,6 +7000,23 @@ if (cursorPollingTimer) {
     cursorPollingTimer = null;
 }
 
+/* Se cierra la sesion: un movimiento todavia sin enviar ya no tiene
+   a donde ir. Lo que ya esta en la cola lleva su propio device_id y
+   llegara a donde debia.
+
+   Esto NO es lo que protege del cambio de equipo -por pulsar otro
+   en la lista no se pasa por aqui-; de eso se encarga la etiqueta
+   que lleva cada movimiento pendiente. */
+pendingMove = null;
+pendingMoveDevice = null;
+
+if (moveTimer) {
+    clearTimeout(moveTimer);
+    moveTimer = null;
+}
+
+cursorAppliedSeq = cursorRequestSeq;
+
 const cursor =
     document.getElementById(
         "remote-cursor"
@@ -7016,11 +7042,22 @@ if (
 
 cursorRequestPending = true;
 
+/* De que equipo y en que orden se pidio.
+
+   Se comprueba al volver y no solo al salir de la sesion, porque
+   selectedDevice tambien cambia al pulsar otro equipo en la lista,
+   y por ese camino no pasa stopCursorPolling(). Pintar esa posicion
+   moveria el cursor del equipo que se acaba de abrir. */
+const peticion = ++cursorRequestSeq;
+
+const deviceId =
+    selectedDevice.device_id;
+
 try {
 
     const response =
         await fetch(
-            `/api/devices/${selectedDevice.device_id}/cursor`
+            `/api/devices/${deviceId}/cursor`
         );
 
     if (!response.ok) {
@@ -7029,6 +7066,19 @@ try {
 
     const data =
         await response.json();
+
+    if (peticion <= cursorAppliedSeq) {
+        return;
+    }
+
+    if (
+        !selectedDevice ||
+        selectedDevice.device_id !== deviceId
+    ) {
+        return;
+    }
+
+    cursorAppliedSeq = peticion;
 
     drawRemoteCursor(data);
 
@@ -7479,6 +7529,25 @@ let pendingMove = null;
 let moveTimer = null;
 let activePointerId = null;
 
+/* Cuantos movimientos estan esperando respuesta.
+
+   Es lo que arregla el retraso por Internet. La cola conservaba el
+   orden, pero no limitaba cuantos movimientos podian estar
+   esperando: con 155 ms de ida y vuelta se generan unos doce
+   movimientos por cada uno que llega, y el cursor remoto acaba
+   repitiendo un trazo de hace medio minuto.
+
+   En la misma red no se notaba porque la ida y vuelta (3 ms) es mas
+   corta que el intervalo con que se generan. */
+let movimientosEnVuelo = 0;
+
+/* A que equipo pertenece el movimiento que esta esperando.
+
+   Unas coordenadas son de UNA pantalla. Si se cambia de equipo
+   mientras el movimiento espera, aplicarlas en el nuevo lo llevaria
+   a un punto que ahi no significa nada. */
+let pendingMoveDevice = null;
+
 function postMouse(action, payload) {
 
 if (!selectedDevice) {
@@ -7512,16 +7581,72 @@ return mouseQueue;
 
 }
 
-function flushPendingMove() {
+/* Envia un movimiento y, al volver, el ultimo que se haya quedado
+   esperando.
+
+   Los botones NO pasan por aqui: down, up y los clics se encolan
+   siempre y nunca se descartan, para que el orden sea exactamente
+   el que ocurrio. Solo se resumen los movimientos, que es lo unico
+   donde el ultimo hace innecesarios los anteriores. */
+function enviarMovimiento(coords, equipo) {
+
+// El equipo cambio mientras esperaba: estas coordenadas son de la
+// pantalla anterior y no se envian a ninguna parte.
+if (
+    !selectedDevice ||
+    equipo !== selectedDevice.device_id
+) {
+    return;
+}
+
+movimientosEnVuelo++;
+
+postMouse("move", coords)
+    .then(() => {
+
+        movimientosEnVuelo--;
+
+        if (
+            movimientosEnVuelo > 0 ||
+            !pendingMove
+        ) {
+            return;
+        }
+
+        const siguiente = pendingMove;
+        const suEquipo = pendingMoveDevice;
+
+        pendingMove = null;
+        pendingMoveDevice = null;
+
+        enviarMovimiento(siguiente, suEquipo);
+    });
+
+}
+
+/* 'forzar' manda el movimiento aunque haya otro en vuelo.
+
+   Lo usa el final de un arrastre: ahi el ultimo punto decide donde
+   se suelta el boton, y tiene que salir ANTES del 'up'. Resumirlo
+   lo dejaria para despues y el arrastre terminaria en otro sitio. */
+function flushPendingMove(forzar) {
 
 if (moveTimer) {
     clearTimeout(moveTimer);
     moveTimer = null;
 }
 
-if (pendingMove) {
-    postMouse("move", pendingMove);
+if (
+    pendingMove &&
+    (forzar || movimientosEnVuelo === 0)
+) {
+    const coords = pendingMove;
+    const equipo = pendingMoveDevice;
+
     pendingMove = null;
+    pendingMoveDevice = null;
+
+    enviarMovimiento(coords, equipo);
 }
 
 lastMouseMoveTime =
@@ -7532,6 +7657,11 @@ lastMouseMoveTime =
 function queueMouseMove(coords) {
 
 pendingMove = coords;
+
+pendingMoveDevice =
+    selectedDevice
+        ? selectedDevice.device_id
+        : null;
 
 const elapsed =
     Date.now() - lastMouseMoveTime;
@@ -7619,6 +7749,7 @@ isDragging = true;
 
 // Descarta movimientos previos y envia la posicion exacta del down
 pendingMove = null;
+pendingMoveDevice = null;
 flushPendingMove();
 
 postMouse("down", {
@@ -7667,9 +7798,16 @@ function finishDrag(coords) {
 
 if (coords) {
     pendingMove = coords;
+
+    pendingMoveDevice =
+        selectedDevice
+            ? selectedDevice.device_id
+            : null;
 }
 
-flushPendingMove();
+/* Forzado: el punto donde se suelta tiene que llegar antes que el
+   'up', aunque eso cueste una ida y vuelta mas. */
+flushPendingMove(true);
 
 const payload = {
     button: pressedMouseButton
