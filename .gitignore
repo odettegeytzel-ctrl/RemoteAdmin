@@ -32,3 +32,8 @@ agent-signing.pem
 # El Python embebido del instalador: se arma con
 # installer/build-runtime.py y pesa cientos de MB.
 installer/runtime/
+
+# Perfiles de Chrome de las pruebas de navegador. Pueden contener
+# cookies, historial y datos de inicio de sesion: nunca deben entrar
+# al repositorio.
+tests/navegador/.perfil*/

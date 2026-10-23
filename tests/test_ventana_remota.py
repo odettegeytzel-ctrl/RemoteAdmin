@@ -177,6 +177,63 @@ def puerto_libre(puerto):
         return s.connect_ex(("127.0.0.1", puerto)) != 0
 
 
+def buscar_puerto(_desde=None):
+    """
+    Un puerto libre, elegido por el sistema operativo.
+
+    Hace falta porque un Chrome huerfano de una corrida anterior
+    -headless, sin ventana, imposible de ver- se queda escuchando en
+    el puerto de depuracion y bloqueaba todas las ejecuciones
+    siguientes.
+
+    Se pide con bind al puerto 0 en vez de escanear un rango: un
+    escaneo desde 9344 alcanzaria el 9348, que es el de
+    test_teclado_remoto, y le robaria el puerto. El sistema reparte
+    de un rango alto que ninguna prueba reserva.
+
+    Queda una ventana minima entre cerrar el socket y que Chrome lo
+    tome; es la practica habitual y el riesgo es despreciable.
+    """
+
+    try:
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            return s.getsockname()[1]
+
+    except OSError:
+        return None
+
+
+def carpeta_de_perfil(base):
+    """
+    Un perfil que no este en uso.
+
+    Chrome no arranca dos veces sobre el mismo --user-data-dir, y el
+    huerfano se queda con el suyo. Se prueban sufijos hasta dar con
+    uno libre.
+
+    El candado lo deja el propio Chrome, y NO se llama igual en todas
+    partes: 'lockfile' en Windows, 'SingletonLock' en Linux y macOS.
+    Se miran los dos.
+    """
+
+    for sufijo in range(0, 20):
+
+        carpeta = base if sufijo == 0 else base.with_name(
+            base.name + "-" + str(sufijo)
+        )
+
+        bloqueada = any(
+            (carpeta / nombre).exists()
+            for nombre in ("lockfile", "SingletonLock")
+        )
+
+        if not bloqueada:
+            return carpeta
+
+    return None
+
+
 def test_en_un_navegador_de_verdad():
     """Mide pixeles. Es lo unico que detecta una deformacion."""
 
@@ -188,14 +245,24 @@ def test_en_un_navegador_de_verdad():
                   True)
         return
 
-    if not (puerto_libre(PUERTO_WEB) and puerto_libre(PUERTO_CHROME)):
-        comprobar("(los puertos de prueba estan ocupados)", True)
+    puerto_web = buscar_puerto(PUERTO_WEB)
+    puerto_chrome = buscar_puerto(PUERTO_CHROME)
+    perfil = carpeta_de_perfil(RAIZ / "tests" / "navegador" / ".perfil")
+
+    # Un puerto ocupado NO es una comprobacion aprobada. Antes lo era,
+    # y la prueba pasaba en verde habiendo medido 47 de 73 cosas.
+    if puerto_web is None or puerto_chrome is None or perfil is None:
+        comprobar(
+            "BLOQUEADA: no hay puerto o perfil libre para el navegador",
+            False,
+            "web desde %d, chrome desde %d. Suele ser un Chrome "
+            "headless huerfano de una corrida anterior."
+            % (PUERTO_WEB, PUERTO_CHROME)
+        )
         return
 
-    perfil = RAIZ / "tests" / "navegador" / ".perfil"
-
     web = subprocess.Popen(
-        [sys.executable, "-m", "http.server", str(PUERTO_WEB),
+        [sys.executable, "-m", "http.server", str(puerto_web),
          "--bind", "127.0.0.1"],
         cwd=str(RAIZ),
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
@@ -203,7 +270,7 @@ def test_en_un_navegador_de_verdad():
 
     chrome = subprocess.Popen(
         [navegador, "--headless", "--disable-gpu", "--no-sandbox",
-         "--remote-debugging-port=%d" % PUERTO_CHROME,
+         "--remote-debugging-port=%d" % puerto_chrome,
          "--user-data-dir=%s" % perfil, "about:blank"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
     )
@@ -212,7 +279,7 @@ def test_en_un_navegador_de_verdad():
         time.sleep(4)
 
         salida = subprocess.run(
-            [node, str(SONDA), str(PUERTO_WEB), str(PUERTO_CHROME)],
+            [node, str(SONDA), str(puerto_web), str(puerto_chrome)],
             capture_output=True, text=True, encoding="utf-8",
             errors="replace", timeout=180
         )
@@ -323,15 +390,21 @@ def test_los_ocho_tiradores_en_un_navegador():
         comprobar("(sin Chrome o sin Node: no se arrastra nada)", True)
         return
 
-    if not (puerto_libre(PUERTO_WEB + 1)
-            and puerto_libre(PUERTO_CHROME + 1)):
-        comprobar("(los puertos de prueba estan ocupados)", True)
+    puerto_web = buscar_puerto(PUERTO_WEB + 1)
+    puerto_chrome = buscar_puerto(PUERTO_CHROME + 1)
+    perfil = carpeta_de_perfil(RAIZ / "tests" / "navegador" / ".perfil2")
+
+    if puerto_web is None or puerto_chrome is None or perfil is None:
+        comprobar(
+            "BLOQUEADA: no hay puerto o perfil libre para los tiradores",
+            False,
+            "web desde %d, chrome desde %d"
+            % (PUERTO_WEB + 1, PUERTO_CHROME + 1)
+        )
         return
 
-    perfil = RAIZ / "tests" / "navegador" / ".perfil2"
-
     web = subprocess.Popen(
-        [sys.executable, "-m", "http.server", str(PUERTO_WEB + 1),
+        [sys.executable, "-m", "http.server", str(puerto_web),
          "--bind", "127.0.0.1"],
         cwd=str(RAIZ),
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
@@ -339,7 +412,7 @@ def test_los_ocho_tiradores_en_un_navegador():
 
     chrome = subprocess.Popen(
         [navegador, "--headless", "--disable-gpu", "--no-sandbox",
-         "--remote-debugging-port=%d" % (PUERTO_CHROME + 1),
+         "--remote-debugging-port=%d" % puerto_chrome,
          "--user-data-dir=%s" % perfil, "about:blank"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
     )
@@ -349,7 +422,7 @@ def test_los_ocho_tiradores_en_un_navegador():
 
         salida = subprocess.run(
             [node, str(SONDA_TIRADORES),
-             str(PUERTO_WEB + 1), str(PUERTO_CHROME + 1)],
+             str(puerto_web), str(puerto_chrome)],
             capture_output=True, text=True, encoding="utf-8",
             errors="replace", timeout=240
         )

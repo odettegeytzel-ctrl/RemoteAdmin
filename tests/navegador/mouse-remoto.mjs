@@ -779,6 +779,192 @@ comprobar(
 );
 
 
+/* ==================================================================
+   9. Perder el foco en mitad de un arrastre
+
+   finishDrag solo se llamaba desde onPointerUp y onPointerCancel.
+   Si la ventana pierde el foco mientras arrastras -Alt+Tab, cambiar
+   de pestaña, el equipo que se bloquea- el 'pointerup' puede ocurrir
+   donde el navegador no lo ve y no llegar nunca.
+
+   Con la sesion todavia viva, ni el panel ni el Agent sueltan el
+   boton: se queda PULSADO en el equipo de la persona.
+================================================================== */
+
+function bancoDeFoco() {
+
+    const b = banco({ rtt: 20, fuente: FUENTE_PROPUESTA });
+
+    const cuerpo = extraer(FUENTE_PROPUESTA, "soltarArrastrePorFoco");
+
+    if (!cuerpo) return null;
+
+    runInContext(cuerpo, b.ctx);
+
+    return b;
+}
+
+const conFoco = bancoDeFoco();
+
+comprobar(
+    "existe soltarArrastrePorFoco",
+    conFoco !== null,
+    conFoco ? "" : "no se encontro la funcion en app.js"
+);
+
+if (conFoco) {
+
+    // --- arrastrando: tiene que soltar ---
+    conFoco.ctx.isDragging = true;
+    conFoco.ctx.activePointerId = 1;
+    conFoco.ctx.pressedMouseButton = "left";
+
+    conFoco.ctx.postMouse("down", { x: 5, y: 5, button: "left" });
+
+    conFoco.ctx.soltarArrastrePorFoco();
+
+    await conFoco.avanzar(conFoco.reloj() + 10000);
+
+    const acciones = conFoco.llegados.map(l => l.accion);
+
+    comprobar(
+        "al perder el foco arrastrando, se envia el 'up'",
+        acciones.includes("up"),
+        acciones.join(" ") || "(nada)"
+    );
+
+    comprobar(
+        "y el 'up' va despues del 'down'",
+        acciones.indexOf("down") < acciones.lastIndexOf("up"),
+        acciones.join(" ")
+    );
+
+    comprobar(
+        "el arrastre queda cerrado",
+        conFoco.ctx.isDragging === false,
+        `isDragging = ${conFoco.ctx.isDragging}`
+    );
+
+    // --- un movimiento PENDIENTE sale antes del up ---
+    //
+    // Es lo que podria romper el coalescing de d1a295a: si al
+    // perder el foco el ultimo punto se quedara en el buffer, el
+    // arrastre terminaria donde no es.
+    const conPendiente = bancoDeFoco();
+
+    conPendiente.ctx.isDragging = true;
+    conPendiente.ctx.pressedMouseButton = "left";
+
+    conPendiente.ctx.postMouse("down", { x: 1, y: 1, button: "left" });
+
+    // Se deja uno pendiente simulando que hay otro en vuelo
+    conPendiente.ctx.movimientosEnVuelo = 1;
+    conPendiente.ctx.queueMouseMove({ x: 555, y: 666 });
+    conPendiente.ctx.movimientosEnVuelo = 0;
+
+    const habiaPendiente = Boolean(conPendiente.ctx.pendingMove);
+
+    conPendiente.ctx.soltarArrastrePorFoco();
+
+    await conPendiente.avanzar(conPendiente.reloj() + 30000);
+
+    const sec = conPendiente.llegados.map(l => l.accion);
+    const movs = conPendiente.llegados.filter(l => l.accion === "move");
+
+    comprobar(
+        "habia un movimiento pendiente al perder el foco",
+        habiaPendiente
+    );
+
+    comprobar(
+        "el movimiento pendiente SI se envia",
+        movs.some(m => m.payload.x === 555),
+        sec.join(" ")
+    );
+
+    comprobar(
+        "y va antes del 'up' (no rompe el coalescing)",
+        sec.indexOf("move") >= 0 && sec.indexOf("move") < sec.indexOf("up"),
+        sec.join(" ")
+    );
+
+    comprobar(
+        "el contador de movimientos queda libre",
+        conPendiente.ctx.movimientosEnVuelo === 0,
+        String(conPendiente.ctx.movimientosEnVuelo)
+    );
+
+    // --- SIN arrastrar: no debe enviar nada ---
+    //
+    // Es el riesgo del arreglo: soltar botones por una perdida de
+    // foco irrelevante molestaria mas que el fallo que corrige.
+    const sinArrastre = bancoDeFoco();
+
+    sinArrastre.ctx.isDragging = false;
+
+    sinArrastre.ctx.soltarArrastrePorFoco();
+
+    await sinArrastre.avanzar(sinArrastre.reloj() + 10000);
+
+    comprobar(
+        "sin arrastre, perder el foco NO envia nada",
+        sinArrastre.enviados.length === 0,
+        `${sinArrastre.enviados.length} enviados`
+    );
+
+    // --- repetido: idempotente ---
+    const repetido = bancoDeFoco();
+
+    repetido.ctx.isDragging = true;
+    repetido.ctx.pressedMouseButton = "left";
+
+    repetido.ctx.soltarArrastrePorFoco();
+    repetido.ctx.soltarArrastrePorFoco();
+    repetido.ctx.soltarArrastrePorFoco();
+
+    await repetido.avanzar(repetido.reloj() + 10000);
+
+    comprobar(
+        "perder el foco tres veces solo suelta una",
+        repetido.enviados.filter(e => e.accion === "up").length === 1,
+        `${repetido.enviados.filter(e => e.accion === "up").length} 'up' enviados`
+    );
+}
+
+
+/* ==================================================================
+   10. Que este realmente enganchado, y al evento correcto
+================================================================== */
+
+comprobar(
+    "se escucha el blur de la VENTANA",
+    /window\.addEventListener\(\s*\n?\s*"blur",\s*\n?\s*soltarArrastrePorFoco/
+        .test(FUENTE_PROPUESTA),
+    "window.addEventListener(\"blur\", soltarArrastrePorFoco)"
+);
+
+comprobar(
+    "y el visibilitychange, para el cambio de pestaña",
+    /document\.hidden\)\s*\{\s*\n?\s*soltarArrastrePorFoco\(\)/
+        .test(FUENTE_PROPUESTA),
+    "document.hidden -> soltarArrastrePorFoco()"
+);
+
+// El marco pierde el foco al pulsar un boton de la barra. Enganchar
+// ahi cortaria arrastres validos.
+comprobar(
+    "NO se engancha al blur del marco",
+    !/marco\.addEventListener\("blur",\s*soltarArrastrePorFoco/
+        .test(FUENTE_PROPUESTA),
+    "el blur del marco sigue siendo solo del teclado"
+);
+
+comprobar(
+    "lostpointercapture sigue cerrando el arrastre",
+    /"lostpointercapture",\s*\n?\s*onPointerCancel/.test(FUENTE_PROPUESTA)
+);
+
+
 /* ------------------------------------------------------------------ */
 
 console.log("");

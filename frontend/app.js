@@ -7794,6 +7794,31 @@ if (isDragging) {
 
 }
 
+
+/* Se va el foco de la VENTANA en mitad de un arrastre.
+
+   El 'pointerup' puede ocurrir donde el navegador no lo ve -otra
+   aplicacion, otra pestaña- y no llegar nunca. Con la sesion viva,
+   ni onPointerUp ni onPointerCancel se disparan, y el boton se
+   queda PULSADO en el equipo remoto: selecciona texto, arrastra
+   iconos, y quien esta delante no entiende que pasa.
+
+   Solo actua si hay un arrastre en curso. Perder el foco sin estar
+   arrastrando no envia nada.
+
+   Se escucha el foco de la VENTANA, no el del marco: que el foco se
+   mueva dentro de la pagina no es motivo para cortar un arrastre, y
+   ademas la captura de puntero lo hace casi imposible. */
+function soltarArrastrePorFoco() {
+
+if (!isDragging) {
+    return;
+}
+
+finishDrag(null);
+
+}
+
 function finishDrag(coords) {
 
 if (coords) {
@@ -11017,6 +11042,24 @@ remoteImage.addEventListener(
 "dragstart",
 event =>
 event.preventDefault()
+);
+
+// Alt+Tab, otra aplicacion, el equipo que se bloquea.
+window.addEventListener(
+"blur",
+soltarArrastrePorFoco
+);
+
+// Cambiar de pestaña no siempre quita el foco a la ventana, pero si
+// oculta el documento.
+document.addEventListener(
+"visibilitychange",
+() => {
+
+    if (document.hidden) {
+        soltarArrastrePorFoco();
+    }
+}
 );
 
 document

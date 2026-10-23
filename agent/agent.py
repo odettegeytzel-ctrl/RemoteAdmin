@@ -2032,6 +2032,25 @@ def release_all_keys():
     held_keys.clear()
 
 
+def release_all_buttons():
+
+    # Al cerrar o perder la sesion, un boton que quedo presionado
+    # -por ejemplo una desconexion en mitad de un arrastre- se
+    # quedaria colgado en ESTE equipo, porque el 'mouse_up' que lo
+    # soltaba nunca llego. Se sueltan todos los que de verdad estan
+    # marcados como presionados.
+    for button in list(pressed_buttons):
+
+        try:
+            pyautogui.mouseUp(button=button)
+        except Exception as error:
+            # Si uno falla, se registra y se sigue con los demas:
+            # dejar otro boton colgado seria peor.
+            print(f"Error al soltar el boton {button}: {error}")
+
+    pressed_buttons.clear()
+
+
 def handle_keyboard(data):
 
     action = data.get("action", "press")
@@ -2970,6 +2989,8 @@ async def websocket_connection():
 
                         release_all_keys()
 
+                        release_all_buttons()
+
                         if screen_stream_task is not None:
 
                             screen_stream_task.cancel()
@@ -3002,7 +3023,8 @@ async def websocket_connection():
                             )[1]
                         )
 
-                        move_mouse(
+                        await asyncio.to_thread(
+                            move_mouse,
                             data["x"],
                             data["y"]
                         )
@@ -3018,7 +3040,8 @@ async def websocket_connection():
                             )[1]
                         )
 
-                        click_mouse(
+                        await asyncio.to_thread(
+                            click_mouse,
                             data.get(
                                 "button",
                                 "left"
@@ -3036,7 +3059,8 @@ async def websocket_connection():
                             )[1]
                         )
 
-                        mouse_down(
+                        await asyncio.to_thread(
+                            mouse_down,
                             data["x"],
                             data["y"],
                             data.get(
@@ -3056,7 +3080,8 @@ async def websocket_connection():
                             )[1]
                         )
 
-                        mouse_up(
+                        await asyncio.to_thread(
+                            mouse_up,
                             data.get("x"),
                             data.get("y"),
                             data.get(
@@ -3078,7 +3103,8 @@ async def websocket_connection():
 
                         try:
 
-                            handle_keyboard(
+                            await asyncio.to_thread(
+                                handle_keyboard,
                                 data
                             )
 
@@ -3165,6 +3191,8 @@ async def websocket_connection():
         except Exception as error:
 
             release_all_keys()
+
+            release_all_buttons()
 
             abort_file_transfer()
 
