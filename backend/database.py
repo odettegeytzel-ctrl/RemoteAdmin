@@ -482,6 +482,43 @@ def init_db():
             "ALTER TABLE devices ADD COLUMN alias TEXT"
         )
 
+    # Franja del horario que una parada manual dejo suprimida.
+    #
+    # Guarda una clave compuesta "zona|franja|instante". La parte
+    # decisiva es la del medio: el IDENTIFICADOR de la franja, el
+    # mismo que calcula inicio_de_la_franja() en el Agent. Mientras la
+    # franja en curso sea esa, el horario no vuelve a arrancar; cuando
+    # empieza la siguiente, el identificador cambia y la supresion
+    # caduca sola. Fuera de franja la referencia es "dia:AAAA-MM-DD".
+    #
+    # La zona y el instante estan para el caso en que cambie la zona
+    # DEL EQUIPO: ahi la franja deja de ser comparable y la supresion
+    # se respeta un tiempo acotado en vez de evaporarse.
+    #
+    # Vive en el servidor y no solo en el Agent porque una reconexion
+    # o un reinicio borraban la supresion y la grabacion volvia a
+    # arrancar sola, que es justo lo que el operador acababa de parar.
+    #
+    # NULL significa "sin supresion".
+    if "schedule_suppressed_slot" not in columnas_devices:
+
+        connection.execute(
+            "ALTER TABLE devices ADD COLUMN schedule_suppressed_slot TEXT"
+        )
+
+        # Se llamo schedule_suppressed_until mientras se creia que
+        # guardaria un instante. Si alguna base de desarrollo tiene
+        # ese nombre, se traslada el valor en vez de perderlo.
+        #
+        # La columna vieja no se borra: DROP COLUMN reescribe la tabla
+        # entera y aqui no aporta nada.
+        if "schedule_suppressed_until" in columnas_devices:
+            connection.execute(
+                "UPDATE devices "
+                "SET schedule_suppressed_slot = schedule_suppressed_until "
+                "WHERE schedule_suppressed_until IS NOT NULL"
+            )
+
     if "invalid_reason" not in columnas_recordings:
         connection.execute(
             "ALTER TABLE recordings ADD COLUMN invalid_reason TEXT"

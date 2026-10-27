@@ -406,6 +406,20 @@ def test_arrancar_a_mano_fuera_de_la_franja():
 
 
 def test_reprogramar_olvida_la_excepcion():
+    """
+    Cambiar el horario olvida la excepcion. Reenviar el MISMO, no.
+
+    El contrato cambio al persistir la supresion: el servidor reenvia
+    el horario cada vez que el Agent se conecta, no solo cuando
+    alguien lo cambia. Borrando siempre, un corte de red de dos
+    segundos anulaba la parada manual y la grabacion volvia a
+    arrancar sola.
+
+    Ahora se compara el contenido: un horario identico no es una
+    decision nueva de nadie. Y cuando el operador guarda el horario
+    desde el panel, el servidor retira la supresion expresamente, sin
+    depender de que el contenido haya cambiado.
+    """
 
     programador = RecordingScheduler(LABORAL)
 
@@ -416,10 +430,89 @@ def test_reprogramar_olvida_la_excepcion():
     comprobar("Con la excepcion puesta no reanuda",
               programador.decide(momento(0, 11, 0)) is None)
 
+    # Reconexion: el servidor reenvia el mismo horario
     programador.set_schedule(LABORAL)
 
-    comprobar("Al reprogramar desde el panel vuelve a mandar el horario",
+    comprobar("Reenviar el MISMO horario conserva la excepcion",
+              programador.decide(momento(0, 11, 0)) is None)
+
+    # Un horario distinto si es una decision nueva
+    otro = dict(LABORAL)
+    otro["end_time"] = "18:00"
+
+    programador.set_schedule(otro)
+
+    comprobar("Cambiar el horario de verdad la olvida",
               programador.decide(momento(0, 11, 0)) == "start")
+
+
+def test_la_supresion_viaja_como_una_clave():
+    """
+    Lo que se guarda en el servidor y se devuelve al reconectar.
+
+    No es un instante: es el identificador de la franja suprimida. Se
+    compara con el que calcula el Agent, asi que cuando empieza la
+    siguiente franja el identificador cambia y la supresion caduca
+    sola, sin aritmetica de relojes ni de medianoches.
+    """
+
+    programador = RecordingScheduler(LABORAL)
+
+    comprobar("Sin excepcion no hay clave",
+              programador.clave_suprimida() is None)
+
+    programador.decide(momento(0, 8, 0))
+    programador.notify_state(True)
+    programador.notify_manual(False, momento(0, 10, 0))
+
+    clave = programador.clave_suprimida()
+
+    # La clave lleva tres partes: zona|franja|instante. La del medio
+    # es la que identifica la franja; las otras dos existen para el
+    # caso en que cambie la zona del equipo.
+    comprobar("Con excepcion dentro de franja, la clave la identifica",
+              isinstance(clave, str)
+              and clave.split("|")[1].endswith("T08:00"),
+              str(clave))
+
+    # El Agent se reinicia: estado limpio, y el servidor le devuelve
+    # la clave que habia guardado.
+    reiniciado = RecordingScheduler(LABORAL)
+
+    comprobar("Recien arrancado, la programacion arrancaria",
+              reiniciado.decide(momento(0, 11, 0)) == "start")
+
+    reiniciado2 = RecordingScheduler(LABORAL)
+    reiniciado2.aplicar_supresion(clave)
+
+    comprobar("Con la supresion restaurada, NO arranca",
+              reiniciado2.decide(momento(0, 11, 0)) is None)
+
+    comprobar("Y en la franja del dia siguiente vuelve a mandar",
+              reiniciado2.decide(momento(1, 9, 0)) == "start")
+
+    # Fuera de toda franja la referencia es el dia
+    suelto = RecordingScheduler(LABORAL)
+    suelto.notify_manual(True, momento(6, 12, 0))
+
+    clave_dia = suelto.clave_suprimida()
+
+    comprobar("Fuera de franja la clave es el dia",
+              isinstance(clave_dia, str)
+              and clave_dia.split("|")[1].startswith("dia:"),
+              str(clave_dia))
+
+    repuesto = RecordingScheduler(LABORAL)
+
+    comprobar("Una clave de dia se restaura",
+              repuesto.aplicar_supresion(clave_dia) is True)
+
+    comprobar("Y retirarla con None funciona",
+              repuesto.aplicar_supresion(None) is True
+              and repuesto.clave_suprimida() is None)
+
+    comprobar("Una clave corrupta se descarta sin romper nada",
+              repuesto.aplicar_supresion("dia:no-es-fecha") is False)
 
 
 def test_estado_para_la_interfaz():
@@ -623,6 +716,7 @@ def main():
         test_parar_a_mano_no_se_reanuda_en_la_misma_franja,
         test_arrancar_a_mano_fuera_de_la_franja,
         test_reprogramar_olvida_la_excepcion,
+        test_la_supresion_viaja_como_una_clave,
         test_estado_para_la_interfaz,
         test_el_horario_no_depende_del_panel,
         test_endpoints,

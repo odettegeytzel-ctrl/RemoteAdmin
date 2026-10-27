@@ -3433,14 +3433,20 @@ try {
 
     const stateEl = document.getElementById("continuous-state");
 
-    // Con un horario activo, la continua se limita a sus franjas. Si
-    // no se dice, el rotulo "ACTIVADA" hace creer que graba a todas
-    // horas.
+    // Este rotulo es el INTERRUPTOR, no lo que esta pasando ahora.
+    //
+    // Con un horario activo manda el horario: la continua se limita a
+    // sus franjas cuando esta encendida, y cuando esta apagada el
+    // horario graba igual. Sin decirlo, el panel mostraba
+    // "DESACTIVADA" junto a "GRABANDO (PROGRAMADA)" y parecia que se
+    // contradecian, cuando cada uno hablaba de una cosa distinta.
     const stateText = enabled
         ? (data.schedule_enabled
             ? "ACTIVADA (dentro del horario)"
             : "ACTIVADA")
-        : "DESACTIVADA";
+        : (data.schedule_enabled
+            ? "DESACTIVADA (el horario manda)"
+            : "DESACTIVADA");
 
     // Solo escribe si cambió (evita reflow/parpadeo en cada ciclo del polling)
     if (stateEl.textContent !== stateText) {

@@ -553,6 +553,29 @@ def report_recording_intervals():
     return enviado
 
 
+def report_schedule_suppression():
+    """
+    Manda al servidor la franja que el horario no debe tocar.
+
+    Va por el WebSocket, que ya esta autenticado con el token de este
+    equipo: el servidor usa el device_id de la CONEXION, no uno que
+    venga en el mensaje.
+
+    Se envia tambien cuando no hay supresion (clave None), porque
+    retirarla es tan importante como ponerla: si solo se enviara al
+    poner, una supresion vieja se quedaria guardada para siempre.
+
+    Si no hay conexion no pasa nada grave: la supresion sigue viva en
+    memoria y se reenvia en el proximo intento.
+    """
+
+    return send_ws_threadsafe(
+        "schedule_suppression:" + json.dumps(
+            {"slot": recording_scheduler.clave_suprimida()}
+        )
+    )
+
+
 def report_recording_catalog(segment):
     """
     Avisa al servidor de que existe una grabacion nueva, sin subirla.
@@ -1035,11 +1058,31 @@ def stop_screen_recording(manual=True, origen=None):
     if origen is None:
         origen = owners.MANUAL if manual else owners.PROGRAMADA
 
+    # Una parada del OPERADOR para de verdad, aunque el horario
+    # tambien sostenga la captura.
+    #
+    # Antes solo soltaba el dueno manual: con una franja activa la
+    # captura seguia y el boton "Detener grabacion" no detenia nada.
+    # Y aunque hubiera parado, el horario la reanudaba al tic
+    # siguiente. Por eso se suelta tambien el horario y se anota la
+    # franja como suprimida.
+    supresion_del_operador = (
+        origen == owners.MANUAL
+        and manual
+        and duenos.grabando()
+    )
+
     if origen in owners.DEL_HORARIO:
         hay_que_parar = duenos.soltar_el_horario()
 
     else:
         hay_que_parar = duenos.soltar(origen)
+
+        if supresion_del_operador:
+            # El horario tambien suelta: si no, la captura seguiria
+            # viva y el operador habria pulsado Detener para nada.
+            if duenos.soltar_el_horario():
+                hay_que_parar = True
 
     if hay_que_parar:
         result = screen_recorder.stop()
@@ -1055,7 +1098,18 @@ def stop_screen_recording(manual=True, origen=None):
         if not screen_recorder.is_recording():
             agent_state = "idle"
 
-    recording_scheduler.notify_state(screen_recorder.is_recording())
+    if supresion_del_operador:
+
+        # notify_manual anota la franja en curso como excepcion. Es la
+        # funcion que ya existia y que NADIE llamaba: por eso el
+        # horario reanudaba la grabacion que el operador acababa de
+        # detener.
+        recording_scheduler.notify_manual(False)
+
+        report_schedule_suppression()
+
+    else:
+        recording_scheduler.notify_state(screen_recorder.is_recording())
 
     log_duenos("suelta " + origen)
 
@@ -1071,13 +1125,38 @@ def log_duenos(que):
           % (que, ", ".join(activos) if activos else "nadie"))
 
 
-def apply_schedule(horario):
-    """Guarda el horario recibido del servidor y lo aplica de inmediato."""
+# Marca de "la clave no venia en el mensaje", distinta de "venia
+# vacia". Un servidor anterior a este cambio no manda el campo, y
+# entonces no hay que tocar la supresion; uno nuevo puede mandar None
+# para retirarla expresamente.
+_SIN_CLAVE = object()
 
-    recording_scheduler.set_schedule(horario or {})
+
+def apply_schedule(horario, supresion=_SIN_CLAVE):
+    """
+    Guarda el horario recibido del servidor y lo aplica de inmediato.
+
+    La supresion se aplica ANTES de evaluar la decision. Si se hiciera
+    despues, entre una cosa y otra el horario arrancaria la grabacion
+    que el operador habia parado.
+    """
+
+    datos = dict(horario or {})
+
+    # La clave puede venir dentro del propio mensaje del horario.
+    if supresion is _SIN_CLAVE and "_suppressed_slot" in datos:
+        supresion = datos.pop("_suppressed_slot")
+
+    datos.pop("_suppressed_slot", None)
+
+    recording_scheduler.set_schedule(datos)
+
+    if supresion is not _SIN_CLAVE:
+        recording_scheduler.aplicar_supresion(supresion)
+
     recording_scheduler.notify_state(screen_recorder.is_recording())
 
-    print(f"[horario] Programacion recibida: {horario}")
+    print(f"[horario] Programacion recibida: {datos}")
 
     _aplicar_decision_del_horario()
 
@@ -2915,6 +2994,22 @@ async def websocket_connection():
                         await websocket.send(
                             "recording_status:" + json.dumps(build_recording_status())
                         )
+
+                    elif message.startswith("schedule_suppression:"):
+
+                        # El servidor devuelve la franja suprimida al
+                        # conectar. Sin esto, reiniciar el Agent o
+                        # perder la red un segundo borraba la parada
+                        # manual y el horario arrancaba otra vez.
+                        datos = json.loads(
+                            message.split(":", 1)[1]
+                        )
+
+                        recording_scheduler.aplicar_supresion(
+                            datos.get("slot")
+                        )
+
+                        _aplicar_decision_del_horario()
 
                     elif message.startswith("set_continuous:"):
 

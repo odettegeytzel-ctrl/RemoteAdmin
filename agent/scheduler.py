@@ -24,7 +24,7 @@ Asi nadie se encuentra con que el programa le vuelve a arrancar la
 grabacion treinta segundos despues de pararla.
 """
 
-from datetime import datetime
+from datetime import date, datetime, timedelta, timezone
 
 
 DIAS_VALIDOS = (0, 1, 2, 3, 4, 5, 6)
@@ -38,6 +38,22 @@ def _minutos(texto, por_defecto):
 
     except Exception:
         return por_defecto
+
+
+# Separador de las tres partes de una clave de supresion.
+#
+# La barra vertical no aparece en un nombre de zona IANA
+# ("America/Mexico_City") ni en un identificador de franja
+# ("2026-10-26T08:00"), asi que no hay que escapar nada.
+SEPARADOR_CLAVE = "|"
+
+# Cuanto se respeta una supresion cuando la franja ya no es
+# comparable porque cambio la zona.
+#
+# Veinticuatro horas es el techo: una franja no puede durar mas, ni
+# cruzando medianoche. Mas seria arriesgarse a no grabar nunca;
+# menos, a reanudar dentro de la franja que el operador paro.
+TOPE_SIN_ZONA_COMPARABLE = timedelta(hours=24)
 
 
 def _zona(nombre):
@@ -164,6 +180,16 @@ class RecordingScheduler:
         # domingo dejaba la programacion anulada para siempre.
         self._fecha_con_excepcion = None
 
+        # Zona con la que se calculo la franja, e instante en que se
+        # tomo la excepcion.
+        #
+        # Hacen falta para cuando cambia la zona DEL EQUIPO (timezone
+        # "local"): ahi nadie llama a set_schedule, la franja
+        # calculada deja de coincidir con la guardada, y la grabacion
+        # que el operador acababa de parar se reanudaba sola.
+        self._zona_de_la_excepcion = None
+        self._tomada_en = None
+
         # Ultimo estado conocido de la grabacion
         self._grabando = False
 
@@ -180,18 +206,184 @@ class RecordingScheduler:
         # programacion.
         self._fuente = None
 
-    def set_schedule(self, horario):
-        """
-        Cambia el horario. Olvida la excepcion manual.
+    def _olvidar_excepcion(self):
+        """Retira la excepcion y todo lo que la acompana."""
 
-        Si alguien acaba de reprogramar desde el panel, lo que quiere es
-        que mande el horario nuevo.
-        """
-
-        self.horario = horario or {}
         self._excepcion_activa = False
         self._franja_con_excepcion = None
         self._fecha_con_excepcion = None
+        self._zona_de_la_excepcion = None
+        self._tomada_en = None
+
+    def _supresion_bloquea(self, franja, momento):
+        """
+        True si una parada manual impide que el horario actue ahora.
+
+        Estaba duplicado en intencion() y en decide(). Con dos copias,
+        arreglar el caso de la zona en una sola habria dejado el fallo
+        vivo por el otro camino.
+
+        Caduca sola: cuando empieza otra franja el identificador
+        cambia y deja de coincidir.
+        """
+
+        if not self._excepcion_activa:
+            return False
+
+        zona_actual = (self.horario or {}).get("timezone") or "local"
+
+        # La zona cambio sin pasar por set_schedule: tipico de
+        # timezone "local" cuando se corrige la zona del equipo. La
+        # franja calculada ya no es comparable con la guardada, asi
+        # que se respeta la supresion un tiempo acotado en vez de
+        # darla por caducada y reanudar lo que se acaba de parar.
+        if (self._zona_de_la_excepcion is not None
+                and self._zona_de_la_excepcion != zona_actual):
+
+            if self._tomada_en is not None:
+
+                # Se compara con el momento EVALUADO, no con
+                # datetime.now(): el resto del programador recibe el
+                # instante como parametro y usar el reloj real aqui
+                # haria la regla imposible de comprobar y distinta
+                # segun cuando se ejecute.
+                if momento.tzinfo is not None:
+                    referencia = momento.astimezone(timezone.utc)
+                else:
+                    referencia = momento.replace(tzinfo=timezone.utc)
+
+                if referencia - self._tomada_en < TOPE_SIN_ZONA_COMPARABLE:
+                    return True
+
+            self._olvidar_excepcion()
+
+            return False
+
+        misma_franja = franja == self._franja_con_excepcion
+
+        # Fuera de todo horario no hay franja que comparar: entonces la
+        # excepcion dura lo que queda de dia. Dentro de una franja manda
+        # su identidad, para que un turno de noche que cruza la
+        # medianoche no se reanude solo al cambiar la fecha.
+        if misma_franja and franja is None:
+            misma_franja = momento.date() == self._fecha_con_excepcion
+
+        if misma_franja:
+            return True
+
+        self._olvidar_excepcion()
+
+        return False
+
+    def set_schedule(self, horario):
+        """
+        Cambia el horario. Si cambia de verdad, olvida la excepcion.
+
+        Si alguien acaba de reprogramar desde el panel, lo que quiere
+        es que mande el horario nuevo.
+
+        Pero el servidor reenvia el horario CADA VEZ que el Agent se
+        conecta, no solo al cambiarlo. Borrando siempre, un corte de
+        red de dos segundos anulaba la parada manual y la grabacion
+        volvia a arrancar sola. Por eso se compara primero: un horario
+        identico no es una decision nueva de nadie.
+        """
+
+        nuevo = horario or {}
+
+        if nuevo != self.horario:
+            self._olvidar_excepcion()
+
+        self.horario = nuevo
+
+    def clave_suprimida(self):
+        """
+        La excepcion en curso como una sola cadena, o None.
+
+        Es lo que se guarda en el servidor. Hay dos formas porque hay
+        dos casos: dentro de una franja, su identificador
+        ("2026-10-26T08:00"); fuera de todo horario, el dia
+        ("dia:2026-10-26"), que es la referencia que usa intencion()
+        cuando no hay franja.
+        """
+
+        if not self._excepcion_activa:
+            return None
+
+        if self._franja_con_excepcion is not None:
+            referencia = self._franja_con_excepcion
+
+        elif self._fecha_con_excepcion is not None:
+            referencia = "dia:" + self._fecha_con_excepcion.isoformat()
+
+        else:
+            return None
+
+        zona = self._zona_de_la_excepcion or "local"
+
+        tomada = self._tomada_en or datetime.now(timezone.utc)
+
+        return SEPARADOR_CLAVE.join((zona, referencia, tomada.isoformat()))
+
+    def aplicar_supresion(self, clave):
+        """
+        Restaura una excepcion guardada en el servidor.
+
+        Se llama al conectar: sin esto, reiniciar el Agent borraba la
+        parada manual y el horario arrancaba la grabacion acto
+        seguido.
+
+        Una clave que no se entiende se descarta en vez de romper el
+        arranque: perder una supresion es molesto; no arrancar, peor.
+        """
+
+        if not clave:
+            self._olvidar_excepcion()
+            return True
+
+        # Formato: zona|referencia|instante. El anterior era solo la
+        # referencia, y se sigue entendiendo para no perder una
+        # supresion guardada antes de este cambio.
+        partes = clave.split(SEPARADOR_CLAVE)
+
+        if len(partes) == 3:
+
+            zona_guardada, clave, instante = partes
+
+            try:
+                self._tomada_en = datetime.fromisoformat(instante)
+
+            except ValueError:
+                return False
+
+            self._zona_de_la_excepcion = zona_guardada
+
+        elif len(partes) == 1:
+
+            self._zona_de_la_excepcion = None
+            self._tomada_en = None
+
+        else:
+            return False
+
+        if clave.startswith("dia:"):
+
+            try:
+                self._fecha_con_excepcion = date.fromisoformat(clave[4:])
+
+            except ValueError:
+                return False
+
+            self._excepcion_activa = True
+            self._franja_con_excepcion = None
+
+            return True
+
+        self._excepcion_activa = True
+        self._franja_con_excepcion = clave
+        self._fecha_con_excepcion = None
+
+        return True
 
     def set_continuous(self, activa):
         """
@@ -203,9 +395,7 @@ class RecordingScheduler:
 
         self._continuo = bool(activa)
 
-        self._excepcion_activa = False
-        self._franja_con_excepcion = None
-        self._fecha_con_excepcion = None
+        self._olvidar_excepcion()
 
     @property
     def continua(self):
@@ -228,6 +418,15 @@ class RecordingScheduler:
             self.horario, momento
         )
         self._fecha_con_excepcion = momento.date()
+
+        self._zona_de_la_excepcion = (
+            (self.horario or {}).get("timezone") or "local"
+        )
+
+        if momento.tzinfo is not None:
+            self._tomada_en = momento.astimezone(timezone.utc)
+        else:
+            self._tomada_en = momento.replace(tzinfo=timezone.utc)
 
     def notify_state(self, grabando):
         """Estado real informado por el grabador, sin intervencion manual."""
@@ -282,19 +481,8 @@ class RecordingScheduler:
 
         franja = inicio_de_la_franja(self.horario, momento)
 
-        if self._excepcion_activa:
-
-            misma_franja = franja == self._franja_con_excepcion
-
-            if misma_franja and franja is None:
-                misma_franja = momento.date() == self._fecha_con_excepcion
-
-            if misma_franja:
-                return False, None
-
-            self._excepcion_activa = False
-            self._franja_con_excepcion = None
-            self._fecha_con_excepcion = None
+        if self._supresion_bloquea(franja, momento):
+            return False, None
 
         return self._procede(franja)
 
@@ -309,23 +497,8 @@ class RecordingScheduler:
 
         franja = inicio_de_la_franja(self.horario, momento)
 
-        if self._excepcion_activa:
-
-            misma_franja = franja == self._franja_con_excepcion
-
-            # Fuera de todo horario no hay franja que comparar: entonces
-            # la excepcion dura lo que queda de dia. Dentro de una franja
-            # manda su identidad, para que un turno de noche que cruza la
-            # medianoche no se reanude solo al cambiar la fecha.
-            if misma_franja and franja is None:
-                misma_franja = momento.date() == self._fecha_con_excepcion
-
-            if misma_franja:
-                return None
-
-            self._excepcion_activa = False
-            self._franja_con_excepcion = None
-            self._fecha_con_excepcion = None
+        if self._supresion_bloquea(franja, momento):
+            return None
 
         deberia, fuente = self._procede(franja)
 

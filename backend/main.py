@@ -2093,11 +2093,26 @@ async def agent_websocket(websocket: WebSocket):
             # Y su horario: el Agent lo cumple con su propio reloj, asi
             # que debe tenerlo desde el primer momento, no cuando alguien
             # abra el panel.
+            # El horario y la franja suprimida van en el MISMO
+            # mensaje.
+            #
+            # En dos mensajes habia un hueco: el Agent evalua la
+            # decision nada mas recibir el horario, asi que entre uno
+            # y otro arrancaba la grabacion que el operador habia
+            # parado y la detenia un instante despues.
+            #
+            # Y no vale invertir el orden: un Agent recien arrancado
+            # tiene el horario vacio, el que llega siempre "cambia" y
+            # set_schedule retiraria la supresion.
             try:
-                await websocket.send_text(
-                    "set_schedule:"
-                    + json.dumps(recording_schedule.get_schedule(device_id))
+                carga = dict(recording_schedule.get_schedule(device_id))
+
+                carga["_suppressed_slot"] = (
+                    devices_mod.get_schedule_suppression(device_id)
                 )
+
+                await websocket.send_text("set_schedule:" + json.dumps(carga))
+
             except Exception as error:
                 print(f"[horario] no se pudo enviar el horario inicial: {error}")
 
@@ -2262,6 +2277,27 @@ async def agent_websocket(websocket: WebSocket):
                 except json.JSONDecodeError:
                     print(f"[grabaciones] ficha ilegible de {device_id}")
 
+
+            elif message.startswith("schedule_suppression:"):
+
+                # El Agent informa que franja dejo suprimida una
+                # parada manual. Se guarda para devolversela cuando
+                # vuelva a conectar: en memoria se perdia con
+                # cualquier corte de red y la grabacion se reanudaba
+                # sola.
+                #
+                # El device_id es el de la CONEXION autenticada, no
+                # uno que venga en el mensaje: un equipo no puede
+                # suprimir el horario de otro.
+                try:
+                    datos = json.loads(message.split(":", 1)[1])
+
+                    devices_mod.set_schedule_suppression(
+                        device_id, datos.get("slot")
+                    )
+
+                except Exception as error:
+                    print(f"[supresion] no se pudo guardar: {error}")
 
             elif message.startswith("recording_intervals:"):
 
@@ -4733,6 +4769,18 @@ async def recording_schedule_set(device_id: str, data: dict,
             content={"status": "error", "message": str(problema)}
         )
 
+    # Guardar el horario desde el panel es una decision expresa del
+    # operador: retira la supresion que hubiera dejado una parada
+    # manual.
+    #
+    # Se hace aqui y no en el Agent porque el Agent solo olvida la
+    # excepcion cuando el CONTENIDO del horario cambia -tuvo que ser
+    # asi: el servidor le reenvia el mismo horario en cada
+    # reconexion, y borrarla siempre anulaba la parada manual con
+    # cualquier corte de red-. Guardar el mismo horario sin cambios
+    # sigue siendo una decision, y por ese camino si debe retirarse.
+    devices_mod.set_schedule_suppression(device_id, None)
+
     entregado = False
 
     websocket = connected_agents.get(device_id)
@@ -4740,6 +4788,11 @@ async def recording_schedule_set(device_id: str, data: dict,
     if websocket:
         try:
             await websocket.send_text("set_schedule:" + json.dumps(horario))
+
+            await websocket.send_text(
+                "schedule_suppression:" + json.dumps({"slot": None})
+            )
+
             entregado = True
         except Exception as error:
             print(f"[horario] no se pudo avisar al Agent: {error}")

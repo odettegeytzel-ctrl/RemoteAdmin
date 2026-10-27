@@ -1029,6 +1029,54 @@ def set_alias(device_id, alias):
     return {"device_id": device_id, "alias": limpio}
 
 
+def set_schedule_suppression(device_id, clave):
+    """
+    Anota (o retira, con None) la franja que el horario no debe tocar.
+
+    No valida el formato: la clave la produce el Agent con su propio
+    reloj y su propia zona horaria, y el servidor solo la guarda y se
+    la devuelve. Interpretarla aqui obligaria a duplicar el calculo de
+    franjas, que es exactamente lo que se quiere evitar.
+    """
+
+    conexion = get_connection()
+
+    try:
+        cursor = conexion.execute(
+            "UPDATE devices SET schedule_suppressed_slot = ? "
+            "WHERE device_id = ?",
+            (clave, device_id)
+        )
+
+        conexion.commit()
+
+        return cursor.rowcount > 0
+
+    finally:
+        conexion.close()
+
+
+def get_schedule_suppression(device_id):
+    """Franja suprimida para este equipo, o None."""
+
+    conexion = get_connection()
+
+    try:
+        fila = conexion.execute(
+            "SELECT schedule_suppressed_slot FROM devices "
+            "WHERE device_id = ?",
+            (device_id,)
+        ).fetchone()
+
+    finally:
+        conexion.close()
+
+    if not fila:
+        return None
+
+    return fila["schedule_suppressed_slot"]
+
+
 def get_alias(device_id):
     """El alias de un equipo, o None si no tiene."""
 
