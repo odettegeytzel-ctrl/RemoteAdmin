@@ -1261,6 +1261,18 @@ def build_recording_status():
     grabacion, no solo que la hay. Sin este dato el panel no podia
     distinguir una grabacion manual de una programada, y encendia los
     dos controles a la vez.
+
+    La respuesta la da el modelo de duenos, que es quien lleva la
+    cuenta de verdad: tomar() y soltar() se llaman en cada arranque y
+    en cada parada. El planificador solo guarda una copia parcial -no
+    se entera de los arranques manuales, porque el producto nunca le
+    avisa- y por eso una grabacion manual iniciada dentro de una
+    franja suprimida se informaba al panel como "programada".
+
+    Se conserva el planificador como respaldo para el unico caso que
+    los duenos no cubren: viven en memoria, asi que tras reiniciar el
+    Agent con una captura ya en marcha no consta ninguno y la fuente
+    hay que deducirla de la situacion.
     """
 
     with _state_lock:
@@ -1271,7 +1283,7 @@ def build_recording_status():
     # necesita el estado compartido.
     recording_scheduler.notify_state(recording)
 
-    fuente = recording_scheduler.fuente()
+    fuente = duenos.fuente_principal() or recording_scheduler.fuente()
 
     with _state_lock:
         return {

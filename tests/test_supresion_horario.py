@@ -620,7 +620,10 @@ comprobar(
     mixto.intencion(momento(0, 11, 0))[0] is False
 )
 
-mixto.notify_manual(True, momento(0, 11, 0))
+# Lo que el producto hace de verdad al arrancar a mano: avisar del
+# estado. NO llama a notify_manual(True) -esta prueba lo daba por
+# hecho y por eso no vio que el panel etiquetaba mal la grabacion-.
+mixto.notify_state(True)
 
 comprobar(
     "pero se puede arrancar una manual dentro de la misma franja",
@@ -630,12 +633,6 @@ comprobar(
 comprobar(
     "y el horario sigue sin reclamar en esa franja",
     mixto.intencion(momento(0, 12, 0))[0] is False
-)
-
-comprobar(
-    "la fuente dice que la sostiene la manual",
-    mixto.fuente(momento(0, 12, 0)) == "manual",
-    str(mixto.fuente(momento(0, 12, 0)))
 )
 
 
@@ -694,6 +691,224 @@ comprobar(
 comprobar(
     "el indicador de grabacion real no se toco",
     'programada: "Grabando (programada)"' in APP
+)
+
+
+# ==================================================================
+# 9. La fuente que informa el Agent: por el camino REAL
+# ==================================================================
+#
+# Esta seccion existe por un fallo que las pruebas anteriores no
+# vieron y que aparecio al probar en un equipo de verdad: una
+# grabacion manual arrancada dentro de una franja suprimida se
+# informaba al panel como "programada".
+#
+# La causa era la misma clase de error que el fallo original. La
+# prueba de 6d llamaba a notify_manual(True) a mano, y el producto
+# NUNCA la llama en el arranque: start_screen_recording solo avisa
+# con notify_state(True), que no anota la fuente. Entonces fuente()
+# caia en su deduccion -"la franja cubre esta hora, luego es
+# programada"- que ignora la supresion.
+#
+# Por eso aqui no se llama a ninguna funcion suelta: se ejecuta
+# start_screen_recording() y se lee build_recording_status(), que es
+# literalmente lo que recibe el panel.
+
+def _cargar_agent():
+    """
+    Importa el modulo real del Agent con dobles para lo que toca el
+    sistema: pyautogui y el grabador de pantalla. Todo lo demas -los
+    duenos, el planificador, el armado del estado- es el codigo que
+    corre en produccion.
+    """
+
+    import types
+
+    falso = types.ModuleType("pyautogui")
+    falso.PAUSE = 0
+    falso.FAILSAFE = False
+    falso.KEYBOARD_KEYS = []
+    falso.position = lambda: (0, 0)
+
+    for metodo in ("moveTo", "click", "mouseDown", "mouseUp",
+                   "press", "keyDown", "keyUp", "hotkey"):
+        setattr(falso, metodo, lambda *a, **k: None)
+
+    sys.modules["pyautogui"] = falso
+
+    import agent as modulo
+
+    class GrabadorFalso:
+        """Lleva la cuenta de si grabaria, sin tocar la pantalla."""
+
+        def __init__(self):
+            self.activo = False
+
+        def start(self):
+            self.activo = True
+            return {"status": "started"}
+
+        def stop(self):
+            self.activo = False
+            return {"status": "stopped", "path": None, "duration": 0}
+
+        def is_recording(self):
+            return self.activo
+
+        def current_segment_path(self):
+            return None
+
+    modulo.screen_recorder = GrabadorFalso()
+
+    # Sin WebSocket: que informar al servidor no reviente ni intente
+    # salir a la red.
+    modulo.send_ws_threadsafe = lambda mensaje: False
+
+    return modulo
+
+
+agente = _cargar_agent()
+
+# Estado de partida limpio: nadie sostiene nada.
+agente.duenos = agente.owners.Duenos()
+agente.recording_scheduler = RecordingScheduler(LABORAL)
+agente.recording_scheduler.set_schedule(LABORAL)
+
+comprobar(
+    "de partida, el panel no ve ninguna grabacion",
+    agente.build_recording_status()["recording_source"] is None
+)
+
+# --- el horario toma la captura, por el camino real ---------------
+
+agente.start_screen_recording(manual=False, origen=agente.owners.PROGRAMADA)
+
+estado_programada = agente.build_recording_status()
+
+comprobar(
+    "una grabacion del horario se informa como programada",
+    estado_programada["recording_source"] == "programada",
+    str(estado_programada["recording_source"])
+)
+
+# --- el operador la detiene: el camino real de la supresion -------
+
+agente.stop_screen_recording()
+
+comprobar(
+    "tras la parada del operador no queda nadie sosteniendola",
+    agente.build_recording_status()["recording"] is False
+)
+
+comprobar(
+    "y la franja queda suprimida",
+    agente.recording_scheduler.clave_suprimida() is not None
+)
+
+# --- y ahora una manual DENTRO de la franja suprimida -------------
+#
+# Este es el caso que fallaba en el equipo real.
+
+agente.start_screen_recording()
+
+estado_manual = agente.build_recording_status()
+
+comprobar(
+    "una manual dentro de la franja suprimida SI graba",
+    estado_manual["recording"] is True
+)
+
+comprobar(
+    "y el panel la ve como manual, no como programada",
+    estado_manual["recording_source"] == "manual",
+    str(estado_manual["recording_source"])
+)
+
+comprobar(
+    "los duenos coinciden con lo que se informa",
+    agente.duenos.fuente_principal() == "manual",
+    str(agente.duenos.fuente_principal())
+)
+
+comprobar(
+    "y arrancar a mano no levanta la supresion de la franja",
+    agente.recording_scheduler.clave_suprimida() is not None
+)
+
+# --- al pararla, se deja de informar fuente -----------------------
+
+agente.stop_screen_recording()
+
+comprobar(
+    "parada la manual, el panel no ve fuente",
+    agente.build_recording_status()["recording_source"] is None
+)
+
+# --- el horario sigue mandando cuando no hay supresion ------------
+#
+# Que el arreglo no cambie el caso normal: sin parada manual de por
+# medio, una grabacion del horario se sigue informando como suya.
+
+# Se entra por donde se entra en produccion: el planificador decide
+# y _aplicar_decision_del_horario arranca. Llamar a
+# start_screen_recording a pelo con origen "continua" seria inventar
+# un camino que el producto no toma.
+
+agente.duenos = agente.owners.Duenos()
+agente.recording_scheduler = RecordingScheduler({"enabled": False})
+agente.recording_scheduler.set_continuous(True)
+
+agente._aplicar_decision_del_horario()
+
+comprobar(
+    "la continua, por el camino del horario, arranca",
+    agente.build_recording_status()["recording"] is True
+)
+
+comprobar(
+    "y se informa como continua",
+    agente.build_recording_status()["recording_source"] == "continua",
+    str(agente.build_recording_status()["recording_source"])
+)
+
+# Con las dos activas manda el horario, que es la politica que ya
+# documentaba fuente_principal() y que este arreglo no cambia.
+agente.start_screen_recording()
+
+comprobar(
+    "con horario y manual a la vez, manda el horario",
+    agente.build_recording_status()["recording_source"] == "continua",
+    str(agente.build_recording_status()["recording_source"])
+)
+
+agente.stop_screen_recording()
+agente.duenos = agente.owners.Duenos()
+
+# --- la deduccion sigue de respaldo -------------------------------
+#
+# Los duenos viven en memoria: tras reiniciar el Agent con una
+# captura ya en marcha no consta ninguno, y la fuente hay que
+# deducirla. Ese respaldo no se ha quitado.
+
+agente.screen_recorder.activo = True
+agente.recording_scheduler = RecordingScheduler(LABORAL)
+agente.recording_scheduler.notify_state(True)
+
+comprobar(
+    "sin duenos anotados, la fuente se deduce de la situacion",
+    agente.build_recording_status()["recording_source"] is not None
+)
+
+agente.screen_recorder.activo = False
+
+comprobar(
+    "el producto NO llama a notify_manual(True) al arrancar",
+    "recording_scheduler.notify_manual(True)" not in AGENTE
+)
+
+comprobar(
+    "el estado del panel sale de los duenos, no de la deduccion sola",
+    "duenos.fuente_principal()" in AGENTE
 )
 
 
