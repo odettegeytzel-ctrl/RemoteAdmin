@@ -74,6 +74,8 @@ from backend.recordings import (
     cleanup_orphan_parts,
     PART_SUFFIX,
     list_recordings,
+    list_recordings_page,
+    count_recordings,
     query_recordings,
     get_recording,
     get_recordings_dir,
@@ -709,6 +711,23 @@ connected_agents = {}
 latest_screens = {}
 latest_cursors = {}
 latest_recording_status = {}
+
+# Que sabe hacer el Agent de cada equipo conectado, segun lo que el
+# mismo declara nada mas conectarse. En memoria y no en la base: vale
+# solo mientras dure la conexion, y al reconectar lo vuelve a decir.
+#
+# Un Agent anterior no manda nada, asi que su equipo no aparece aqui.
+# Esa ausencia es la senal: no hace falta tocar los equipos ya
+# instalados ni guardar su version en ningun sitio.
+agent_capabilities = {}
+
+
+def agent_supports(device_id, capacidad):
+    """Si el Agent conectado declaro saber hacer algo."""
+
+    datos = agent_capabilities.get(device_id) or {}
+
+    return capacidad in (datos.get("capabilities") or [])
 
 
 @app.on_event("startup")
@@ -2245,6 +2264,38 @@ async def agent_websocket(websocket: WebSocket):
                 )
 
 
+            elif message.startswith("agent_capabilities:"):
+
+                # Lo declara el Agent al conectar. El equipo es el de
+                # la CONEXION autenticada, no uno que venga dentro del
+                # mensaje: un equipo no puede declarar por otro.
+                try:
+                    datos = json.loads(message.split(":", 1)[1])
+
+                    if isinstance(datos, dict):
+                        agent_capabilities[device_id] = {
+                            "version": str(datos.get("version") or ""),
+                            "capabilities": [
+                                str(c) for c in
+                                (datos.get("capabilities") or [])
+                            ][:50]
+                        }
+
+                except Exception as error:
+                    print(f"[capacidades] carga ilegible: {error}")
+
+
+            elif message.startswith((
+                "recording_stream_ready:",
+                "recording_stream_complete:",
+                "recording_stream_error:"
+            )):
+
+                resolve_recording_stream(
+                    message
+                )
+
+
             elif message.startswith(tuple(RESPONSE_PREFIXES)):
 
                 # Respuesta a una consulta de procesos o servicios.
@@ -2394,6 +2445,15 @@ async def agent_websocket(websocket: WebSocket):
 
             fail_device_file_downloads(
                 device_id
+            )
+
+            fail_device_recording_streams(
+                device_id
+            )
+
+            agent_capabilities.pop(
+                device_id,
+                None
             )
 
             latest_recording_status.pop(
@@ -2927,14 +2987,26 @@ class FileTransferError(Exception):
         self.message = message
 
 
-def file_transfer_error(status_code, message):
+def file_transfer_error(status_code, message, codigo=None):
+    """
+    Error de transferencia, con el motivo en texto.
+
+    'codigo' es opcional y sirve para que el panel distinga un caso
+    concreto sin tener que leer el mensaje: el texto esta escrito
+    para una persona y puede cambiar, el codigo no.
+    """
+
+    contenido = {
+        "status": "error",
+        "message": message
+    }
+
+    if codigo:
+        contenido["code"] = codigo
 
     return JSONResponse(
         status_code=status_code,
-        content={
-            "status": "error",
-            "message": message
-        }
+        content=contenido
     )
 
 
@@ -3197,6 +3269,75 @@ def path_within_downloads(path):
     return target == base or target.startswith(base + "\\")
 
 
+# Transmisiones de grabaciones locales en curso, por transfer_id.
+# Mismo esquema que file_downloads: un futuro para los metadatos y una
+# cola para los bloques.
+recording_streams = {}
+
+
+def resolve_recording_stream(message):
+    """Encamina los avisos del Agent sobre una transmision en curso."""
+
+    command, _, payload = message.partition(":")
+
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError:
+        return
+
+    if not isinstance(data, dict):
+        return
+
+    transmision = recording_streams.get(data.get("transfer_id"))
+
+    if not transmision:
+        return
+
+    if command == "recording_stream_ready":
+
+        if not transmision["meta"].done():
+            transmision["meta"].set_result(data)
+
+    elif command == "recording_stream_complete":
+
+        transmision["queue"].put_nowait(None)
+
+    elif command == "recording_stream_error":
+
+        # 'code' y 'size' viajan con el error, no solo el texto. Sin
+        # ellos, un Range imposible —que el equipo marca con
+        # code='range'— llegaba al endpoint como un error cualquiera
+        # y se contestaba 502, que significa "el equipo ha fallado",
+        # en vez de 416, que es lo que el reproductor espera y sabe
+        # interpretar.
+        error = {
+            "error": data.get("message") or "Error en el equipo",
+            "code": data.get("code"),
+            "size": data.get("size")
+        }
+
+        if not transmision["meta"].done():
+            transmision["meta"].set_result(error)
+        else:
+            transmision["queue"].put_nowait(error)
+
+
+def fail_device_recording_streams(device_id):
+    """El equipo se desconecto: sus transmisiones no van a continuar."""
+
+    for transmision in recording_streams.values():
+
+        if transmision["device_id"] != device_id:
+            continue
+
+        error = {"error": "El equipo se desconecto"}
+
+        if not transmision["meta"].done():
+            transmision["meta"].set_result(error)
+        else:
+            transmision["queue"].put_nowait(error)
+
+
 def feed_download_chunk(chunk):
 
     transfer_id = chunk[:32].decode("ascii", "replace")
@@ -3205,6 +3346,15 @@ def feed_download_chunk(chunk):
 
     if download:
         download["queue"].put_nowait(chunk[32:])
+        return
+
+    # Mismo formato de trama —32 caracteres de transfer_id y detras los
+    # bytes—, otro registro: los dos canales conviven sin estorbarse
+    # porque el identificador es un uuid4 y no se repite.
+    transmision = recording_streams.get(transfer_id)
+
+    if transmision:
+        transmision["queue"].put_nowait(chunk[32:])
 
 
 def resolve_file_download(message):
@@ -3774,14 +3924,83 @@ async def upload_recording(
     }
 
 
+def _respuesta_paginada(device_id, start, end, limit, offset,
+                        device_ids):
+    """
+    Una pagina del listado, con lo que el panel necesita para paginar.
+
+    El total y las filas salen del MISMO filtro (ver
+    _filtro_de_listado), asi que 'has_more' nunca contradice a lo que
+    se acaba de pintar.
+    """
+
+    filas = list_recordings_page(
+        device_id=device_id, start=start, end=end,
+        limit=limit, offset=offset, device_ids=device_ids
+    )
+
+    total = count_recordings(
+        device_id=device_id, start=start, end=end,
+        device_ids=device_ids
+    )
+
+    # offset puede llegar negativo o con basura; list_recordings_page
+    # ya lo normaliza, y aqui se repite el mismo criterio para que el
+    # 'offset' que se devuelve sea el que de verdad se uso.
+    try:
+        desde = max(0, int(offset))
+    except (TypeError, ValueError):
+        desde = 0
+
+    return {
+        "status": "ok",
+        "recordings": filas,
+        "total": total,
+        "offset": desde,
+        "limit": len(filas),
+        "has_more": (desde + len(filas)) < total
+    }
+
+
 @app.get("/api/recordings")
 def recordings_list(request: Request, device_id: str = None,
-                    start: str = None, end: str = None):
+                    start: str = None, end: str = None,
+                    limit: int = None, offset: int = 0):
+    """
+    El listado de grabaciones, por paginas.
+
+    'limit' es OPCIONAL a proposito. Sin el, la respuesta es la de
+    siempre —el historial completo— porque hay llamadas que lo
+    necesitan entero: la ficha de un equipo y el resumen del panel. El
+    listado de Grabaciones si lo manda, y asi solo esa pantalla pagina.
+
+    Cuando hay 'limit' la respuesta trae ademas 'total' y 'has_more',
+    que es lo que el panel usa para decidir si ensena el boton "Ver
+    mas" y para escribir "10 de 173".
+    """
 
     usuario, error = require_permission(request, "recordings.view")
 
     if error:
         return error
+
+    # El rango se valida ANTES de consultar. Un intervalo imposible
+    # —fin anterior al inicio— devolvia una lista vacia que no se
+    # distingue de "no hay grabaciones ese dia", y quien lo veia
+    # concluia que sus grabaciones se habian perdido.
+    if start and end and str(start).strip() and str(end).strip():
+
+        if str(end).strip() < str(start).strip():
+            return {
+                "status": "error",
+                "error": "invalid_range",
+                "message": "La hora final es anterior a la inicial. "
+                           "Para consultar un intervalo que cruza la "
+                           "medianoche, elige la fecha del dia "
+                           "siguiente."
+            }
+
+    paginado = limit is not None
 
     if not is_platform_owner(usuario):
 
@@ -3791,6 +4010,19 @@ def recordings_list(request: Request, device_id: str = None,
             equipo["device_id"] for equipo in get_devices()
             if equipo.get("organization_id") == propia
         }
+
+        if paginado:
+
+            # Filtrar por un equipo ajeno no da error: devuelve vacio,
+            # como si no hubiera nada.
+            permitidos = (
+                [] if (device_id is not None and device_id not in equipos)
+                else sorted(equipos)
+            )
+
+            return _respuesta_paginada(
+                device_id, start, end, limit, offset, permitidos
+            )
 
         # Filtrar por un equipo ajeno no da error: devuelve vacio, como
         # si no hubiera nada. No se confirma que ese equipo exista.
@@ -3818,6 +4050,11 @@ def recordings_list(request: Request, device_id: str = None,
     # device_id se usa solo como filtro parametrizado (a prueba de inyección).
     if device_id is not None and not device_id.strip():
         device_id = None
+
+    if paginado:
+        return _respuesta_paginada(
+            device_id, start, end, limit, offset, None
+        )
 
     if (start and start.strip()) or (end and end.strip()):
         # Historial temporal: filtra por rango [start, end]
@@ -3902,6 +4139,303 @@ def recording_video(recording_id: int, request: Request):
         target,
         media_type="video/mp4",
         filename=_os.path.basename(target)
+    )
+
+
+# Cuanto se espera a que el equipo conteste que tiene el archivo. Es
+# una lectura de disco local: si en 20 s no ha contestado, o el equipo
+# esta saturado o la conexion no da mas de si.
+RECORDING_STREAM_META_TIMEOUT = 20
+
+# Cuanto se espera entre dos bloques antes de dar la transmision por
+# perdida. Con bloques de 256 KB, 60 s de silencio no es lentitud: es
+# que ya no viene nada.
+RECORDING_STREAM_CHUNK_TIMEOUT = 60
+
+
+def _rango_pedido(cabecera):
+    """
+    Interpreta una cabecera Range de las que manda un reproductor.
+
+    Devuelve lo que PIDE el cliente, sin saber todavia el tamano del
+    archivo: eso lo sabe el equipo, y preguntarselo antes costaba un
+    viaje de ida y vuelta de mas por cada salto del reproductor. Un
+    video se reproduce a base de decenas de peticiones Range, asi que
+    ese viaje extra se pagaba decenas de veces.
+
+    Devuelve un diccionario con:
+        offset   desde donde (None si es un rango por el final)
+        length   cuantos bytes (None = hasta el final)
+        suffix   los ultimos N bytes, para 'bytes=-500'
+
+    O None si no hay cabecera o no se entiende, y entonces se sirve
+    el archivo entero.
+    """
+
+    if not cabecera:
+        return None
+
+    texto = str(cabecera).strip().lower()
+
+    if not texto.startswith("bytes="):
+        return None
+
+    # Solo el primer intervalo. Un navegador no pide varios para un
+    # video, y servir multipart/byteranges no aportaria nada aqui.
+    trozo = texto[len("bytes="):].split(",")[0].strip()
+
+    if "-" not in trozo:
+        return None
+
+    crudo_inicio, _, crudo_fin = trozo.partition("-")
+
+    try:
+
+        if not crudo_inicio:
+
+            # 'bytes=-500': los ultimos 500 bytes. Cuantos son en
+            # realidad depende del tamano, que solo conoce el equipo.
+            sufijo = int(crudo_fin)
+
+            if sufijo <= 0:
+                return None
+
+            return {"offset": None, "length": None, "suffix": sufijo}
+
+        inicio = int(crudo_inicio)
+
+        if inicio < 0:
+            return None
+
+        if not crudo_fin:
+            return {"offset": inicio, "length": None, "suffix": None}
+
+        fin = int(crudo_fin)
+
+    except ValueError:
+        return None
+
+    if fin < inicio:
+        return None
+
+    return {
+        "offset": inicio,
+        "length": fin - inicio + 1,
+        "suffix": None
+    }
+
+
+@app.get("/api/recordings/{recording_id}/local-video")
+async def recording_local_video(recording_id: int, request: Request):
+    """
+    Reproduce una grabacion que sigue EN EL EQUIPO, sin subirla.
+
+    El video no pasa por el disco del servidor: llega del Agent por el
+    WebSocket que ya esta abierto y sale hacia el navegador segun
+    llega. No se guarda ninguna copia intermedia.
+
+    Lo que el servidor manda al equipo es el NOMBRE del archivo que
+    tiene en su propia base para esa fila, nunca una ruta que venga
+    del navegador. El navegador solo manda un identificador numerico.
+    """
+
+    usuario, error = require_permission(request, "recordings.view")
+
+    if error:
+        return error
+
+    grabacion = get_recording(recording_id)
+
+    if not grabacion:
+        return file_transfer_error(404, "Grabación no encontrada")
+
+    device_id = grabacion["device_id"]
+
+    # El permiso general no basta: hay que poder ver ESTE equipo. Sin
+    # esta comprobacion, cualquiera con 'recordings.view' en su empresa
+    # podria reproducir las grabaciones de otra probando numeros.
+    if not is_platform_owner(usuario):
+
+        if get_device_organization(device_id) != organization_of(usuario):
+            return file_transfer_error(404, "Grabación no encontrada")
+
+    websocket = connected_agents.get(device_id)
+
+    if not websocket:
+        return file_transfer_error(
+            409,
+            "El equipo esta desconectado. No se puede abrir una "
+            "grabacion que solo esta en su disco hasta que vuelva a "
+            "conectarse."
+        )
+
+    # Un Agent anterior no entiende 'recording_stream_start' y se
+    # limita a ignorarlo. Sin esta comprobacion habria que esperar a
+    # que venciera el tiempo de espera para decir "no respondio a
+    # tiempo", que suena a averia y no lo es: el equipo esta
+    # perfectamente, lo que le falta es la version del Agent que sabe
+    # transmitir. Se dice en el acto y con sus palabras.
+    if not agent_supports(device_id, "recording_stream"):
+        return file_transfer_error(
+            409,
+            "Este equipo tiene una version del Agent que todavia no "
+            "sabe transmitir grabaciones. Guardala en el servidor "
+            "para verla, o actualiza el Agent del equipo.",
+            codigo="agent_sin_transmision"
+        )
+
+    # El nombre sale de la ruta que guardo el propio servidor al
+    # anotar la ficha. basename() descarta las carpetas: lo que viaja
+    # al equipo es 'rec_1793133350.mp4' y nada mas.
+    filename = _os.path.basename(str(grabacion.get("path") or ""))
+
+    if not filename.lower().endswith(".mp4"):
+        return file_transfer_error(404, "Grabación no encontrada")
+
+    pedido = _rango_pedido(request.headers.get("range"))
+
+    loop = asyncio.get_running_loop()
+    transfer_id = uuid.uuid4().hex
+
+    transmision = {
+        "device_id": device_id,
+        "meta": loop.create_future(),
+        "queue": asyncio.Queue()
+    }
+
+    recording_streams[transfer_id] = transmision
+
+    async def cancelar(identificador):
+        """Le dice al equipo que deje de enviar."""
+
+        recording_streams.pop(identificador, None)
+
+        try:
+            await websocket.send_text(
+                "recording_stream_abort:"
+                + json.dumps({"transfer_id": identificador})
+            )
+
+        except Exception:
+            # Si no se puede avisar es que la conexion ya no esta, y
+            # entonces no hay nada que cancelar.
+            pass
+
+    # Una sola peticion, con el trozo que pide el reproductor. El
+    # tamano total no hace falta saberlo de antemano: lo devuelve el
+    # equipo en la respuesta, junto con el trozo que de verdad va a
+    # mandar despues de ajustarlo al archivo.
+    #
+    # Antes se preguntaba primero el tamano y se pedia el trozo
+    # despues. Un video se reproduce a base de decenas de peticiones
+    # Range —cada salto del usuario es una—, asi que ese viaje de ida
+    # y vuelta de mas se pagaba decenas de veces por cada video.
+    await websocket.send_text(
+        "recording_stream_start:"
+        + json.dumps({
+            "transfer_id": transfer_id,
+            "filename": filename,
+            "offset": (pedido or {}).get("offset") or 0,
+            "length": (pedido or {}).get("length"),
+            "suffix": (pedido or {}).get("suffix")
+        })
+    )
+
+    try:
+        meta = await asyncio.wait_for(
+            transmision["meta"], RECORDING_STREAM_META_TIMEOUT
+        )
+
+    except asyncio.TimeoutError:
+        await cancelar(transfer_id)
+        return file_transfer_error(
+            504, "El equipo no respondió a tiempo"
+        )
+
+    if meta.get("error"):
+
+        recording_streams.pop(transfer_id, None)
+
+        # El equipo dice que el trozo pedido no cabe en el archivo.
+        # Eso no es una averia: es la respuesta normal a un Range
+        # imposible, y el reproductor sabe interpretarla.
+        if meta.get("code") == "range":
+            return Response(
+                status_code=416,
+                headers={
+                    "Content-Range": f"bytes */{int(meta.get('size') or 0)}"
+                }
+            )
+
+        return file_transfer_error(502, meta["error"])
+
+    # El equipo manda el tamano real y el trozo ya ajustado. Las
+    # cabeceras se construyen con ESO, no con lo que pidio el
+    # navegador: si se declara un Content-Length que no coincide con
+    # lo que luego sale, el reproductor se queda colgado esperando
+    # bytes que no llegan.
+    total = int(meta.get("size") or 0)
+    inicio = int(meta.get("offset") or 0)
+    longitud = int(meta.get("length") or 0)
+
+    fin = inicio + longitud - 1 if longitud else inicio
+
+    identificador = transfer_id
+
+    async def emitir():
+
+        try:
+
+            while True:
+
+                try:
+                    pieza = await asyncio.wait_for(
+                        transmision["queue"].get(),
+                        RECORDING_STREAM_CHUNK_TIMEOUT
+                    )
+
+                except asyncio.TimeoutError:
+                    break
+
+                if pieza is None or isinstance(pieza, dict):
+                    break
+
+                yield pieza
+
+        finally:
+
+            # Pase lo que pase —fin normal, error, o el usuario que
+            # cierra el reproductor y el navegador corta la
+            # conexion—, la transmision se da de baja y se le dice al
+            # equipo que no siga leyendo el archivo.
+            if recording_streams.pop(identificador, None) is not None:
+
+                try:
+                    await websocket.send_text(
+                        "recording_stream_abort:"
+                        + json.dumps({"transfer_id": identificador})
+                    )
+
+                except Exception:
+                    pass
+
+    cabeceras = {
+        "Content-Length": str(longitud),
+        "Accept-Ranges": "bytes",
+
+        # El video sale del disco de otra maquina y puede cambiar o
+        # desaparecer: que no se quede en ninguna cache intermedia.
+        "Cache-Control": "no-store"
+    }
+
+    if pedido is not None:
+        cabeceras["Content-Range"] = f"bytes {inicio}-{fin}/{total}"
+
+    return StreamingResponse(
+        emitir(),
+        status_code=206 if pedido is not None else 200,
+        media_type="video/mp4",
+        headers=cabeceras
     )
 
 

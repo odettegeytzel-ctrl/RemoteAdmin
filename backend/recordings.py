@@ -397,6 +397,183 @@ def apply_retention(days=RETENTION_DAYS, organization_id=None):
     }
 
 
+# ==============================
+# LISTADO PAGINADO
+# ==============================
+
+# Cuantas grabaciones trae el panel de una vez. El listado completo
+# llego a 173 filas en la base de desarrollo y no tiene techo: cada
+# equipo anade una por segmento grabado. Traerlas todas para que el
+# navegador pinte una tabla que nadie recorre entera es trabajo tirado
+# en el servidor, en la red y en el navegador.
+PAGE_SIZE = 10
+
+# Tope de seguridad: un 'limit' que llegue por la URL no puede pedir
+# el historial entero disfrazado de pagina.
+MAX_PAGE_SIZE = 200
+
+
+def _filtro_de_rango(start=None, end=None):
+    """
+    Condicion SQL y parametros para el solape con [start, end].
+
+    Un segmento [started_at, ended_at] se solapa con el intervalo si
+    empieza antes de que el intervalo acabe y acaba despues de que
+    empiece. Las fechas se guardan en ISO 8601 UTC con el mismo formato
+    para todas las filas, asi que la comparacion de texto de SQLite
+    ordena igual que la comparacion de fechas.
+
+    ended_at puede venir vacio en un segmento puntual: COALESCE lo
+    sustituye por started_at, que es justo lo que hacia el filtro en
+    Python.
+    """
+
+    condiciones = []
+    parametros = []
+
+    if start and str(start).strip():
+        condiciones.append(
+            "COALESCE(NULLIF(r.ended_at, ''), r.started_at) >= ?"
+        )
+        parametros.append(str(start).strip())
+
+    if end and str(end).strip():
+        condiciones.append("r.started_at <= ?")
+        parametros.append(str(end).strip())
+
+    return condiciones, parametros
+
+
+def _filtro_de_listado(device_id=None, start=None, end=None,
+                       device_ids=None):
+    """
+    El WHERE completo del listado, compartido por el conteo y la pagina.
+
+    Que los dos lo construyan con la misma funcion no es comodidad: si
+    el total se calculara con un filtro distinto al de las filas, el
+    boton "Ver mas" aparecería o desapareceria cuando no debe.
+    """
+
+    # Las grabaciones en cuarentena (status='invalid') no se mezclan con
+    # las buenas: siguen en la base y en disco, pero no se listan.
+    condiciones = ["r.status IN ('stored', 'local')"]
+    parametros = []
+
+    if device_id and str(device_id).strip():
+        condiciones.append("r.device_id = ?")
+        parametros.append(str(device_id).strip())
+
+    # Equipos que el usuario tiene permitido ver. Se filtra AQUI, en
+    # SQL, y no despues en Python: recortar la pagina y luego quitarle
+    # filas devolveria paginas cortas o vacias con el boton "Ver mas"
+    # todavia visible.
+    if device_ids is not None:
+
+        if not device_ids:
+            # Sin equipos visibles no hay nada que listar. '1 = 0' evita
+            # tener que construir un IN () vacio, que SQLite no acepta.
+            condiciones.append("1 = 0")
+
+        else:
+            huecos = ", ".join("?" for _ in device_ids)
+            condiciones.append(f"r.device_id IN ({huecos})")
+            parametros.extend(device_ids)
+
+    rango, params_rango = _filtro_de_rango(start, end)
+
+    condiciones.extend(rango)
+    parametros.extend(params_rango)
+
+    return " WHERE " + " AND ".join(condiciones), parametros
+
+
+def count_recordings(device_id=None, start=None, end=None,
+                     device_ids=None):
+    """Cuantas grabaciones cumplen el filtro, sin traerlas."""
+
+    where, parametros = _filtro_de_listado(
+        device_id, start, end, device_ids
+    )
+
+    connection = get_connection()
+
+    try:
+        fila = connection.execute(
+            "SELECT COUNT(*) AS total FROM recordings r" + where,
+            parametros
+        ).fetchone()
+
+    finally:
+        connection.close()
+
+    return fila["total"] if fila else 0
+
+
+def list_recordings_page(device_id=None, start=None, end=None,
+                         limit=PAGE_SIZE, offset=0, device_ids=None):
+    """
+    Una pagina del listado, ya filtrada y ordenada en SQL.
+
+    El orden es 'started_at DESC, id DESC'. El desempate por id no es
+    decorativo: dos segmentos pueden compartir started_at —el catalogo
+    local los fecha por la hora de modificacion del archivo, y hay 4
+    pares asi en la base de desarrollo—, y con un orden ambiguo SQLite
+    puede colocarlos distinto en dos consultas. Entre la pagina 1 y la
+    pagina 2 eso se traduce en una grabacion repetida y otra que no
+    aparece nunca.
+    """
+
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = PAGE_SIZE
+
+    try:
+        offset = int(offset)
+    except (TypeError, ValueError):
+        offset = 0
+
+    limit = max(1, min(limit, MAX_PAGE_SIZE))
+    offset = max(0, offset)
+
+    where, parametros = _filtro_de_listado(
+        device_id, start, end, device_ids
+    )
+
+    connection = get_connection()
+
+    try:
+        filas = connection.execute(
+            """
+            SELECT r.id, r.device_id, r.started_at, r.ended_at,
+                   r.duration_sec, r.size_bytes, r.path, r.status,
+                   r.keep, r.storage_state, r.created_at, d.hostname
+            FROM recordings r
+            LEFT JOIN devices d ON d.device_id = r.device_id
+            """
+            + where
+            + " ORDER BY r.started_at DESC, r.id DESC LIMIT ? OFFSET ?",
+            parametros + [limit, offset]
+        ).fetchall()
+
+    finally:
+        connection.close()
+
+    resultado = []
+
+    for fila in filas:
+
+        registro = dict(fila)
+
+        # El historico sin columna se interpreta aqui, igual que en
+        # list_recordings(), para que el panel no sepa de la migracion.
+        registro["storage_state"] = storage_state_of(fila)
+
+        resultado.append(registro)
+
+    return resultado
+
+
 def query_recordings(device_id=None, start=None, end=None):
     """
     Historial por rango. Devuelve los segmentos del dispositivo (o de todos)

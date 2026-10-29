@@ -155,18 +155,29 @@ def ejecutar_js(preparacion, expresion):
         shutil.rmtree(carpeta, ignore_errors=True)
 
 
-def acciones(storage_state, es_owner=True, permisos=None):
-    """HTML de las acciones para una grabacion en ese estado."""
+def acciones(storage_state, es_owner=True, permisos=None,
+             conectado=True):
+    """
+    HTML de las acciones para una grabacion en ese estado.
+
+    'conectado' dice si el equipo esta en linea. Importa desde que
+    una grabacion que solo esta en el equipo se puede reproducir: es
+    el equipo quien transmite el video, asi que si esta apagado la
+    accion no se ofrece.
+    """
 
     sesion = json.dumps({
         "is_owner": es_owner,
         "permissions": permisos if permisos is not None else []
     })
 
+    equipos = '["equipo-1"]' if conectado else "[]"
+
     preparacion = (
         f"let sesionActual = {sesion};\n"
-        f"const rec = {{ id: 7, storage_state: "
-        f"{json.dumps(storage_state)} }};"
+        f"let equiposConectados = new Set({equipos});\n"
+        f"const rec = {{ id: 7, device_id: 'equipo-1', "
+        f"storage_state: {json.dumps(storage_state)} }};"
     )
 
     return ejecutar_js(preparacion, "accionesDeGrabacion(rec)")
@@ -263,8 +274,17 @@ def test_no_se_ofrece_guardar_lo_ya_guardado():
 # VER Y DESCARGAR
 # ==============================
 
-def test_ver_y_descargar_solo_si_el_archivo_esta_en_el_servidor():
-    """Las dos acciones leen del servidor, no del equipo."""
+def test_ver_y_descargar_segun_donde_este_el_archivo():
+    """
+    Cada accion se ofrece solo si puede funcionar.
+
+    DESCARGAR lee siempre del servidor, asi que solo se ofrece con
+    una copia archivada.
+
+    VER tiene ahora dos origenes: la copia del servidor, o el propio
+    equipo si esta conectado. Lo que no cambia es la regla de fondo:
+    un boton que siempre falla confunde mas que su ausencia.
+    """
 
     if not NODE:
         return
@@ -277,30 +297,48 @@ def test_ver_y_descargar_solo_si_el_archivo_esta_en_el_servidor():
     comprobar("Archivada: se puede descargar",
               "/download" in html)
 
-    for estado in ("local_only", "server_pending", "server_error"):
+    # Solo en el equipo y el equipo encendido: ver si, descargar no.
+    html, _ = acciones("local_only", conectado=True)
 
-        html, _ = acciones(estado)
+    comprobar("Solo local con el equipo conectado: se puede ver",
+              "playRecording" in html, html[:160])
 
-        comprobar(f"{estado}: no se ofrece ver",
+    comprobar("Y se reproduce desde el equipo, no del servidor",
+              "playRecording(7, true)" in html, html[:160])
+
+    comprobar("Pero descargar sigue siendo solo del servidor",
+              "/download" not in html, html[:160])
+
+    # Los estados en los que ver no puede funcionar.
+    for estado, conectado in (
+        ("local_only", False),
+        ("server_pending", True),
+        ("server_error", True)
+    ):
+        html, _ = acciones(estado, conectado=conectado)
+
+        etiqueta = estado + ("" if conectado else " (desconectado)")
+
+        comprobar(f"{etiqueta}: no se ofrece ver",
                   "playRecording" not in html, html[:120])
 
-        comprobar(f"{estado}: no se ofrece descargar",
+        comprobar(f"{etiqueta}: no se ofrece descargar",
                   "/download" not in html)
 
 
 def test_se_explica_por_que_no_se_puede_abrir():
-    """Un boton que siempre falla confunde mas que su ausencia."""
+    """Cuando una accion no se ofrece, se dice por que."""
 
     if not NODE:
         return
 
-    html, _ = acciones("local_only")
+    html, _ = acciones("local_only", conectado=False)
 
-    comprobar("Se dice que esta solo en el equipo",
-              "solo esta en el equipo" in html, html[:160])
+    comprobar("Equipo apagado: se dice que esta desconectado",
+              "desconectado" in html, html[:200])
 
-    comprobar("Y que hay que guardarla para verla",
-              "Guardala en el servidor" in html)
+    comprobar("Y que la grabacion sigue en su disco",
+              "sigue en su disco" in html, html[:200])
 
     html, _ = acciones("server_pending")
 
@@ -527,7 +565,7 @@ def main():
         test_sin_permiso_no_aparece_el_boton,
         test_una_sesion_sin_cargar_no_concede_permisos,
         test_no_se_ofrece_guardar_lo_ya_guardado,
-        test_ver_y_descargar_solo_si_el_archivo_esta_en_el_servidor,
+        test_ver_y_descargar_segun_donde_este_el_archivo,
         test_se_explica_por_que_no_se_puede_abrir,
         test_la_sesion_se_carga_antes_de_pintar_las_acciones,
         test_la_sesion_se_pide_una_sola_vez,

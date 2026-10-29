@@ -588,6 +588,16 @@ def init_db():
         ON recordings (device_id, storage_state)
     """)
 
+    # El listado del panel pide paginas ordenadas por fecha
+    # descendente, con el id como desempate estable. Sin este indice,
+    # cada "Ver mas" obliga a SQLite a ordenar la tabla entera para
+    # quedarse con diez filas, y el coste crece con el historial en vez
+    # de con la pagina.
+    connection.execute("""
+        CREATE INDEX IF NOT EXISTS idx_recordings_orden
+        ON recordings (started_at DESC, id DESC)
+    """)
+
     # Una grabación = un archivo. El índice impide que dos subidas
     # simultáneas del mismo segmento creen varias filas para el mismo
     # archivo: la comprobación previa del endpoint es solo un atajo, la

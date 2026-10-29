@@ -2736,6 +2736,211 @@ async def handle_file_download_message(websocket, message):
     return True
 
 
+# Transmisiones de grabacion en curso, por transfer_id. Guarda un
+# marcador de cancelacion: cuando el usuario cierra el reproductor o
+# salta a otro momento del video, el servidor manda
+# 'recording_stream_abort' y el bucle de envio para en el siguiente
+# bloque en vez de seguir empujando megas que nadie va a leer.
+recording_streams = {}
+
+
+async def handle_recording_stream_message(websocket, message):
+    """
+    Transmite una grabacion que esta SOLO en este equipo.
+
+    Se reutiliza el mismo patron que ya usa la descarga de archivos:
+    un aviso con los metadatos, bloques binarios con el transfer_id
+    por delante, y un mensaje de cierre. Lo que cambia, y es el
+    motivo de que no se reutilice tal cual 'file_download_start':
+
+      - El servidor manda un NOMBRE de archivo, nunca una ruta. Se
+        resuelve con find_managed_recording(), que solo mira dentro de
+        la carpeta administrada y exige is_managed_recording(). Un
+        '..' o una ruta absoluta no llevan a ninguna parte porque el
+        nombre pasa antes por os.path.basename().
+
+      - Admite offset y longitud, que es lo que permite que el
+        reproductor del navegador salte a un minuto concreto sin
+        descargar el video entero. 'file_download_start' manda siempre
+        el archivo completo desde el principio.
+
+      - Se puede cancelar. Una descarga dura segundos; un video
+        abierto puede abandonarse a la mitad.
+
+    Devuelve True si el mensaje era de transmision.
+    """
+
+    if isinstance(message, bytes) or not message.startswith(
+        "recording_stream_"
+    ):
+        return False
+
+    command, _, payload = message.partition(":")
+
+    try:
+        data = json.loads(payload) if payload else {}
+    except json.JSONDecodeError:
+        data = {}
+
+    if not isinstance(data, dict):
+        data = {}
+
+    transfer_id = str(data.get("transfer_id") or "")
+
+    if command == "recording_stream_abort":
+        recording_streams.pop(transfer_id, None)
+        return True
+
+    if command != "recording_stream_start":
+        return True
+
+    if not transfer_id:
+        return True
+
+    # En una tarea aparte, no aqui mismo. Enviar el video dentro del
+    # bucle que recibe mensajes lo deja sordo mientras dura la
+    # transmision, y el 'recording_stream_abort' que manda el servidor
+    # al cerrar el reproductor no se leeria hasta que el archivo
+    # entero hubiera salido: justo lo contrario de cancelar.
+    recording_streams[transfer_id] = True
+
+    asyncio.create_task(
+        _enviar_grabacion(websocket, transfer_id, data)
+    )
+
+    return True
+
+
+async def _enviar_grabacion(websocket, transfer_id, data):
+    """El envio en si. Nunca lanza: informa del error por el canal."""
+
+    try:
+
+        ruta = find_managed_recording(data.get("filename"))
+
+        if ruta is None:
+            raise FileNotFoundError(
+                "La grabacion ya no esta en este equipo"
+            )
+
+        total = os.path.getsize(ruta)
+
+        # 'suffix' son los ultimos N bytes ('bytes=-500'). Cuantos son
+        # en realidad solo se puede saber aqui, que es donde se
+        # conoce el tamano del archivo.
+        sufijo = data.get("suffix")
+
+        if sufijo is not None:
+
+            try:
+                sufijo = int(sufijo)
+            except (TypeError, ValueError):
+                sufijo = 0
+
+            offset = max(0, total - sufijo) if sufijo > 0 else 0
+            restante = total - offset
+
+        else:
+
+            try:
+                offset = max(0, int(data.get("offset") or 0))
+            except (TypeError, ValueError):
+                offset = 0
+
+            # Pedir un trozo que empieza mas alla del final no es un
+            # fallo del equipo: es un Range imposible. Se marca como
+            # tal para que el servidor conteste 416 y no 502, que
+            # haria pensar en una averia.
+            if offset >= total and total > 0:
+                await websocket.send(
+                    "recording_stream_error:"
+                    + json.dumps({
+                        "transfer_id": transfer_id,
+                        "code": "range",
+                        "size": total,
+                        "message": "El trozo pedido esta fuera del archivo"
+                    })
+                )
+                return
+
+            pedido = data.get("length")
+
+            try:
+                restante = (
+                    int(pedido) if pedido is not None else total - offset
+                )
+            except (TypeError, ValueError):
+                restante = total - offset
+
+        restante = max(0, min(restante, total - offset))
+
+        await websocket.send(
+            "recording_stream_ready:"
+            + json.dumps({
+                "transfer_id": transfer_id,
+                "filename": os.path.basename(ruta),
+                "size": total,
+                "offset": offset,
+                "length": restante
+            })
+        )
+
+        prefijo = transfer_id.encode("ascii")
+        enviado = 0
+
+        with open(ruta, "rb") as manejador:
+
+            manejador.seek(offset)
+
+            while restante > 0:
+
+                # Cancelado desde el panel: se deja de leer el archivo
+                # y no se manda nada mas por este transfer_id.
+                if transfer_id not in recording_streams:
+                    return
+
+                bloque = manejador.read(
+                    min(DOWNLOAD_CHUNK_SIZE, restante)
+                )
+
+                if not bloque:
+                    break
+
+                await websocket.send(prefijo + bloque)
+
+                enviado += len(bloque)
+                restante -= len(bloque)
+
+        await websocket.send(
+            "recording_stream_complete:"
+            + json.dumps({
+                "transfer_id": transfer_id,
+                "size": enviado
+            })
+        )
+
+    except Exception as error:
+
+        # Avisar del fallo puede fallar a su vez: si lo que se rompio
+        # fue la propia conexion, este envio tampoco llega. No puede
+        # quedar una excepcion suelta en una tarea de fondo, asi que
+        # se traga y se deja constancia en el registro del Agent.
+        try:
+            await websocket.send(
+                "recording_stream_error:"
+                + json.dumps({
+                    "transfer_id": transfer_id,
+                    "message": str(error)
+                })
+            )
+
+        except Exception:
+            print(f"[grabaciones] transmision interrumpida: {error}")
+
+    finally:
+        recording_streams.pop(transfer_id, None)
+
+
 async def websocket_connection():
 
     global screen_stream_task, _event_loop, _ws
@@ -2781,6 +2986,24 @@ async def websocket_connection():
                 await websocket.send(
                     f"Agent connected: {get_device_id()}"
                 )
+
+                # Que sabe hacer esta version. El servidor no guarda
+                # la version del Agent en ningun sitio, asi que sin
+                # esto la unica forma de averiguar si un equipo
+                # entiende una orden nueva es mandarsela y esperar a
+                # que no conteste. Un Agent anterior no manda este
+                # mensaje, y esa AUSENCIA es la que lo identifica: no
+                # hay que tocar nada en los equipos ya instalados.
+                try:
+                    await websocket.send(
+                        "agent_capabilities:" + json.dumps({
+                            "version": versionado.AGENT_VERSION,
+                            "capabilities": ["recording_stream"]
+                        })
+                    )
+
+                except Exception as error:
+                    print(f"[capacidades] no se pudieron enviar: {error}")
 
                 # Conexion buena: la cuenta de reintentos vuelve a cero
                 # para que la siguiente caida se recupere rapido.
@@ -2858,6 +3081,14 @@ async def websocket_connection():
 
                     # Descarga PC remota -> PC tecnica
                     if await handle_file_download_message(
+                        websocket,
+                        message
+                    ):
+                        continue
+
+                    # Ver una grabacion que sigue en este equipo, sin
+                    # subirla al servidor.
+                    if await handle_recording_stream_message(
                         websocket,
                         message
                     ):

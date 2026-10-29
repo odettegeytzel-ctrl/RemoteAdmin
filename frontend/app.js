@@ -3347,7 +3347,16 @@ function openRecordingFromDevice(id) {
 // de reproducir, o el vídeo se cargaría en un panel oculto.
 showView("recordings");
 
-playRecording(id);
+// El origen depende de dónde esté el archivo. Si la ficha no está en
+// memoria —se llega desde el panel del equipo, que tiene su propia
+// lista— se asume la copia del servidor, que es el comportamiento
+// que había antes.
+const rec = recordingsById[id];
+
+playRecording(
+    id,
+    Boolean(rec && estadoDeAlmacenamiento(rec).desdeElEquipo)
+);
 
 }
 
@@ -8843,7 +8852,7 @@ GRABACIONES
 function recordingsMessageRow(text) {
     return `
         <tr>
-            <td colspan="9" class="px-6 py-10 text-center text-slate-500">
+            <td colspan="10" class="px-6 py-10 text-center text-slate-500">
                 ${text}
             </td>
         </tr>
@@ -9030,8 +9039,20 @@ if (!axis) {
 const total =
     axis.axisEnd.getTime() - axis.axisStart.getTime();
 
+// Con el listado paginado, la línea de tiempo solo conoce las
+// grabaciones que ya se han traído. Callarlo convertiría cada página
+// pendiente en un hueco gris, y un hueco significa "aquí no se grabó
+// nada", que es una afirmación distinta y falsa. Mientras queden
+// páginas por cargar se dice en la etiqueta.
+const parcial =
+    grabacionesCargadas.length < grabacionesTotales;
+
 rangeLabel.textContent =
-    `${timelineTime(axis.axisStart)} – ${timelineTime(axis.axisEnd)}`;
+    `${timelineTime(axis.axisStart)} – ${timelineTime(axis.axisEnd)}`
+    + (parcial
+        ? ` · solo las ${grabacionesCargadas.length} cargadas de `
+          + `${grabacionesTotales}; pulsa «Ver más» para completarla`
+        : "");
 
 // Marcas horarias dinámicas (según duración y ancho disponible)
 const bodyWidth =
@@ -9179,7 +9200,8 @@ detail.innerHTML = `
             <div><p class="text-xs text-slate-500">Conservada</p><strong>${rec.keep ? "Sí" : "No"}</strong></div>
         </div>
         <div class="flex flex-col gap-2">
-            <button onclick="playRecording(${rec.id})"
+            <button onclick="playRecording(${rec.id}, ${
+                estadoDeAlmacenamiento(rec).desdeElEquipo ? "true" : "false"})"
                 class="px-3 py-1.5 rounded-lg bg-slate-900 text-white text-xs hover:bg-slate-700 transition">
                 Ver grabación
             </button>
@@ -9235,7 +9257,12 @@ try {
 
 }
 
-function playRecording(id) {
+// Grabación que se está viendo. Sirve para no dejar colgada la
+// anterior al saltar de una a otra.
+let grabacionEnReproduccion = null;
+
+
+async function playRecording(id, desdeElEquipo) {
 
 const player =
     document.getElementById("recording-player");
@@ -9253,24 +9280,117 @@ if (!player || !video) {
     return;
 }
 
-error.classList.add("hidden");
-title.textContent = `Grabación #${id}`;
+// Cambiar de grabación detiene y suelta la anterior ANTES de pedir
+// la nueva. Sin esto, el <video> seguía descargando el vídeo viejo
+// mientras empezaba el nuevo: dos transmisiones abiertas contra el
+// mismo equipo.
+video.pause();
+video.removeAttribute("src");
+video.load();
 
-// La sesión viaja en la cookie; el endpoint exige autenticación
-video.src = `/api/recordings/${id}/video`;
+grabacionEnReproduccion = id;
+
+error.classList.add("hidden");
+
+const rec = recordingsById[id];
+
+title.textContent = rec
+    ? `${nombreDeEquipo(rec) || "Grabación"} · ${
+        formatRecordingDate(rec.started_at).date} ${
+        formatRecordingDate(rec.started_at).time}`
+    : `Grabación #${id}`;
 
 player.classList.remove("hidden");
 player.scrollIntoView({ behavior: "smooth", block: "nearest" });
 
+// Antes de pedir el vídeo se comprueba que el origen responde. Así
+// la causa real —equipo desconectado, archivo borrado, sin permiso—
+// llega como texto legible en vez de convertirse en el "No se pudo
+// reproducir la grabación" genérico que producía el <video> al
+// recibir un JSON de error donde esperaba un MP4.
+const origen = desdeElEquipo
+    ? `/api/recordings/${id}/local-video`
+    : `/api/recordings/${id}/video`;
+
+try {
+
+    // Solo la cabecera: con Range 0-0 el servidor contesta sin
+    // mandar el vídeo entero.
+    const sonda =
+        await fetch(origen, { headers: { Range: "bytes=0-0" } });
+
+    if (!sonda.ok && sonda.status !== 206) {
+
+        let motivo = "";
+        let codigo = "";
+
+        try {
+            const cuerpo = await sonda.json();
+            motivo = cuerpo.message || cuerpo.error || "";
+            codigo = cuerpo.code || "";
+        } catch (e) {
+            motivo = "";
+        }
+
+        // Un Agent antiguo no es una avería: el equipo está bien y la
+        // grabación existe, solo que esa versión todavía no sabe
+        // transmitirla. Se marca en ámbar, no en rojo, y se distingue
+        // por el código y no por el texto, que está escrito para una
+        // persona y puede cambiar.
+        mostrarErrorDeReproduccion(
+            motivo || `No se pudo abrir la grabación (${sonda.status})`,
+            codigo === "agent_sin_transmision" ? "aviso" : "error"
+        );
+        return;
+    }
+
+} catch (e) {
+
+    mostrarErrorDeReproduccion(
+        "No se pudo contactar con el servidor."
+    );
+    return;
+}
+
+// Otra grabación ocupó el reproductor mientras se comprobaba ésta.
+if (grabacionEnReproduccion !== id) {
+    return;
+}
+
+// La sesión viaja en la cookie; el endpoint exige autenticación
+video.src = origen;
+
 video.onerror = () => {
-    error.textContent = "No se pudo reproducir la grabación";
-    error.classList.remove("hidden");
+    mostrarErrorDeReproduccion(
+        desdeElEquipo
+            ? "Se interrumpió la transmisión desde el equipo."
+            : "No se pudo reproducir la grabación."
+    );
 };
 
 video.play().catch(() => {
     // Si el navegador bloquea el autoplay, el usuario pulsa play manualmente
 });
 
+}
+
+
+function mostrarErrorDeReproduccion(texto, tono) {
+
+const error =
+    document.getElementById("recording-player-error");
+
+if (!error) {
+    return;
+}
+
+error.textContent = texto;
+
+error.classList.remove("hidden", "text-red-600", "text-amber-700");
+
+error.classList.add(
+    tono === "aviso" ? "text-amber-700" : "text-red-600"
+);
 }
 
 function closeRecordingPlayer() {
@@ -9282,10 +9402,17 @@ const video =
     document.getElementById("recording-video");
 
 if (video) {
+
+    // Soltar la fuente corta la petición en curso. Para una grabación
+    // local eso llega al servidor como conexión cerrada, y el
+    // servidor le dice al equipo que deje de leer el archivo: el
+    // Agent no sigue transmitiendo un vídeo que ya nadie mira.
     video.pause();
     video.removeAttribute("src");
     video.load();
 }
+
+grabacionEnReproduccion = null;
 
 if (player) {
     player.classList.add("hidden");
@@ -9398,6 +9525,17 @@ try {
     const devices =
         Array.isArray(data) ? data : (data.devices || []);
 
+    // Que equipos están conectados ahora mismo. Una grabación que
+    // sigue en el disco del equipo solo se puede abrir si el equipo
+    // está en línea: es él quien manda el video. Se anota aquí porque
+    // esta consulta ya se hace antes de cada búsqueda, y así no hay
+    // que pedir /api/devices otra vez por cada fila.
+    equiposConectados = new Set(
+        devices
+            .filter(d => d.status === "online")
+            .map(d => d.device_id)
+    );
+
     const current =
         select.value;
 
@@ -9446,19 +9584,29 @@ const rangeText =
 // El rango solo aplica si hay fecha
 if (date) {
 
-    // La selección es hora local; se envía en UTC (ISO) para comparar con lo almacenado
-    if (startTime) {
-        const startDate = new Date(`${date}T${startTime}`);
-        if (!isNaN(startDate.getTime())) {
-            params.set("start", startDate.toISOString());
-        }
+    // Elegir un día sin poner horas no filtraba NADA: sin startTime
+    // ni endTime no se enviaba ningún parámetro y el listado salía
+    // entero, como si el filtro no existiera. Una fecha sola es un
+    // intervalo perfectamente claro —ese día completo—, así que las
+    // horas que falten se rellenan con los extremos del día.
+    const desde = startTime || "00:00";
+    const hasta = endTime || "23:59";
+
+    // La selección es hora local; se envía en UTC (ISO) para comparar
+    // con lo almacenado, que va siempre en UTC.
+    const startDate = new Date(`${date}T${desde}`);
+    const endDate = new Date(`${date}T${hasta}`);
+
+    if (!isNaN(startDate.getTime())) {
+        params.set("start", startDate.toISOString());
     }
 
-    if (endTime) {
-        const endDate = new Date(`${date}T${endTime}`);
-        if (!isNaN(endDate.getTime())) {
-            params.set("end", endDate.toISOString());
-        }
+    if (!isNaN(endDate.getTime())) {
+
+        // El minuto final entra entero: con "23:59" la grabación de
+        // las 23:59:30 quedaba fuera del día que se pidió.
+        endDate.setSeconds(59, 999);
+        params.set("end", endDate.toISOString());
     }
 }
 
@@ -9596,6 +9744,232 @@ async function cargarModalidad(id, celda) {
 }
 
 
+/* ==============================
+PAGINACION DEL LISTADO
+============================== */
+
+// Cuantas grabaciones se piden de una vez. El servidor tiene el mismo
+// numero por defecto y un tope propio: este valor es lo que pide el
+// panel, no lo que el servidor permite.
+const GRABACIONES_POR_PAGINA = 10;
+
+// Las que ya estan pintadas, en orden. Se guardan porque "Ver mas"
+// anade al final y la linea de tiempo necesita el conjunto completo.
+let grabacionesCargadas = [];
+
+// Cuantas hay en total con el filtro actual, segun el servidor.
+let grabacionesTotales = 0;
+
+// Numero de la consulta en curso. Cada busqueda nueva lo incrementa, y
+// una respuesta que llega con un numero viejo se tira. Sin esto, una
+// consulta lenta de hace tres filtros puede aterrizar despues de la
+// ultima y repintar la tabla con resultados que ya no corresponden a
+// lo que el usuario ve en los campos.
+let consultaDeGrabaciones = 0;
+
+// Para que un segundo clic en "Ver mas" no pida la misma pagina.
+let cargandoMasGrabaciones = false;
+
+
+function pintarPieDeGrabaciones() {
+
+    const pie =
+        document.getElementById("recordings-footer");
+
+    if (!pie) {
+        return;
+    }
+
+    if (!grabacionesCargadas.length) {
+        pie.classList.add("hidden");
+        return;
+    }
+
+    pie.classList.remove("hidden");
+
+    const hayMas =
+        grabacionesCargadas.length < grabacionesTotales;
+
+    const cuenta =
+        `${grabacionesCargadas.length} de ${grabacionesTotales}`;
+
+    pie.innerHTML = `
+        <span class="text-sm text-slate-500">${cuenta}</span>
+        ${hayMas ? `
+            <button
+                id="recordings-more-button"
+                class="px-4 py-2 rounded-lg bg-slate-100 text-slate-700 text-sm hover:bg-slate-200 transition"
+            >
+                Ver más
+            </button>
+        ` : ""}
+    `;
+
+    const boton =
+        document.getElementById("recordings-more-button");
+
+    if (boton) {
+        boton.addEventListener("click", cargarMasGrabaciones);
+    }
+}
+
+
+async function cargarMasGrabaciones() {
+
+    if (cargandoMasGrabaciones) {
+        return;
+    }
+
+    const boton =
+        document.getElementById("recordings-more-button");
+
+    if (boton) {
+        boton.disabled = true;
+        boton.textContent = "Cargando...";
+    }
+
+    cargandoMasGrabaciones = true;
+
+    try {
+        await pedirPaginaDeGrabaciones(grabacionesCargadas.length);
+
+    } finally {
+        cargandoMasGrabaciones = false;
+    }
+}
+
+
+async function pedirPaginaDeGrabaciones(desde) {
+
+    const table =
+        document.getElementById("recordings-table");
+
+    if (!table) {
+        return;
+    }
+
+    const mia = ++consultaDeGrabaciones;
+
+    const params =
+        new URLSearchParams(buildRecordingsQuery());
+
+    params.set("limit", String(GRABACIONES_POR_PAGINA));
+    params.set("offset", String(desde));
+
+    let data;
+
+    try {
+
+        const response =
+            await fetch(`/api/recordings?${params.toString()}`);
+
+        data = await response.json();
+
+        if (!response.ok) {
+            throw new Error("respuesta no válida");
+        }
+
+    } catch (error) {
+
+        if (mia !== consultaDeGrabaciones) {
+            return;
+        }
+
+        // Un fallo al pedir la segunda página no puede borrar la
+        // primera: lo que ya se ve sigue siendo cierto.
+        if (desde > 0) {
+            pintarPieDeGrabaciones();
+            mostrarAvisoDeGrabaciones(
+                "No se pudieron cargar más grabaciones. "
+                + "Vuelve a intentarlo."
+            );
+            return;
+        }
+
+        table.innerHTML =
+            recordingsMessageRow("Error al cargar las grabaciones");
+
+        pintarPieDeGrabaciones();
+        return;
+    }
+
+    // Llegó tarde: ya hay una búsqueda más reciente en marcha.
+    if (mia !== consultaDeGrabaciones) {
+        return;
+    }
+
+    // Un rango imposible no es "no hay grabaciones": se dice cuál es
+    // el problema en vez de dejar una lista vacía que parece pérdida
+    // de datos.
+    if (data && data.status === "error") {
+
+        grabacionesCargadas = [];
+        grabacionesTotales = 0;
+        recordingsById = {};
+
+        table.innerHTML = recordingsMessageRow(
+            data.message || "No se pudo aplicar el filtro"
+        );
+
+        renderTimeline([]);
+        pintarPieDeGrabaciones();
+        return;
+    }
+
+    const llegadas =
+        (data && data.recordings) || [];
+
+    if (desde === 0) {
+        grabacionesCargadas = [];
+        recordingsById = {};
+    }
+
+    // Defensa contra duplicados: si una grabación nueva entra en la
+    // base entre dos páginas, el desplazamiento se corre y una fila
+    // puede repetirse. Se descarta por id en vez de pintarla dos
+    // veces.
+    const yaEstan =
+        new Set(grabacionesCargadas.map(r => r.id));
+
+    llegadas.forEach(rec => {
+
+        if (yaEstan.has(rec.id)) {
+            return;
+        }
+
+        yaEstan.add(rec.id);
+        grabacionesCargadas.push(rec);
+        recordingsById[rec.id] = rec;
+    });
+
+    grabacionesTotales =
+        typeof data.total === "number"
+            ? data.total
+            : grabacionesCargadas.length;
+
+    pintarGrabaciones();
+}
+
+
+function mostrarAvisoDeGrabaciones(texto) {
+
+    const pie =
+        document.getElementById("recordings-footer");
+
+    if (!pie) {
+        return;
+    }
+
+    const aviso =
+        document.createElement("span");
+
+    aviso.className = "text-sm text-red-600";
+    aviso.textContent = texto;
+
+    pie.appendChild(aviso);
+}
+
+
 async function loadRecordings() {
 
 const table =
@@ -9618,34 +9992,30 @@ table.innerHTML = recordingsMessageRow("Cargando...");
 // puede() consultaba una sesion vacia.
 await asegurarSesion();
 
-const query =
-    buildRecordingsQuery();
+// Siempre desde el primer bloque: cambiar el equipo, la fecha o el
+// horario invalida la paginación anterior.
+await pedirPaginaDeGrabaciones(0);
+
+}
+
+
+function pintarGrabaciones() {
+
+const table =
+    document.getElementById("recordings-table");
+
+if (!table) {
+    return;
+}
+
+const recordings = grabacionesCargadas;
 
 try {
-
-    const response =
-        await fetch(
-            query ? `/api/recordings?${query}` : "/api/recordings"
-        );
-
-    if (!response.ok) {
-        table.innerHTML = recordingsMessageRow("Error al cargar las grabaciones");
-        return;
-    }
-
-    const data =
-        await response.json();
-
-    const recordings =
-        data.recordings || [];
-
-    // Índice por id para la línea de tiempo
-    recordingsById = {};
-    recordings.forEach(r => { recordingsById[r.id] = r; });
 
     if (recordings.length === 0) {
         table.innerHTML = recordingsMessageRow("No hay grabaciones");
         renderTimeline([]);
+        pintarPieDeGrabaciones();
         return;
     }
 
@@ -9693,6 +10063,7 @@ try {
     }).join("");
 
     renderTimeline(recordings);
+    pintarPieDeGrabaciones();
 
     // Un solo oyente en la tabla, no uno por fila: asi no hay que
     // soltarlos al repaginar ni se acumulan.
@@ -9718,7 +10089,7 @@ try {
 
 } catch (error) {
 
-    table.innerHTML = recordingsMessageRow("Error al cargar las grabaciones");
+    table.innerHTML = recordingsMessageRow("No se pudieron mostrar las grabaciones");
 }
 
 }
@@ -9735,15 +10106,34 @@ GUARDAR UNA GRABACION EN EL SERVIDOR
 // grabacion solo exista en el equipo, esas dos acciones no pueden
 // funcionar, asi que no se ofrecen: un boton que siempre falla
 // confunde mas que su ausencia.
+// Equipos en línea, según la última consulta a /api/devices. Lo llena
+// populateRecordingsDeviceFilter() antes de cada búsqueda.
+let equiposConectados = new Set();
+
+
 const ESTADOS_DE_ALMACENAMIENTO = {
     local_only: {
         etiqueta: "Solo local",
         icono: "ubicacion",
         clase: "bg-slate-100 text-slate-600",
         sePuedeGuardar: true,
+
+        // Ahora SÍ se puede abrir, pero solo si el equipo está
+        // conectado: el video lo transmite él. El estado efectivo lo
+        // decide estadoDeAlmacenamiento(), que mira la conexión.
+        sePuedeAbrir: true,
+        desdeElEquipo: true,
+        porQueNoSeAbre: ""
+    },
+    local_desconectado: {
+        etiqueta: "Solo local",
+        icono: "ubicacion",
+        clase: "bg-slate-100 text-slate-600",
+        sePuedeGuardar: false,
         sePuedeAbrir: false,
-        porQueNoSeAbre: "Esta grabacion solo esta en el equipo. "
-            + "Guardala en el servidor para poder verla o descargarla."
+        porQueNoSeAbre: "El equipo esta desconectado. La grabacion "
+            + "sigue en su disco y se podra ver cuando vuelva a "
+            + "conectarse."
     },
     server_pending: {
         etiqueta: "Guardando...",
@@ -9776,6 +10166,14 @@ const ESTADOS_DE_ALMACENAMIENTO = {
 function estadoDeAlmacenamiento(rec) {
 
     const clave = rec.storage_state || "local_only";
+
+    // Una copia en el servidor se abre siempre: no depende de que el
+    // equipo esté encendido. Una que solo está en el equipo, sí.
+    if (clave === "local_only"
+        && !equiposConectados.has(rec.device_id)) {
+
+        return ESTADOS_DE_ALMACENAMIENTO.local_desconectado;
+    }
 
     return ESTADOS_DE_ALMACENAMIENTO[clave]
         || ESTADOS_DE_ALMACENAMIENTO.local_only;
@@ -9814,19 +10212,34 @@ function accionesDeGrabacion(rec) {
             + botonGuardarEnServidor(rec);
     }
 
-    return `
-        <button
-            onclick="playRecording(${rec.id})"
-            class="px-3 py-1.5 rounded-lg bg-slate-900 text-white text-xs hover:bg-slate-700 transition"
-        >
-            Ver grabación
-        </button>
-        <a
+    // Ver funciona en los dos casos, pero no leen del mismo sitio:
+    // una copia del servidor sale de su disco, y una que sigue en el
+    // equipo la transmite el propio equipo bajo demanda. Verla NO la
+    // sube: el archivo no se guarda en el servidor.
+    //
+    // Descargar sigue siendo solo del servidor. Descargar un video
+    // entero desde el equipo por el WebSocket del Agent competiría
+    // con su trabajo real; para eso está "Guardar en el servidor".
+    const descarga = estado.desdeElEquipo
+        ? ""
+        : `<a
             href="/api/recordings/${rec.id}/download"
             class="ml-2 inline-block px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs hover:bg-blue-500 transition"
         >
             Descargar
-        </a>
+        </a>`;
+
+    return `
+        <button
+            onclick="playRecording(${rec.id}, ${estado.desdeElEquipo ? "true" : "false"})"
+            class="px-3 py-1.5 rounded-lg bg-slate-900 text-white text-xs hover:bg-slate-700 transition"
+            title="${estado.desdeElEquipo
+                ? "Se reproduce desde el equipo. No se sube al servidor."
+                : "Se reproduce desde la copia del servidor."}"
+        >
+            Ver grabación
+        </button>
+        ${descarga}
     ` + botonGuardarEnServidor(rec);
 }
 
