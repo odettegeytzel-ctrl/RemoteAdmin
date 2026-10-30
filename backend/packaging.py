@@ -44,10 +44,21 @@ PROJECT_DIR = os.path.dirname(
 PACKAGE_FILES = (
     "agent/__init__.py",
     "agent/agent.py",
+
+    # El portapapeles compartido. Por la misma razon que
+    # maintenance.py: helper.py lo importa al arrancar, y el
+    # actualizador reemplaza la carpeta agent ENTERA. Si faltara,
+    # el ayudante no arrancaria en ningun equipo actualizado.
+    "agent/clipboard.py",
+
     "agent/commands.py",
     "agent/helper.py",
     "agent/inventory.py",
     "agent/ipc.py",
+
+    # El bloqueo del teclado y el raton fisicos. Tambien lo importa
+    # helper.py al arrancar.
+    "agent/lockinput.py",
 
     # El aviso de mantenimiento. Tiene que estar aqui aunque sea una
     # ventana y no parezca parte del "programa": helper.py lo importa

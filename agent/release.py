@@ -62,7 +62,17 @@ import json
 # ese caso el Agent NO se actualiza: no se instala nada sin firma, y
 # quedarse en la version actual es siempre mejor que instalar algo que
 # no se puede comprobar.
-AGENT_UPDATE_PUBLIC_KEY = "DWvOsshyNgNlDFh4QQLg6wTlNx8mOAVlntKJxNinS3k="
+# Par generado el 30-10-2026. El anterior
+# -DWvOsshyNgNlDFh4QQLg6wTlNx8mOAVlntKJxNinS3k=- se queda aqui
+# escrito a proposito: su clave privada se perdio, y conviene que
+# quede constancia de por que hubo que cambiarla.
+#
+# Consecuencia de ese cambio: los Agents instalados ANTES de esta
+# fecha llevan la clave vieja dentro y rechazaran los manifiestos
+# firmados con la nueva. No se rompen -comprueban, no cuadra, se
+# quedan como estan-, pero no se actualizaran solos y hay que
+# reinstalarlos a mano una vez.
+AGENT_UPDATE_PUBLIC_KEY = "NCpqaHmxijvWU507GbXMh6iU+PSnCftz/yr/dquWlWI="
 
 
 # Campos que componen el manifiesto firmado.

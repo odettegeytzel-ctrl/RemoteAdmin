@@ -38,6 +38,7 @@ ESPERADOS = {
     "agent/agent.py": "agent/agent.py",
     "agent/commands.py": "agent/commands.py",
     "agent/version.py": "agent/version.py",
+    "agent/release.py": "agent/release.py",
     "agent/helper.py": "agent/helper.py",
     "agent/maintenance.py": "agent/maintenance.py",
     "agent/clipboard.py": "agent/clipboard.py",
@@ -190,6 +191,41 @@ def main():
 
     comprobar("La version empaquetada es 1.5.0",
               version_dentro == "1.5.0", version_dentro)
+
+    print()
+
+    # --- la clave de firma ---
+    #
+    # Un .exe con la clave vieja dentro no aceptaria ninguna
+    # actualizacion firmada con la nueva, y el fallo no se veria
+    # hasta meses despues, cuando tocara actualizar.
+
+    clave_dentro = ""
+
+    datos = dentro.get("agent/release.py")
+
+    if datos:
+        hallado = re.search(
+            rb'AGENT_UPDATE_PUBLIC_KEY\s*=\s*"([^"]+)"', datos
+        )
+        if hallado:
+            clave_dentro = hallado.group(1).decode()
+
+    from agent import release as _release
+
+    print(f"CLAVE PUBLICA DENTRO DEL EXE: {clave_dentro[:16]}...")
+
+    comprobar("La clave publica es la del arbol",
+              clave_dentro == _release.AGENT_UPDATE_PUBLIC_KEY,
+              clave_dentro[:16])
+
+    comprobar("Y no es la anterior, cuya privada se perdio",
+              clave_dentro != "DWvOsshyNgNlDFh4QQLg6wTlNx8mOAVlntKJxNinS3k=",
+              "lleva la clave vieja")
+
+    comprobar("No viaja ninguna clave PRIVADA",
+              b"PRIVATE KEY" not in (datos or b""),
+              "hay material privado en release.py")
 
     print()
 
