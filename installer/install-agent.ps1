@@ -57,7 +57,20 @@ param(
     # Vacio = comportamiento de siempre: se busca el Python del
     # sistema y se instalan las dependencias con pip. Se conserva
     # para no romper las instalaciones que ya se hacen asi.
-    [string]$RuntimeDir = ""
+    [string]$RuntimeDir = "",
+
+    # Salta las comprobaciones de identidad de la seccion 2b.
+    #
+    # Solo para quien sepa lo que hace. Instalar un equipo que ya
+    # tiene identidad de OTRO servidor lo deja sin poder
+    # autenticarse, y no se le vuelve a pedir credencial: el Agent se
+    # queda en 401 indefinidamente.
+    #
+    # Y aunque despues se aparte la identidad a mano, el equipo se da
+    # de alta con un device_id NUEVO: el servidor anterior lo da por
+    # desaparecido y sus grabaciones historicas se quedan atadas al
+    # identificador viejo.
+    [switch]$Forzar
 )
 
 $ErrorActionPreference = "Stop"
@@ -155,6 +168,39 @@ if ($RuntimeDir) {
 Write-Host "Destino: $InstallDir"
 
 # --------------------------------------------------------------
+# 1b. A que servidor
+# --------------------------------------------------------------
+#
+# Se resuelve AQUI, y no al escribir el .env, porque las guardas de
+# identidad de la seccion 2b necesitan saber el destino para poder
+# detenerse antes de copiar nada.
+
+if ($Server -eq "") {
+
+    $origenEnv = Join-Path $SourceDir ".env"
+
+    if (Test-Path $origenEnv) {
+        $linea = Select-String -Path $origenEnv -Pattern "^REMOTEADMIN_SERVER=(.+)$"
+        if ($linea) {
+            $Server = $linea.Matches[0].Groups[1].Value.Trim()
+        }
+    }
+}
+
+if ($Server -eq "") {
+    throw "No se sabe a que servidor conectar. Vuelve a descargar el paquete desde el panel, o pasa -Server 'https://...'."
+}
+
+if (-not ($Server.StartsWith("http://") -or $Server.StartsWith("https://"))) {
+    throw "La direccion del servidor debe empezar por http:// o https://"
+}
+
+# Sin barra final: el Agent compone /api/... y /ws/agent detras, y
+# "https://host//api" no es la misma cadena que "https://host/api"
+# cuando se comparan direcciones.
+$Server = $Server.TrimEnd("/")
+
+# --------------------------------------------------------------
 # 2. Credencial de alta
 # --------------------------------------------------------------
 #
@@ -202,6 +248,172 @@ if ($EnrollmentTokenFile -ne "" -and (Test-Path $EnrollmentTokenFile)) {
 }
 
 $yaEnrolado = Test-Path $IdentityFile
+
+# --------------------------------------------------------------
+# 2b. Que la identidad sea de ESTE servidor
+# --------------------------------------------------------------
+#
+# Con identidad presente no se pide credencial -se da por hecho que
+# el equipo ya esta de alta- pero mas abajo SI se reescribe el .env
+# con la direccion nueva. Si esa identidad es de otro servidor, el
+# Agent acaba presentandose con un token que el destino no conoce:
+# responde 401, y como nadie le volvera a pedir credencial, se queda
+# asi indefinidamente.
+#
+# Lo peor de ese fallo es cuando se nota. La instalacion dice que
+# todo fue bien, y el problema aparece horas despues, mirando por que
+# el equipo no sale en el panel.
+#
+# Dos comprobaciones, y van ANTES de copiar nada: si alguna falla, el
+# equipo queda exactamente como estaba.
+
+if ($yaEnrolado -and -not $Forzar) {
+
+    $identidad = $null
+
+    try {
+        $identidad = Get-Content $IdentityFile -Raw | ConvertFrom-Json
+    } catch {
+        throw ("No se pudo leer $IdentityFile. Si esta corrupto, " +
+               "apartalo a mano y vuelve a ejecutar: " +
+               "Rename-Item '$IdentityFile' 'identity.ANTES.json'")
+    }
+
+    $comoSeguir = @(
+        "",
+        "La instalacion NO ha modificado nada. Tienes dos salidas:",
+        "",
+        "  1. Instalar en otro equipo. Es lo recomendable.",
+        "",
+        "  2. Dar de alta ESTE equipo como uno nuevo, apartando su",
+        "     identidad a mano:",
+        "",
+        "       Rename-Item '$IdentityFile' 'identity.ANTES.json'",
+        "",
+        "     Renombrar, no borrar: asi se puede deshacer. Pero el",
+        "     equipo recibira un device_id NUEVO, el servidor anterior",
+        "     lo dara por desaparecido, y sus grabaciones historicas",
+        "     se quedaran atadas al identificador viejo.",
+        "",
+        "Este script no aparta ninguna identidad por su cuenta.",
+        "Con -Forzar se salta esta comprobacion, con esas consecuencias."
+    )
+
+    # --- Guarda A: la direccion que quedo configurada -------------
+    #
+    # Gratis y sin red. No es concluyente -el .env se edita a mano y
+    # puede faltar- pero atrapa el caso corriente al instante.
+    #
+    # Se lee el .env INSTALADO, no el del paquete: son cosas
+    # distintas, y mirar el del paquete fue justo lo que dejaba pasar
+    # este fallo.
+
+    $servidorAnterior = ""
+
+    if (Test-Path $EnvFile) {
+        $previa = Select-String -Path $EnvFile -Pattern "^REMOTEADMIN_SERVER=(.+)$"
+        if ($previa) {
+            $servidorAnterior = $previa.Matches[0].Groups[1].Value.Trim().TrimEnd("/")
+        }
+    }
+
+    if ($servidorAnterior -ne "" -and $servidorAnterior -ne $Server) {
+
+        Write-Host ""
+        Write-Host "Este equipo ya esta dado de alta en OTRO servidor."
+        Write-Host "  configurado para : $servidorAnterior"
+        Write-Host "  se pedia instalar: $Server"
+        $comoSeguir | ForEach-Object { Write-Host $_ }
+
+        throw "Identidad de otro servidor. No se instala."
+    }
+
+    # --- Guarda B: preguntarselo al servidor ----------------------
+    #
+    # La concluyente. GET /api/agent/version se autentica con el
+    # token INDIVIDUAL y no modifica nada en el servidor.
+    #
+    # Se usa ese y no el latido a proposito: el latido actualiza la
+    # ultima conexion del equipo. Y tampoco se prueba contra
+    # register, porque un intento fallido ahi cuenta para el limite
+    # por IP y estorbaria una instalacion de verdad.
+    #
+    # La validacion TLS se deja ACTIVADA. Un servidor cuyo
+    # certificado no valida no es el servidor al que se queria
+    # conectar, y seguir seria peor que detenerse.
+
+    Write-Host ""
+    Write-Host "Comprobando que la identidad sea de este servidor..."
+
+    $reconocido = $null
+    $motivo = ""
+
+    try {
+
+        $respuesta = Invoke-WebRequest `
+            -Uri "$Server/api/agent/version" `
+            -Headers @{ "X-Agent-Token" = $identidad.agent_token } `
+            -TimeoutSec 20 `
+            -UseBasicParsing
+
+        $reconocido = ($respuesta.StatusCode -eq 200)
+
+    } catch {
+
+        $codigo = $null
+
+        if ($_.Exception.Response) {
+            $codigo = [int]$_.Exception.Response.StatusCode
+        }
+
+        if ($codigo -eq 401 -or $codigo -eq 403) {
+            $reconocido = $false
+        } else {
+            $motivo = $_.Exception.Message
+        }
+    }
+
+    if ($reconocido -eq $false) {
+
+        Write-Host ""
+        Write-Host "El servidor NO reconoce la identidad de este equipo."
+        Write-Host "  servidor : $Server"
+        Write-Host "  device_id: $($identidad.device_id)"
+        $comoSeguir | ForEach-Object { Write-Host $_ }
+
+        throw "El servidor no reconoce la identidad. No se instala."
+    }
+
+    if ($reconocido -eq $null) {
+
+        # Indeterminado. Se detiene igual: no saber de quien es la
+        # identidad no es mejor que saber que es de otro, y
+        # continuar a ciegas es como se llega al 401 permanente.
+
+        Write-Host ""
+        Write-Host "No se pudo comprobar la identidad con el servidor."
+        Write-Host "  servidor : $Server"
+        Write-Host "  motivo   : $motivo"
+        Write-Host ""
+        Write-Host "Puede ser falta de red, un cortafuegos, un certificado"
+        Write-Host "que no valida o el servidor caido. No se continua sin"
+        Write-Host "saber si la identidad es de este servidor."
+        $comoSeguir | ForEach-Object { Write-Host $_ }
+
+        throw "No se pudo comprobar la identidad. No se instala."
+    }
+
+    Write-Host "La identidad es de este servidor. Se conserva."
+}
+
+if ($yaEnrolado -and $Forzar) {
+
+    Write-Host ""
+    Write-Host "AVISO: -Forzar. No se comprueba de que servidor es la"
+    Write-Host "identidad. Si es de otro, el Agent quedara en 401."
+}
+
+# fin de 2b
 
 if ($yaEnrolado) {
 
@@ -253,9 +465,73 @@ foreach ($tarea in @($TaskName, $HelperTaskName)) {
     }
 }
 
-Start-Sleep -Seconds 2
+# Esperar a que SALGAN de verdad, en vez de dar por hecho que dos
+# segundos bastan. Detener una tarea no es inmediato, y si el proceso
+# sigue vivo Copy-Item falla a mitad: el Agent queda parado y con los
+# archivos a medio reemplazar, que es el peor sitio donde dejarlo.
+$AgentDir = Join-Path $InstallDir "agent"
 
-Copy-Item -Path (Join-Path $SourceDir "agent") -Destination $InstallDir -Recurse -Force
+function Procesos-Del-Agent {
+    @(Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe'" `
+        -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -and $_.CommandLine -like "*$AgentDir*" })
+}
+
+$limiteParada = (Get-Date).AddSeconds(30)
+
+while ((Procesos-Del-Agent).Count -gt 0 -and (Get-Date) -lt $limiteParada) {
+    Start-Sleep -Seconds 1
+}
+
+$siguenVivos = Procesos-Del-Agent
+
+if ($siguenVivos.Count -gt 0) {
+    throw ("El Agent sigue en ejecucion y no se pueden reemplazar sus " +
+           "archivos. Reinicia el equipo y vuelve a ejecutar el " +
+           "instalador. No se ha modificado nada.")
+}
+
+# Apartar el programa anterior ANTES de escribir el nuevo.
+#
+# Se MUEVE, no se copia: asi la carpeta nueva nace limpia y no
+# sobreviven modulos de una version anterior que ya no existen en
+# esta. Copy-Item -Force sobrescribe y anade, pero nunca quita, y un
+# archivo .py huerfano que todavia se importa es un fallo muy caro de
+# encontrar.
+#
+# Solo se aparta el PROGRAMA. config\, recordings\ y logs\ no se
+# tocan: son los datos del equipo.
+# inicio del respaldo
+$RespaldoAgent = Join-Path $InstallDir "agent.anterior"
+
+if (Test-Path $AgentDir) {
+
+    # Solo se guarda el respaldo mas reciente. Es codigo del producto,
+    # reponible desde el instalador; no son datos del equipo.
+    if (Test-Path $RespaldoAgent) {
+        Remove-Item -Path $RespaldoAgent -Recurse -Force
+    }
+
+    Move-Item -Path $AgentDir -Destination $RespaldoAgent -Force
+
+    Write-Host "Programa anterior guardado en: $RespaldoAgent"
+}
+
+try {
+    Copy-Item -Path (Join-Path $SourceDir "agent") -Destination $InstallDir -Recurse -Force
+
+} catch {
+
+    # Reponer lo que habia. Sin esto, un fallo aqui deja el equipo sin
+    # Agent: ni el viejo ni el nuevo.
+    if ((Test-Path $RespaldoAgent) -and -not (Test-Path $AgentDir)) {
+        Move-Item -Path $RespaldoAgent -Destination $AgentDir -Force
+        Write-Host "Fallo la copia. Se ha repuesto el programa anterior."
+    }
+
+    throw
+}
+# fin del respaldo
 
 foreach ($req in @("requirements-base.txt", "requirements-agent-windows.txt")) {
     Copy-Item -Path (Join-Path $SourceDir $req) -Destination $InstallDir -Force
@@ -271,26 +547,6 @@ Copy-Item -Path (Join-Path $PSScriptRoot "*") -Destination (Join-Path $InstallDi
 # El .env se arma de nuevo en cada instalacion en vez de editarse a
 # parches: asi no quedan lineas duplicadas ni restos de una
 # instalacion anterior.
-
-if ($Server -eq "") {
-
-    $origenEnv = Join-Path $SourceDir ".env"
-
-    if (Test-Path $origenEnv) {
-        $linea = Select-String -Path $origenEnv -Pattern "^REMOTEADMIN_SERVER=(.+)$"
-        if ($linea) {
-            $Server = $linea.Matches[0].Groups[1].Value.Trim()
-        }
-    }
-}
-
-if ($Server -eq "") {
-    throw "No se sabe a que servidor conectar. Vuelve a descargar el paquete desde el panel, o pasa -Server 'https://...'."
-}
-
-if (-not ($Server.StartsWith("http://") -or $Server.StartsWith("https://"))) {
-    throw "La direccion del servidor debe empezar por http:// o https://"
-}
 
 Write-Host "Servidor: $Server"
 
@@ -479,6 +735,15 @@ Write-Host "Tarea '$HelperTaskName' registrada (inicio de sesion)."
 # 7. Arranque
 # --------------------------------------------------------------
 
+# Tamano del registro ANTES de arrancar. En una actualizacion es la
+# unica forma de distinguir "el Agent nuevo esta funcionando" de "el
+# archivo de identidad ya estaba ahi desde antes".
+$LogAntes = -1
+
+if (Test-Path $LogFile) {
+    $LogAntes = (Get-Item $LogFile).Length
+}
+
 Start-ScheduledTask -TaskName $TaskName
 
 # El ayudante solo arranca si quien instala tiene sesion abierta, que
@@ -493,11 +758,93 @@ Start-ScheduledTask -TaskName $HelperTaskName -ErrorAction SilentlyContinue
 # equipo esta REALMENTE dado de alta. Esperar aqui evita que alguien se
 # marche creyendo que quedo instalado y descubra manana que no.
 
-Write-Host ""
-Write-Host "Esperando el alta en el servidor..."
+# Que version quedo instalada. Se lee del archivo copiado, no de la
+# que creia traer el instalador: lo que importa es lo que hay en el
+# disco del equipo.
+$VersionInstalada = ""
+
+$VersionFile = Join-Path $InstallDir "agent\version.py"
+
+if (Test-Path $VersionFile) {
+    $enc = Select-String -Path $VersionFile -Pattern '^AGENT_VERSION\s*=\s*"([^"]+)"'
+    if ($enc) {
+        $VersionInstalada = $enc.Matches[0].Groups[1].Value
+    }
+}
 
 $limite = (Get-Date).AddSeconds(90)
 $alta = $false
+
+if ($yaEnrolado) {
+
+    # ACTUALIZACION. El identity.json ya estaba antes de empezar, asi
+    # que su presencia no demuestra nada. Lo que hay que comprobar es
+    # que el programa NUEVO esta corriendo: que la tarea sigue en
+    # ejecucion y que el registro ha crecido desde el arranque.
+    #
+    # Sin esto, una actualizacion que dejara el Agent roto terminaba
+    # diciendo "instalado y dado de alta", y el fallo no se veia
+    # hasta mirar el panel horas despues.
+
+    Write-Host ""
+    Write-Host "Comprobando que el Agent actualizado arranca..."
+
+    while ((Get-Date) -lt $limite) {
+
+        $tareaActual = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+
+        $creciendo = (Test-Path $LogFile) -and
+                     ((Get-Item $LogFile).Length -gt $LogAntes)
+
+        if ($tareaActual -and $tareaActual.State -eq "Running" -and $creciendo) {
+            $alta = $true
+            break
+        }
+
+        Start-Sleep -Seconds 3
+    }
+
+    Write-Host ""
+
+    $identidad = Get-Content $IdentityFile -Raw | ConvertFrom-Json
+
+    if ($alta) {
+
+        Write-Host "Agent actualizado y en ejecucion."
+        Write-Host "Identificador del equipo: $($identidad.device_id)"
+        Write-Host "Version instalada: $VersionInstalada"
+        Write-Host ""
+        Write-Host "Es el MISMO equipo en el panel: conserva su identidad,"
+        Write-Host "sus grabaciones y su configuracion."
+
+    } else {
+
+        Write-Host "El Agent se actualizo, pero no se ha confirmado que"
+        Write-Host "este funcionando: la tarea no quedo en ejecucion o el"
+        Write-Host "registro no ha crecido."
+        Write-Host ""
+        Write-Host "El motivo estara aqui:"
+        Write-Host "  $LogFile"
+        Write-Host ""
+        Write-Host "Para volver a la version anterior, con el Agent parado:"
+        Write-Host "  Stop-ScheduledTask -TaskName $TaskName"
+        Write-Host "  Remove-Item '$AgentDir' -Recurse -Force"
+        Write-Host "  Rename-Item '$RespaldoAgent' 'agent'"
+        Write-Host "  Start-ScheduledTask -TaskName $TaskName"
+    }
+
+    Write-Host ""
+
+    if ($Transcribiendo) {
+        Write-Host "Registro de esta instalacion: $TranscriptFile"
+        try { Stop-Transcript | Out-Null } catch {}
+    }
+
+    return
+}
+
+Write-Host ""
+Write-Host "Esperando el alta en el servidor..."
 
 while ((Get-Date) -lt $limite) {
 
@@ -519,6 +866,7 @@ if ($alta) {
     # individual que hay en el mismo archivo NO se imprime nunca.
     Write-Host "Agent instalado y dado de alta."
     Write-Host "Identificador del equipo: $($identidad.device_id)"
+    Write-Host "Version instalada: $VersionInstalada"
     Write-Host ""
     Write-Host "Ya aparece en el panel, en Dispositivos."
     Write-Host "No hace falta ningun otro comando."

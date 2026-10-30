@@ -813,8 +813,10 @@ def test_la_desinstalacion_distingue_programa_y_datos():
               all("$resto" in b or "$ruta" in b for b in borrados),
               str(borrados))
 
+    # agent.anterior es la copia que deja una actualizacion. Es
+    # codigo del producto, no datos del equipo.
     comprobar("Y lo que se borra es solo programa y configuracion",
-              '@("agent", "installer")' in previo)
+              '@("agent", "agent.anterior", "installer")' in previo)
 
 
 def test_actualizar_conserva_la_identidad():
@@ -834,6 +836,9 @@ def test_actualizar_conserva_la_identidad():
         linea.strip() for linea in GUION.split(chr(10))
         if ("Remove-Item" in linea or "rmdir" in linea.lower())
         and not linea.strip().startswith("#")
+        # Una linea que IMPRIME una orden no la ejecuta: el guion
+        # explica como deshacer una actualizacion a mano.
+        and not linea.strip().startswith("Write-Host")
     ]
 
     # Lo que SI puede borrarse, y por que:
@@ -845,11 +850,17 @@ def test_actualizar_conserva_la_identidad():
     #                         Es la carpeta runtime: una carpeta
     #                         propia, hermana de config, recordings,
     #                         logs y .env, que no toca ninguna.
+    #   $RespaldoAgent        la carpeta agent.anterior que dejo una
+    #                         actualizacion previa. Es codigo del
+    #                         producto, reponible desde el
+    #                         instalador, y no se guarda mas de una
+    #                         copia.
     #
     # La lista es explicita a proposito. Cualquier otro borrado
     # recursivo en el instalador tiene que pasar por aqui y
     # justificarse.
-    PERMITIDOS = ("$EnrollmentTokenFile", "$RuntimeDestino")
+    PERMITIDOS = ("$EnrollmentTokenFile", "$RuntimeDestino",
+                  "$RespaldoAgent")
 
     indebidos = [b for b in borrados
                  if not any(p in b for p in PERMITIDOS)]

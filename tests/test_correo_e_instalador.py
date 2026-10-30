@@ -510,9 +510,16 @@ def test_se_conserva_la_identidad_de_un_equipo_ya_dado_de_alta():
     borrados = [
         linea.strip() for linea in GUION.split(chr(10))
         if "Remove-Item" in linea and not linea.strip().startswith("#")
+        # Una linea que IMPRIME una orden no la ejecuta: el guion
+        # explica como deshacer una actualizacion a mano.
+        and not linea.strip().startswith("Write-Host")
     ]
 
-    PERMITIDOS = ("$EnrollmentTokenFile", "$RuntimeDestino")
+    #   $RespaldoAgent        la carpeta agent.anterior que dejo una
+    #                         actualizacion previa. Es codigo del
+    #                         producto, no datos del equipo
+    PERMITIDOS = ("$EnrollmentTokenFile", "$RuntimeDestino",
+                  "$RespaldoAgent")
 
     indebidos = [b for b in borrados
                  if not any(x in b for x in PERMITIDOS)]

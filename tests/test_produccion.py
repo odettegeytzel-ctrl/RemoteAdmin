@@ -55,6 +55,185 @@ AGENTE = io.open(RAIZ / "agent" / "agent.py", encoding="utf-8").read()
 GUION = io.open(RAIZ / "installer" / "install-agent.ps1",
                 encoding="utf-8").read()
 
+
+# ==================================================================
+# ¿Se imprime el token individual en alguna parte?
+# ==================================================================
+#
+# El token individual es la credencial permanente del equipo. Que
+# aparezca en la consola es malo, pero que aparezca en la
+# TRANSCRIPCION lo es mas: ese archivo queda en ProgramData, se envia
+# cuando alguien pide ayuda, y nadie lo revisa antes.
+#
+# La comprobacion de antes buscaba la cadena "identidad.agent_token"
+# en todo el script. Era demasiado gruesa: no distinguia imprimirlo
+# de USARLO, y el uso legitimo -mandarlo en la cabecera de
+# autenticacion- es justo para lo que existe.
+#
+# Esta mira que no acabe en una salida, por tres caminos:
+#
+#   1. directo:   Write-Host "... $($identidad.agent_token)"
+#   2. partido:   un Write-Host cuya expresion sigue en la linea
+#                 siguiente, por acento grave o por un parentesis
+#                 todavia abierto
+#   3. indirecto: $x = $identidad.agent_token  ...  Write-Host $x
+#
+# El tercero es el que se cuela solo: este script arma mensajes en
+# arrays y los vuelca con un ForEach-Object.
+
+TOKEN = "agent_token"
+
+IMPRIMEN = ("Write-Host", "Write-Output", "Write-Warning",
+            "Write-Error", "Write-Information", "Out-Host")
+
+
+def _lineas_logicas(texto):
+    """
+    Une las continuaciones para que una expresion partida cuente
+    como una sola linea.
+
+    En PowerShell una linea sigue en la siguiente cuando termina en
+    acento grave, y tambien mientras queden parentesis sin cerrar: un
+    Write-Host con sus argumentos en varias lineas es un solo
+    enunciado y hay que leerlo entero.
+    """
+
+    logicas = []
+    acumulado = ""
+    abiertos = 0
+
+    for linea in texto.splitlines():
+
+        acumulado = (acumulado + " " + linea.strip()).strip()
+
+        sin_comentario = linea.split("#", 1)[0]
+        abiertos += sin_comentario.count("(") - sin_comentario.count(")")
+        abiertos += sin_comentario.count("@{") - sin_comentario.count("}")
+
+        if linea.rstrip().endswith("`") or abiertos > 0:
+            continue
+
+        logicas.append(acumulado)
+        acumulado = ""
+        abiertos = 0
+
+    if acumulado:
+        logicas.append(acumulado)
+
+    return logicas
+
+
+def _contaminadas(logicas):
+    """
+    Variables que han recibido el token, directa o indirectamente.
+
+    Se repasa hasta que deja de crecer: si $a toma el token y $b toma
+    $a, las dos quedan contaminadas.
+    """
+
+    import re
+
+    sucias = set()
+
+    asignacion = re.compile(r"^\s*\$(\w+)\s*(?:\+)?=\s*(.+)$")
+
+    for _ in range(5):
+
+        antes = len(sucias)
+
+        for linea in logicas:
+
+            encaje = asignacion.match(linea)
+
+            if not encaje:
+                continue
+
+            nombre, valor = encaje.group(1), encaje.group(2)
+
+            if TOKEN in valor or any(
+                ("$" + s) in valor for s in sucias
+            ):
+                sucias.add(nombre)
+
+        if len(sucias) == antes:
+            break
+
+    return sucias
+
+
+def impresiones_del_token(texto):
+    """
+    Lineas que mandarian el token a una salida. Vacia = limpio.
+
+    Lo que NO se considera fuga: usarlo en una cabecera HTTP, que es
+    para lo que sirve.
+    """
+
+    logicas = _lineas_logicas(texto)
+    sucias = _contaminadas(logicas)
+
+    # El nombre de la variable que las guardas usan para la cabecera
+    # no deberia contaminar nada por si solo.
+    fugas = []
+
+    for linea in logicas:
+
+        if not any(cmd in linea for cmd in IMPRIMEN):
+            continue
+
+        menciona = TOKEN in linea or any(
+            ("$" + s) in linea for s in sucias
+        )
+
+        if menciona:
+            fugas.append(linea.strip()[:90])
+
+    return fugas
+
+
+# --- Que el detector detecte: pruebas del propio detector ---------
+#
+# Un detector de fugas que no se prueba es un adorno: pasaria en
+# verde igual si no mirara nada.
+
+_FUGA_DIRECTA = """
+Write-Host "El token es $($identidad.agent_token)"
+"""
+
+_FUGA_PARTIDA = """
+Write-Host ("El token es " + `
+            $identidad.agent_token)
+"""
+
+_FUGA_PARTIDA_PARENTESIS = """
+Write-Host (
+    "El token es " + $identidad.agent_token
+)
+"""
+
+_FUGA_INDIRECTA = """
+$resumen = @(
+    "Equipo dado de alta",
+    "Token: $($identidad.agent_token)"
+)
+$resumen | ForEach-Object { Write-Host $_ }
+"""
+
+_FUGA_ENCADENADA = """
+$t = $identidad.agent_token
+$mensaje = "Token: $t"
+Write-Host $mensaje
+"""
+
+_USO_LEGITIMO = """
+$respuesta = Invoke-WebRequest `
+    -Uri "$Server/api/agent/version" `
+    -Headers @{ "X-Agent-Token" = $identidad.agent_token } `
+    -UseBasicParsing
+Write-Host "Comprobando que la identidad sea de este servidor..."
+Write-Host "  device_id: $($identidad.device_id)"
+"""
+
 escenario = {}
 
 
@@ -352,6 +531,10 @@ def test_actualizar_no_borra_la_identidad():
         linea.strip() for linea in GUION.split(chr(10))
         if ("Remove-Item" in linea or "rmdir" in linea.lower())
         and not linea.strip().startswith("#")
+        # Una linea que IMPRIME una orden no la ejecuta. El guion
+        # explica como deshacer una actualizacion a mano, y ese texto
+        # lleva un Remove-Item dentro que no borra nada.
+        and not linea.strip().startswith("Write-Host")
     ]
 
     # Lo que SI puede borrarse, y por que:
@@ -363,10 +546,16 @@ def test_actualizar_no_borra_la_identidad():
     #                         la carpeta runtime: carpeta propia,
     #                         hermana de config, recordings, logs y
     #                         .env, y no toca ninguna
+    #   $RespaldoAgent        la carpeta agent.anterior de una
+    #                         actualizacion previa, antes de guardar
+    #                         la nueva. Es codigo del producto,
+    #                         reponible desde el instalador, y no se
+    #                         conserva mas de una copia
     #
     # Lista explicita a proposito: cualquier otro borrado tiene que
     # pasar por aqui y justificarse.
-    PERMITIDOS = ("$EnrollmentTokenFile", "$RuntimeDestino")
+    PERMITIDOS = ("$EnrollmentTokenFile", "$RuntimeDestino",
+                  "$RespaldoAgent")
 
     indebidos = [b for b in borrados
                  if not any(x in b for x in PERMITIDOS)]
@@ -499,9 +688,42 @@ def test_la_instalacion_no_deja_pasos_pendientes():
     comprobar("Si no se confirma, dice donde mirar",
               "$LogFile" in GUION)
 
+    # Primero: que el detector sirva para algo. Si no cazara una
+    # fuga de mentira, su silencio sobre el script real no diria
+    # nada.
+
+    comprobar("El detector caza una impresion directa",
+              impresiones_del_token(_FUGA_DIRECTA) != [])
+
+    comprobar("Y una partida con acento grave",
+              impresiones_del_token(_FUGA_PARTIDA) != [])
+
+    comprobar("Y una partida entre parentesis",
+              impresiones_del_token(_FUGA_PARTIDA_PARENTESIS) != [])
+
+    comprobar("Y una que pasa por un array que luego se vuelca",
+              impresiones_del_token(_FUGA_INDIRECTA) != [])
+
+    comprobar("Y una encadenada por dos variables",
+              impresiones_del_token(_FUGA_ENCADENADA) != [])
+
+    # Y que no estorbe: mandar el token en la cabecera de
+    # autenticacion es para lo que sirve.
+
+    comprobar("Pero deja usarlo en la cabecera HTTP",
+              impresiones_del_token(_USO_LEGITIMO) == [],
+              "; ".join(impresiones_del_token(_USO_LEGITIMO)))
+
+    # Y ahora si, el script de verdad.
+
+    fugas = impresiones_del_token(GUION)
+
     comprobar("Nunca imprime el token individual",
-              "identidad.agent_token" not in GUION
-              and "$identidad.device_id" in GUION)
+              fugas == [],
+              "; ".join(fugas))
+
+    comprobar("Y si enseña el device_id, que es un identificador",
+              "$identidad.device_id" in GUION)
 
 
 def test_el_agent_deja_registro_sin_consola():

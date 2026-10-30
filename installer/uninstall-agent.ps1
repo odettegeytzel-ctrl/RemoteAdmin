@@ -64,7 +64,10 @@ Start-Sleep -Seconds 2
 
 if (Test-Path $InstallDir) {
 
-    foreach ($resto in @("agent", "installer")) {
+    # agent.anterior es la copia del programa que guarda una
+    # actualizacion. Es codigo del producto, no datos del equipo: se
+    # quita con el resto del programa.
+    foreach ($resto in @("agent", "agent.anterior", "installer")) {
 
         $ruta = Join-Path $InstallDir $resto
 
