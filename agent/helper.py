@@ -40,8 +40,10 @@ import time
 # inyeccion de teclado ya estaban resueltas ahi.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import clipboard
 import commands
 import ipc
+import lockinput
 import maintenance
 
 
@@ -217,11 +219,98 @@ class Ayudante:
             datos = json.loads(orden.split(":", 1)[1])
             agente.handle_keyboard(datos)
 
+        elif orden.startswith("clipboard_set:"):
+            datos = json.loads(orden.split(":", 1)[1])
+            self.poner_portapapeles(datos.get("text"))
+
+        elif orden == "clipboard_get":
+            self.traer_portapapeles()
+
+        elif orden.startswith("input_lock:"):
+            datos = json.loads(orden.split(":", 1)[1])
+            self.bloquear_entrada(datos.get("seconds"))
+
+        elif orden == "input_unlock":
+            self.desbloquear_entrada()
+
         else:
             print(
                 "[ayudante] Orden de escritorio no reconocida: "
                 f"{commands.nombre_de_la_orden(orden)}"
             )
+
+    # --- portapapeles ---
+
+    def poner_portapapeles(self, texto):
+        """
+        Deja en el equipo el texto que copio quien administra.
+
+        Solo se informa del numero de caracteres. El contenido no se
+        escribe en ningun sitio: es de lo mas delicado que pasa por
+        un equipo.
+        """
+
+        if not isinstance(texto, str):
+            return
+
+        try:
+            puestos = clipboard.escribir(texto)
+
+            print(f"[ayudante] Portapapeles recibido: {puestos} caracteres")
+
+        except Exception as error:
+            print(f"[ayudante] No se pudo escribir el portapapeles: {error}")
+
+    def traer_portapapeles(self):
+        """
+        Manda al panel lo que haya en el portapapeles del equipo.
+
+        Este sentido es SIEMPRE a peticion, nunca automatico: lo
+        contrario seria llevarse todo lo que el usuario del equipo
+        copie -una contraseña de su gestor, un dato personal- sin que
+        nadie lo haya pedido.
+        """
+
+        try:
+            texto = clipboard.leer()
+
+        except Exception as error:
+            print(f"[ayudante] No se pudo leer el portapapeles: {error}")
+            texto = None
+
+        self.canal.enviar({
+            "ws": "clipboard_data:" + json.dumps({
+                "text": texto,
+                "empty": texto is None
+            })
+        })
+
+    # --- bloqueo del teclado y el raton fisicos ---
+
+    def bloquear_entrada(self, segundos):
+
+        concedidos = lockinput.activar(segundos)
+
+        self.canal.enviar({
+            "ws": "input_lock_state:" + json.dumps({
+                "locked": concedidos > 0,
+                "seconds": concedidos
+            })
+        })
+
+        if not concedidos:
+            print("[ayudante] Windows rechazo el bloqueo de entrada")
+
+    def desbloquear_entrada(self):
+
+        lockinput.desactivar()
+
+        self.canal.enviar({
+            "ws": "input_lock_state:" + json.dumps({
+                "locked": False,
+                "seconds": 0
+            })
+        })
 
     # --- vida del proceso ---
 

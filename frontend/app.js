@@ -6347,6 +6347,8 @@ try {
 
     enableRemoteKeyboard();
 
+    vigilarPortapapeles();
+
     recuperarFocoRemoto();
 
     // Cada sesion empieza desplegada, aunque la anterior se cerrara
@@ -6908,6 +6910,16 @@ disableRemoteKeyboard();
 const habiaMantenimiento = mantenimientoActivo;
 
 olvidarMantenimiento();
+
+dejarDeVigilarPortapapeles();
+
+olvidarBloqueoDeEntrada();
+
+// Salir de pantalla completa suelta tambien la captura de teclado,
+// por el oyente de fullscreenchange.
+if (document.fullscreenElement) {
+    document.exitFullscreen().catch(() => {});
+}
 
 // PRIMERO se cierra, y despues se avisa al Agent.
 //
@@ -8197,6 +8209,466 @@ function pintarFocoRemoto() {
             ? "bg-emerald-900 text-emerald-200"
             : "bg-slate-700 text-slate-300");
 }
+
+/* ==============================
+PANTALLA COMPLETA Y CAPTURA DEL TECLADO
+
+A tamaño normal, la tecla Windows, Alt+Tab y Ctrl+Esc las atiende el
+shell de Windows por debajo del navegador: preventDefault() no llega
+ahi y se ejecutan en la maquina de quien mira, no en la remota.
+
+La API de bloqueo de teclado SI las entrega a la pagina, pero solo a
+pantalla completa. Por eso las dos cosas van juntas en un boton: no
+es que agrandar active el bloqueo por casualidad, es que el navegador
+no concede la captura de esas teclas de ninguna otra forma.
+
+Si el navegador no la soporta -no es Chrome ni Edge-, la pantalla
+completa funciona igual y solo se pierde la captura. Se dice, en vez
+de dejar que parezca que el teclado falla.
+============================== */
+
+let tecladoCapturado = false;
+
+
+function avisoRemoto(texto) {
+    // El mismo sitio donde la ventana remota cuenta lo demas: no se
+    // abre un segundo canal de mensajes para esto.
+    const estado = document.getElementById("remote-keys-estado");
+
+    if (estado) {
+        estado.textContent = texto;
+    }
+}
+
+
+function soportaCapturaDeTeclado() {
+    return !!(navigator.keyboard && navigator.keyboard.lock);
+}
+
+
+async function capturarTeclado() {
+
+    if (!soportaCapturaDeTeclado()) {
+        return false;
+    }
+
+    try {
+        // Solo estas: capturar el teclado entero incluiria F11 y
+        // dejaria sin salida de la pantalla completa a quien no sepa
+        // que Escape funciona pulsado dos veces.
+        await navigator.keyboard.lock([
+            "MetaLeft", "MetaRight",
+            "Tab",
+            "ControlLeft", "ControlRight",
+            "AltLeft", "AltRight"
+        ]);
+
+        tecladoCapturado = true;
+
+        return true;
+
+    } catch (error) {
+        tecladoCapturado = false;
+        return false;
+    }
+}
+
+
+function soltarTeclado() {
+
+    if (!tecladoCapturado) {
+        return;
+    }
+
+    try {
+        navigator.keyboard.unlock();
+
+    } catch (error) {
+        // Soltar no puede fallar de forma util: si el navegador ya
+        // lo solto al salir de pantalla completa, mejor.
+    }
+
+    tecladoCapturado = false;
+}
+
+
+async function alternarPantallaCompleta() {
+
+    const marco = marcoRemoto();
+
+    if (!marco) {
+        return;
+    }
+
+    if (document.fullscreenElement) {
+        await document.exitFullscreen();
+        return;
+    }
+
+    try {
+        await marco.requestFullscreen();
+
+    } catch (error) {
+        avisoRemoto("El navegador no permitio la pantalla completa");
+        return;
+    }
+
+    const capturado = await capturarTeclado();
+
+    // El teclado se envia al equipo solo si el marco tiene el foco, y
+    // entrar a pantalla completa no se lo da por si mismo.
+    marco.focus();
+
+    avisoRemoto(
+        capturado
+            ? "Pantalla completa. El teclado va entero al equipo"
+            : "Pantalla completa. Este navegador no captura la "
+              + "tecla Windows: usa los botones de teclas especiales"
+    );
+}
+
+
+function alCambiarPantallaCompleta() {
+
+    const boton = document.getElementById("remote-pantalla-completa");
+    const enPantallaCompleta = !!document.fullscreenElement;
+
+    if (!enPantallaCompleta) {
+        soltarTeclado();
+
+        // Salir con Escape o F11 no pasa por nuestro boton, y las
+        // teclas que estuvieran pulsadas se quedarian hundidas en el
+        // equipo remoto.
+        releaseAllRemoteKeys();
+    }
+
+    if (boton) {
+        boton.textContent = enPantallaCompleta
+            ? "Salir de pantalla completa"
+            : "Pantalla completa";
+
+        boton.setAttribute(
+            "aria-pressed", enPantallaCompleta ? "true" : "false"
+        );
+    }
+
+    if (enPantallaCompleta) {
+        const marco = marcoRemoto();
+
+        if (marco) {
+            marco.focus();
+        }
+    }
+}
+
+
+document.addEventListener(
+    "fullscreenchange", alCambiarPantallaCompleta
+);
+
+
+/* ==============================
+PORTAPAPELES COMPARTIDO
+
+Los dos sentidos NO son simetricos, y es deliberado.
+
+Hacia el equipo va solo: cada vez que cambia lo que hay copiado en
+este navegador, se manda. Es lo que hace que Ctrl+V funcione alli
+sin pensar, que era el problema real.
+
+Hacia aqui va SOLO con el boton. Traerse de fondo lo que la persona
+del equipo copia -una contraseña de su gestor, un dato suyo- seria
+vigilarle el portapapeles, y eso no lo ha pedido nadie.
+
+El navegador no avisa cuando cambia el portapapeles: no existe ese
+evento. Se consulta cada pocos segundos mientras la ventana remota
+esta abierta y tiene el foco, que es cuando puede servir de algo.
+============================== */
+
+const PORTAPAPELES_CADA_MS = 1500;
+
+let portapapelesTemporizador = null;
+let ultimoPortapapelesEnviado = null;
+
+
+async function mandarPortapapelesSiCambio() {
+
+    if (!selectedDevice || !navigator.clipboard?.readText) {
+        return;
+    }
+
+    // Sin foco en la pestaña, el navegador deniega la lectura. No es
+    // un error: es que no toca.
+    if (!document.hasFocus()) {
+        return;
+    }
+
+    let texto;
+
+    try {
+        texto = await navigator.clipboard.readText();
+
+    } catch (error) {
+        // Permiso denegado o portapapeles con algo que no es texto.
+        return;
+    }
+
+    if (typeof texto !== "string" || texto === ultimoPortapapelesEnviado) {
+        return;
+    }
+
+    ultimoPortapapelesEnviado = texto;
+
+    if (!texto) {
+        return;
+    }
+
+    try {
+        await fetch(
+            `/api/devices/${selectedDevice.device_id}/clipboard`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ action: "set", text: texto })
+            }
+        );
+
+    } catch (error) {
+        // Que no llegue el portapapeles no interrumpe la sesion.
+    }
+}
+
+
+function vigilarPortapapeles() {
+
+    if (portapapelesTemporizador) {
+        return;
+    }
+
+    // El primero no espera: si acabas de copiar algo y abres la
+    // ventana, lo quieres alli ya.
+    mandarPortapapelesSiCambio();
+
+    portapapelesTemporizador = setInterval(
+        mandarPortapapelesSiCambio, PORTAPAPELES_CADA_MS
+    );
+}
+
+
+function dejarDeVigilarPortapapeles() {
+
+    if (portapapelesTemporizador) {
+        clearInterval(portapapelesTemporizador);
+        portapapelesTemporizador = null;
+    }
+
+    ultimoPortapapelesEnviado = null;
+}
+
+
+async function traerPortapapelesDelEquipo() {
+
+    if (!selectedDevice) {
+        return;
+    }
+
+    const boton =
+        document.getElementById("remote-traer-portapapeles");
+
+    if (boton) {
+        boton.disabled = true;
+    }
+
+    try {
+
+        const respuesta = await fetch(
+            `/api/devices/${selectedDevice.device_id}/clipboard`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ action: "get" })
+            }
+        );
+
+        const datos = await respuesta.json();
+
+        if (!respuesta.ok) {
+            avisoRemoto(datos.message || "No se pudo traer el portapapeles");
+            return;
+        }
+
+        if (datos.empty) {
+            avisoRemoto("El portapapeles del equipo no tiene texto");
+            return;
+        }
+
+        // Lo que se trae se deja aqui copiado: es lo que se espera
+        // de un "traer", y evita un paso manual.
+        try {
+            await navigator.clipboard.writeText(datos.text);
+
+            // Para que el vigilante no lo reenvie de vuelta al
+            // equipo en el siguiente ciclo, en bucle.
+            ultimoPortapapelesEnviado = datos.text;
+
+            avisoRemoto(
+                `Portapapeles del equipo copiado aqui `
+                + `(${datos.text.length} caracteres)`
+            );
+
+        } catch (error) {
+            avisoRemoto(
+                "Texto recibido, pero el navegador no dejo copiarlo"
+            );
+        }
+
+    } catch (error) {
+        avisoRemoto("No se pudo traer el portapapeles");
+
+    } finally {
+        if (boton) {
+            boton.disabled = false;
+        }
+    }
+}
+
+
+/* ==============================
+BLOQUEO DEL TECLADO Y EL RATON DEL EQUIPO
+
+Lo pone y lo quita quien administra. Quien esta delante del equipo
+no puede quitarlo, que es el sentido de la funcion.
+
+Pero el EQUIPO lo suelta solo si nadie renueva el plazo. Por eso esto
+renueva mientras el boton siga encendido: si se cae la red, el
+servidor o esta pestaña, la persona recupera su teclado sin que nadie
+tenga que venir a devolverselo.
+============================== */
+
+const BLOQUEO_GRACIA_SEGUNDOS = 60;
+const BLOQUEO_RENOVAR_CADA_MS = 20000;
+
+let entradaBloqueada = false;
+let bloqueoTemporizador = null;
+
+
+async function pedirBloqueoDeEntrada(encendido) {
+
+    const respuesta = await fetch(
+        `/api/devices/${selectedDevice.device_id}/input-lock`,
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                enabled: encendido,
+                grace_seconds: BLOQUEO_GRACIA_SEGUNDOS
+            })
+        }
+    );
+
+    const datos = await respuesta.json().catch(() => ({}));
+
+    return { bien: respuesta.ok, datos };
+}
+
+
+function pintarBotonDeBloqueo() {
+
+    const boton = document.getElementById("remote-bloquear-entrada");
+
+    if (!boton) {
+        return;
+    }
+
+    boton.textContent = entradaBloqueada
+        ? "Desbloquear teclado"
+        : "Bloquear teclado";
+
+    boton.setAttribute(
+        "aria-pressed", entradaBloqueada ? "true" : "false"
+    );
+
+    boton.style.background = entradaBloqueada ? "#7F1D1D" : "";
+    boton.style.borderColor = entradaBloqueada ? "#B91C1C" : "";
+}
+
+
+async function alternarBloqueoDeEntrada() {
+
+    if (!selectedDevice) {
+        return;
+    }
+
+    const boton = document.getElementById("remote-bloquear-entrada");
+
+    if (boton) {
+        boton.disabled = true;
+    }
+
+    const queremos = !entradaBloqueada;
+
+    try {
+
+        const { bien, datos } = await pedirBloqueoDeEntrada(queremos);
+
+        if (!bien) {
+            avisoRemoto(datos.message || "No se pudo cambiar el bloqueo");
+            return;
+        }
+
+        entradaBloqueada = queremos;
+
+        pintarBotonDeBloqueo();
+
+        if (entradaBloqueada) {
+
+            avisoRemoto(
+                "Teclado y raton del equipo bloqueados. "
+                + "Ctrl+Alt+Supr sigue funcionando alli"
+            );
+
+            if (!bloqueoTemporizador) {
+                bloqueoTemporizador = setInterval(() => {
+                    pedirBloqueoDeEntrada(true).catch(() => {});
+                }, BLOQUEO_RENOVAR_CADA_MS);
+            }
+
+        } else {
+            avisoRemoto("Teclado y raton del equipo devueltos");
+            pararRenovacionDelBloqueo();
+        }
+
+    } catch (error) {
+        avisoRemoto("No se pudo cambiar el bloqueo");
+
+    } finally {
+        if (boton) {
+            boton.disabled = false;
+        }
+    }
+}
+
+
+function pararRenovacionDelBloqueo() {
+
+    if (bloqueoTemporizador) {
+        clearInterval(bloqueoTemporizador);
+        bloqueoTemporizador = null;
+    }
+}
+
+
+function olvidarBloqueoDeEntrada() {
+    // Al cerrar la sesion remota. No se manda 'desbloquear': si la
+    // conexion ya no esta, no llegaria. El plazo del equipo es quien
+    // lo resuelve, y para eso existe.
+    pararRenovacionDelBloqueo();
+
+    entradaBloqueada = false;
+
+    pintarBotonDeBloqueo();
+}
+
 
 function disableRemoteKeyboard(releaseKeys = true) {
 
@@ -11300,6 +11772,21 @@ enlazarEdicionDeNombre();
 document
 .getElementById("remote-minimizar")
 ?.addEventListener("click", alternarPlegadoRemoto);
+
+
+document
+.getElementById("remote-pantalla-completa")
+?.addEventListener("click", alternarPantallaCompleta);
+
+
+document
+.getElementById("remote-traer-portapapeles")
+?.addEventListener("click", traerPortapapelesDelEquipo);
+
+
+document
+.getElementById("remote-bloquear-entrada")
+?.addEventListener("click", alternarBloqueoDeEntrada);
 
 
 document

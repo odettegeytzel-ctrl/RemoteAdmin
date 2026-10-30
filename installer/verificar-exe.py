@@ -38,6 +38,10 @@ ESPERADOS = {
     "agent/agent.py": "agent/agent.py",
     "agent/commands.py": "agent/commands.py",
     "agent/version.py": "agent/version.py",
+    "agent/helper.py": "agent/helper.py",
+    "agent/maintenance.py": "agent/maintenance.py",
+    "agent/clipboard.py": "agent/clipboard.py",
+    "agent/lockinput.py": "agent/lockinput.py",
     "agent/scheduler.py": "agent/scheduler.py",
     "agent/owners.py": "agent/owners.py",
     "agent/recorder.py": "agent/recorder.py",
@@ -56,6 +60,21 @@ MARCAS_DE_TRANSMISION = (
     "recording_stream_abort",
     "agent_capabilities",
     "find_managed_recording",
+)
+
+
+# Senales de que el portapapeles, el bloqueo de entrada y la
+# correccion de mayusculas viajan dentro.
+MARCAS_DE_CONTROL = (
+    ("agent/agent.py", "sincronizar_bloqueos"),
+    ("agent/agent.py", "VK_CAPITAL"),
+    ("agent/agent.py", "clipboard_set:"),
+    ("agent/agent.py", "input_lock:"),
+    ("agent/helper.py", "poner_portapapeles"),
+    ("agent/helper.py", "bloquear_entrada"),
+    ("agent/clipboard.py", "CF_UNICODETEXT"),
+    ("agent/lockinput.py", "PLAZO_MAXIMO"),
+    ("agent/maintenance.py", "SetWindowPos"),
 )
 
 
@@ -169,8 +188,8 @@ def main():
 
     print(f"VERSION DEL AGENT DENTRO DEL EXE: {version_dentro}")
 
-    comprobar("La version empaquetada es 1.4.0",
-              version_dentro == "1.4.0", version_dentro)
+    comprobar("La version empaquetada es 1.5.0",
+              version_dentro == "1.5.0", version_dentro)
 
     print()
 
@@ -217,6 +236,29 @@ def main():
 
     comprobar("Las ordenes de transmision son de fondo",
               "recording_stream_start:" in ordenes, "no estan")
+
+    print()
+
+    # --- portapapeles, bloqueo y mayusculas ---
+
+    print("CONTROL REMOTO, DENTRO DEL EXE")
+
+    for archivo, marca in MARCAS_DE_CONTROL:
+
+        texto = (dentro.get(archivo) or b"").decode("utf-8", "replace")
+
+        presente = marca in texto
+
+        comprobar(f"  {archivo}: {marca}", presente, "no aparece")
+
+        print(f"  {archivo:<26} {marca:<24} "
+              f"{'si' if presente else 'NO'}")
+
+    comprobar(
+        "Las ordenes de portapapeles y bloqueo son de escritorio",
+        "clipboard_set:" in ordenes and "input_lock:" in ordenes,
+        "no estan clasificadas"
+    )
 
     print()
 

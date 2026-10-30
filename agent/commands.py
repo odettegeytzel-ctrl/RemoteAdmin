@@ -34,6 +34,13 @@ INTERACTIVE_EXACT = frozenset({
     # usuario. El servicio corre en la Sesion 0, donde no hay
     # escritorio: alli no se veria nada.
     "maintenance_off",
+
+    # El portapapeles de la Sesion 0 es otro, y esta vacio: leer el
+    # del usuario solo se puede desde su sesion.
+    "clipboard_get",
+
+    # BlockInput solo surte efecto sobre el escritorio interactivo.
+    "input_unlock",
 })
 
 
@@ -52,6 +59,12 @@ INTERACTIVE_PREFIXES = (
 
     # maintenance_on:{"seconds": 600}
     "maintenance_on:",
+
+    # clipboard_set:{"text": "..."}
+    "clipboard_set:",
+
+    # input_lock:{"seconds": 60}
+    "input_lock:",
 )
 
 

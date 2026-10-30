@@ -307,11 +307,7 @@ def mostrar_ventana():
         reloj_barra(restante)
 
         # Hay ventanas que se ponen encima despues. Se reafirma.
-        try:
-            raiz.attributes("-topmost", True)
-
-        except Exception:
-            pass
+        _poner_delante(raiz)
 
         raiz.after(LATIDO_MS, vigilar)
 
@@ -610,6 +606,63 @@ def _pintar_barra(tk, barra, estado):
     return repintar
 
 
+def _ventana_del_sistema(raiz):
+    """El HWND real de la ventana, no el del marco interno de Tk."""
+
+    import ctypes
+
+    usuario = ctypes.windll.user32
+    propia = raiz.winfo_id()
+
+    return usuario.GetParent(propia) or propia
+
+
+def _poner_delante(raiz):
+    """
+    Vuelve a colocar el aviso por encima de todo, cada latido.
+
+    Pedirselo a Tk -raiz.attributes("-topmost", True)- NO sirve para
+    reafirmarlo: Tk recuerda el valor y, si ya lo tenia puesto, no
+    vuelve a llamar a Windows. Y hay que volver a llamar, porque
+    cuando OTRA ventana se declara topmost despues, se coloca encima
+    y esta se queda detras conservando su marca. Era el caso de
+    Chrome: el aviso se activaba, quedaba debajo, y parecia que no
+    habia salido.
+
+    SetWindowPos lo recoloca de verdad. SWP_NOACTIVATE mantiene la
+    promesa de no robar el foco; sin el, el aviso robaria el teclado
+    dos veces por segundo.
+
+    Si algo falla se sigue adelante: un aviso mal colocado es mejor
+    que ningun aviso.
+    """
+
+    if os.name != "nt":
+        try:
+            raiz.attributes("-topmost", True)
+        except Exception:
+            pass
+        return False
+
+    try:
+        import ctypes
+
+        HWND_TOPMOST = -1
+        SWP_NOSIZE = 0x0001
+        SWP_NOMOVE = 0x0002
+        SWP_NOACTIVATE = 0x0010
+
+        ctypes.windll.user32.SetWindowPos(
+            _ventana_del_sistema(raiz), HWND_TOPMOST, 0, 0, 0, 0,
+            SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
+        )
+
+        return True
+
+    except Exception:
+        return False
+
+
 def _no_robar_el_foco(raiz):
     """
     El aviso nunca se pone delante de lo que estes escribiendo.
@@ -639,7 +692,7 @@ def _no_robar_el_foco(raiz):
 
         usuario = ctypes.windll.user32
 
-        ventana = usuario.GetParent(raiz.winfo_id()) or raiz.winfo_id()
+        ventana = _ventana_del_sistema(raiz)
 
         estilo = usuario.GetWindowLongW(ventana, GWL_EXSTYLE)
 
@@ -648,6 +701,21 @@ def _no_robar_el_foco(raiz):
         usuario.SetWindowLongW(
             ventana, GWL_EXSTYLE,
             estilo | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW
+        )
+
+        # Un cambio de estilo no surte efecto hasta que se le dice a
+        # Windows que lo recalcule. Y de paso se recoloca arriba: el
+        # SetWindowLongW anterior puede haber deshecho el orden que
+        # Tk habia dejado puesto.
+        HWND_TOPMOST = -1
+        SWP_NOSIZE = 0x0001
+        SWP_NOMOVE = 0x0002
+        SWP_NOACTIVATE = 0x0010
+        SWP_FRAMECHANGED = 0x0020
+
+        usuario.SetWindowPos(
+            ventana, HWND_TOPMOST, 0, 0, 0, 0,
+            SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE | SWP_FRAMECHANGED
         )
 
         return True

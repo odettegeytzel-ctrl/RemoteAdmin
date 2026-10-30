@@ -376,7 +376,12 @@ def test_el_panel_lo_enciende_y_lo_renueva():
     comprobar("Y deja de renovar al cerrar",
               "detenerRenovacionDeMantenimiento()" in JS)
 
-    cerrar = JS.split("async function stopRemoteDesktop() {", 1)[1][:1800]
+    # La ventana se mide en caracteres, asi que crece cada vez que
+    # stopRemoteDesktop gana una linea -el portapapeles, el bloqueo
+    # de entrada, salir de pantalla completa-. Se recorta por el
+    # final de la funcion, que es lo que de verdad se quiere mirar,
+    # y 4000 queda de margen por si aparece algo mas.
+    cerrar = JS.split("async function stopRemoteDesktop() {", 1)[1][:4000]
 
     comprobar("Al cerrar la sesion se olvida el aviso",
               "olvidarMantenimiento()" in cerrar)

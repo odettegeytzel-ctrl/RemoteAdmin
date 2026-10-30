@@ -2142,7 +2142,90 @@ def release_all_buttons():
     pressed_buttons.clear()
 
 
+VK_CAPITAL = 0x14
+VK_NUMLOCK = 0x90
+
+KEYEVENTF_KEYUP = 0x0002
+
+
+def _bloqueo_encendido(tecla_virtual):
+    """
+    True si Bloq Mayus o Bloq Num estan puestos en ESTE equipo.
+
+    El bit bajo de GetKeyState es el que guarda el estado de un
+    bloqueo; el alto dice si la tecla esta fisicamente hundida, que
+    aqui no interesa.
+    """
+
+    try:
+        return bool(
+            ctypes.windll.user32.GetKeyState(tecla_virtual) & 1
+        )
+
+    except Exception:
+        return False
+
+
+def _conmutar_bloqueo(tecla_virtual):
+    """Pulsa y suelta la tecla de bloqueo, para invertir su estado."""
+
+    try:
+        ctypes.windll.user32.keybd_event(tecla_virtual, 0, 0, 0)
+        ctypes.windll.user32.keybd_event(
+            tecla_virtual, 0, KEYEVENTF_KEYUP, 0
+        )
+
+        return True
+
+    except Exception:
+        return False
+
+
+def sincronizar_bloqueos():
+    """
+    Deja los bloqueos del equipo como el panel da por hecho que estan.
+
+    El navegador ya manda la mayuscula o la minuscula que toca: si
+    quien mira escribe 'a', llega 'a', y si escribe 'A' llega con
+    Shift. Pero si el equipo remoto tiene Bloq Mayus puesto, Windows
+    invierte esa decision al inyectar y sale justo lo contrario de lo
+    que se tecleo.
+
+    Lo mismo al reves con Bloq Num: apagado, las teclas del teclado
+    numerico dejan de ser numeros y se vuelven flechas.
+
+    Por eso no se consulta y se compensa tecla a tecla -habria que
+    saber de cada una si es letra, y las combinaciones no encajan-,
+    sino que se fija el estado una vez: mayusculas apagado, numeros
+    encendido. Es lo que hace cualquier escritorio remoto.
+
+    Devuelve que se cambio, para poder contarlo en el registro sin
+    anotar nunca que se tecleo.
+    """
+
+    if os.name != "nt":
+        return ()
+
+    cambiados = []
+
+    if _bloqueo_encendido(VK_CAPITAL):
+        if _conmutar_bloqueo(VK_CAPITAL):
+            cambiados.append("mayusculas")
+
+    if not _bloqueo_encendido(VK_NUMLOCK):
+        if _conmutar_bloqueo(VK_NUMLOCK):
+            cambiados.append("numeros")
+
+    return tuple(cambiados)
+
+
 def handle_keyboard(data):
+
+    # Antes de la primera tecla de cada rafaga. Es barato -dos
+    # lecturas de estado- y cubre el caso de que alguien delante del
+    # equipo pulse Bloq Mayus a mitad de la sesion.
+    if data.get("action") in ("press", "down", "hotkey"):
+        sincronizar_bloqueos()
 
     action = data.get("action", "press")
 
@@ -2998,7 +3081,11 @@ async def websocket_connection():
                     await websocket.send(
                         "agent_capabilities:" + json.dumps({
                             "version": versionado.AGENT_VERSION,
-                            "capabilities": ["recording_stream"]
+                            "capabilities": [
+                                "recording_stream",
+                                "clipboard",
+                                "input_lock"
+                            ]
                         })
                     )
 
@@ -3348,6 +3435,16 @@ async def websocket_connection():
                         # Va al ayudante, que es quien tiene
                         # escritorio. El servicio corre en la Sesion
                         # 0 y alli una ventana no la ve nadie.
+                        reenviar_al_ayudante(message)
+
+                    elif (message.startswith("clipboard_set:")
+                          or message == "clipboard_get"
+                          or message.startswith("input_lock:")
+                          or message == "input_unlock"):
+
+                        # Por lo mismo: el portapapeles de la Sesion
+                        # 0 es otro y esta vacio, y BlockInput solo
+                        # actua sobre el escritorio interactivo.
                         reenviar_al_ayudante(message)
 
                     elif message.startswith(

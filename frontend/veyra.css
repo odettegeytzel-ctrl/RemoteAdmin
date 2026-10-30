@@ -1898,6 +1898,41 @@ siguen cayendo donde deben a cualquier tamaño.
 }
 
 
+/*
+A PANTALLA COMPLETA
+
+Aqui sobra todo lo que rodea a la imagen. El relleno de 12px existe
+para alojar los tiradores, y a pantalla completa no se redimensiona
+nada: ese marco negro solo estorbaria.
+
+El alto de 60vh tambien sobra: la pantalla entera es el hueco.
+
+Las bandas de 'contain' pueden seguir apareciendo cuando la
+proporcion del equipo remoto no coincide con la de este monitor, y
+eso es correcto: la alternativa seria deformar su pantalla.
+*/
+.vy-remoto-marco:fullscreen {
+    padding: 0;
+    width: 100vw;
+    height: 100vh;
+    max-width: none;
+    border-radius: 0;
+}
+
+/* El contenedor que lo envuelve tambien tiene su propio relleno */
+.vy-remoto-marco:fullscreen > .vy-remoto-imagen {
+    border-radius: 0;
+}
+
+/*
+Los tiradores no pintan nada a pantalla completa, y ademas caerian
+sobre el borde de la imagen, robandole clics al raton remoto.
+*/
+.vy-remoto-marco:fullscreen .vy-remoto-tirador {
+    display: none;
+}
+
+
 /* ==============================
 TIRADORES DE LA VENTANA REMOTA
 

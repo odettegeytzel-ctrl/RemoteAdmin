@@ -367,6 +367,8 @@ CAPACIDAD_POR_RUTA = (
 
     ("/screen", ("POST",), "remote.actions"),
     ("/maintenance", ("POST",), "remote.actions"),
+    ("/clipboard", ("POST",), "remote.actions"),
+    ("/input-lock", ("POST",), "remote.actions"),
     ("/screen/stop", ("POST",), "remote.actions"),
     ("/keyboard", ("POST",), "remote.actions"),
     ("/mouse/move", ("POST",), "remote.actions"),
@@ -2285,6 +2287,35 @@ async def agent_websocket(websocket: WebSocket):
                     print(f"[capacidades] carga ilegible: {error}")
 
 
+            elif message.startswith("clipboard_data:"):
+
+                # Lo que hay en el portapapeles del equipo, pedido
+                # con un boton. No se registra el contenido.
+                try:
+                    datos = json.loads(message.split(":", 1)[1])
+
+                except Exception:
+                    datos = {"error": "Respuesta ilegible del equipo"}
+
+                resolve_clipboard(device_id, datos)
+
+
+            elif message.startswith("input_lock_state:"):
+
+                # El equipo confirma si quedo bloqueado. Se anota el
+                # hecho, no hay contenido que proteger aqui.
+                try:
+                    datos = json.loads(message.split(":", 1)[1])
+
+                    print(
+                        f"[bloqueo] {device_id}: "
+                        f"{'bloqueado' if datos.get('locked') else 'libre'}"
+                    )
+
+                except Exception as error:
+                    print(f"[bloqueo] respuesta ilegible: {error}")
+
+
             elif message.startswith((
                 "recording_stream_ready:",
                 "recording_stream_complete:",
@@ -2423,6 +2454,8 @@ async def agent_websocket(websocket: WebSocket):
             # Quien esté esperando una consulta recibe el error ya, en vez
             # de agotar el tiempo de espera para saber algo que ya se sabe.
             fail_device_queries(device_id)
+
+            fail_device_clipboard(device_id)
 
             connected_agents.pop(
                 device_id,
@@ -2651,6 +2684,258 @@ async def set_maintenance(device_id: str, data: dict, request: Request):
     return {
         "status": "ok",
         "enabled": encendido,
+        "grace_seconds": segundos
+    }
+
+
+# Lo que cada equipo tiene pendiente de contestar sobre su
+# portapapeles. Una peticion por equipo: pedirlo dos veces a la vez
+# no tiene sentido y la segunda se queda con la respuesta.
+clipboard_requests = {}
+
+# Mas que esto no se acepta del navegador. El Agent aplica su propio
+# tope; este evita que el WebSocket cargue con algo enorme antes
+# siquiera de salir del servidor.
+CLIPBOARD_MAXIMO = 256 * 1024
+
+CLIPBOARD_TIMEOUT = 10
+
+
+def resolve_clipboard(device_id, contenido):
+    """Entrega al panel lo que contesto el equipo."""
+
+    pendiente = clipboard_requests.pop(device_id, None)
+
+    if pendiente is not None and not pendiente.done():
+        pendiente.set_result(contenido)
+
+
+def fail_device_clipboard(device_id):
+    """Al desconectarse un equipo, su peticion no llegara nunca."""
+
+    resolve_clipboard(device_id, {"error": "El equipo se desconecto"})
+
+
+@app.post("/api/devices/{device_id}/clipboard")
+async def device_clipboard(device_id: str, data: dict, request: Request):
+    """
+    El portapapeles del equipo, en los dos sentidos.
+
+        {"action": "set", "text": "..."}   lo que copio el tecnico
+        {"action": "get"}                  lo que hay en el equipo
+
+    Los dos sentidos NO son simetricos a proposito. 'set' lo dispara
+    el panel solo, cada vez que cambia el portapapeles de quien
+    administra: es lo que hace util pegar en el equipo remoto. 'get'
+    es siempre a peticion expresa, con un boton, porque traerse de
+    fondo lo que el usuario del equipo copia -una contraseña de su
+    gestor, un dato personal- es vigilarle el portapapeles, y eso
+    nadie lo ha pedido.
+
+    El CONTENIDO no se registra en la auditoria, ni de ida ni de
+    vuelta. Solo que hubo transferencia y de cuantos caracteres.
+    """
+
+    _, error = require_permission(request, "remote.control")
+
+    if error:
+        return error
+
+    accion = str(data.get("action") or "").strip()
+
+    if accion not in ("set", "get"):
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error",
+                     "message": "Accion de portapapeles no valida"}
+        )
+
+    websocket = connected_agents.get(device_id)
+
+    if not websocket:
+        return JSONResponse(
+            status_code=409,
+            content={"status": "error",
+                     "message": "El equipo no esta conectado"}
+        )
+
+    if not agent_supports(device_id, "clipboard"):
+        return JSONResponse(
+            status_code=409,
+            content={"status": "error",
+                     "code": "agent_sin_portapapeles",
+                     "message": "Este equipo tiene una version del "
+                                "Agent que todavia no comparte el "
+                                "portapapeles. Actualiza el Agent "
+                                "del equipo."}
+        )
+
+    if accion == "set":
+
+        texto = data.get("text")
+
+        if not isinstance(texto, str):
+            return JSONResponse(
+                status_code=400,
+                content={"status": "error",
+                         "message": "El portapapeles solo lleva texto"}
+            )
+
+        texto = texto[:CLIPBOARD_MAXIMO]
+
+        log_audit(
+            "remote.clipboard",
+            request=request,
+            device_id=device_id,
+            status=STATUS_REQUESTED,
+            details={"sentido": "al_equipo", "caracteres": len(texto)}
+        )
+
+        await websocket.send_text(
+            "clipboard_set:" + json.dumps({"text": texto})
+        )
+
+        return {"status": "ok", "characters": len(texto)}
+
+    # --- get ---
+
+    log_audit(
+        "remote.clipboard",
+        request=request,
+        device_id=device_id,
+        status=STATUS_REQUESTED,
+        details={"sentido": "del_equipo"}
+    )
+
+    # Una peticion anterior sin contestar se descarta: quien pregunta
+    # ahora quiere lo de ahora.
+    anterior = clipboard_requests.pop(device_id, None)
+
+    if anterior is not None and not anterior.done():
+        anterior.cancel()
+
+    espera = asyncio.get_running_loop().create_future()
+    clipboard_requests[device_id] = espera
+
+    await websocket.send_text("clipboard_get")
+
+    try:
+        contenido = await asyncio.wait_for(espera, CLIPBOARD_TIMEOUT)
+
+    except asyncio.TimeoutError:
+        clipboard_requests.pop(device_id, None)
+
+        return JSONResponse(
+            status_code=504,
+            content={"status": "error",
+                     "message": "El equipo no contesto a tiempo"}
+        )
+
+    except asyncio.CancelledError:
+        # Otra peticion para el mismo equipo llego despues y se quedo
+        # con la respuesta. Sin esto, pulsar el boton dos veces
+        # seguidas devolveria un error 500 sin explicacion.
+        return JSONResponse(
+            status_code=409,
+            content={"status": "error",
+                     "message": "Otra consulta del portapapeles la "
+                                "reemplazo"}
+        )
+
+    if contenido.get("error"):
+        return JSONResponse(
+            status_code=502,
+            content={"status": "error",
+                     "message": contenido["error"]}
+        )
+
+    texto = contenido.get("text")
+
+    return {
+        "status": "ok",
+        "text": texto,
+        "empty": bool(contenido.get("empty")) or not texto
+    }
+
+
+@app.post("/api/devices/{device_id}/input-lock")
+async def device_input_lock(device_id: str, data: dict, request: Request):
+    """
+    Bloquea el teclado y el raton FISICOS del equipo.
+
+    Solo lo quita quien lo puso, desde el panel. Quien esta delante
+    del equipo no puede: ese es el sentido de la funcion.
+
+    Con una excepcion que no es negociable: el EQUIPO se libera solo
+    al cumplirse un plazo que el panel va renovando. Si se cae la
+    red, el servidor o el navegador del tecnico, la persona que esta
+    delante recupera su teclado sin que nadie tenga que venir. El
+    plazo lo lleva el Agent, no el servidor, por lo mismo que el
+    aviso de mantenimiento: tiene que sobrevivir a que el servidor
+    desaparezca.
+
+    Ctrl+Alt+Supr sigue funcionando. Windows se la reserva y ningun
+    programa puede quitarsela.
+    """
+
+    _, error = require_permission(request, "remote.control")
+
+    if error:
+        return error
+
+    bloquear = bool(data.get("enabled"))
+
+    segundos = data.get("grace_seconds", 60)
+
+    try:
+        segundos = int(segundos)
+
+    except (TypeError, ValueError):
+        segundos = 60
+
+    # Tope mas corto que el del aviso: un aviso puesto de mas molesta,
+    # un teclado bloqueado de mas deja a alguien sin poder trabajar.
+    segundos = max(10, min(segundos, 300))
+
+    log_audit(
+        "remote.input_lock",
+        request=request,
+        device_id=device_id,
+        status=STATUS_REQUESTED,
+        details={"bloqueado": bloquear, "gracia_segundos": segundos}
+    )
+
+    websocket = connected_agents.get(device_id)
+
+    if not websocket:
+        return JSONResponse(
+            status_code=409,
+            content={"status": "error",
+                     "message": "El equipo no esta conectado"}
+        )
+
+    if not agent_supports(device_id, "input_lock"):
+        return JSONResponse(
+            status_code=409,
+            content={"status": "error",
+                     "code": "agent_sin_bloqueo",
+                     "message": "Este equipo tiene una version del "
+                                "Agent que todavia no sabe bloquear "
+                                "el teclado. Actualiza el Agent del "
+                                "equipo."}
+        )
+
+    if bloquear:
+        await websocket.send_text(
+            "input_lock:" + json.dumps({"seconds": segundos})
+        )
+
+    else:
+        await websocket.send_text("input_unlock")
+
+    return {
+        "status": "ok",
+        "enabled": bloquear,
         "grace_seconds": segundos
     }
 
