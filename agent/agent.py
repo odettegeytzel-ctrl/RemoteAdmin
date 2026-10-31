@@ -17,6 +17,24 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 
+
+# La carpeta de este archivo, en la ruta de modulos.
+#
+# Normalmente Python la añade solo, y por eso esto parecia no hacer
+# falta. Pero el Python EMBEBIDO que viaja en el instalador trae un
+# archivo python313._pth, y su sola presencia desactiva ese
+# comportamiento: sys.path queda con lo que diga el ._pth y nada mas.
+#
+# El efecto era que el Agent instalado moria al arrancar, en
+# 'from recorder import ScreenRecorder', sin escribir una linea de
+# registro: el fallo ocurre antes de que exista el registro. El
+# equipo se quedaba con las tareas puestas, sin dar de alta y sin
+# ninguna pista.
+#
+# helper.py ya hacia esto. Por eso el ayudante arrancaba y el Agent
+# no, que fue lo que delato el problema.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 import psutil
 import requests
 import websockets

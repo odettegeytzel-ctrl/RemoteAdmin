@@ -457,11 +457,99 @@ Write-Host "Copiando el Agent..."
 # ni logs\: son los datos del equipo y deben sobrevivir a una
 # reinstalacion.
 #
+# A partir de AQUI el equipo queda tocado: se paran las tareas. Si el
+# script aborta mas adelante sin volver a arrancarlas, el Agent se
+# queda muerto y el equipo desaparece del panel.
+#
+# Paso exactamente eso en un equipo de produccion: la instalacion
+# fallo, dijo "no se ha modificado nada" -que era falso- y el equipo
+# se quedo desconectado hasta que alguien fue a arrancarlo a mano.
+#
+# Por eso todo lo que sigue va dentro de un try cuyo catch deja el
+# equipo como estaba antes de empezar.
+$tareasDetenidas = $false
+
+$yaRestaurado = $false
+
+function Restaurar-Lo-Que-Habia {
+    <#
+        Deshace lo que se hizo, en orden inverso.
+
+        Se llama desde el catch de cada paso que ya haya tocado algo.
+        Es deliberadamente tolerante a fallos: si no puede reponer
+        una cosa, lo dice y sigue con las demas. Un equipo con el
+        Agent viejo corriendo es mejor que uno sin nada.
+    #>
+
+    # Puede llamarse desde un catch concreto y despues desde la red
+    # general. Restaurar dos veces no rompe nada, pero contarlo dos
+    # veces confunde a quien lee el registro.
+    if ($script:yaRestaurado) {
+        return
+    }
+
+    $script:yaRestaurado = $true
+
+    Write-Host ""
+    Write-Host "La instalacion fallo. Dejando el equipo como estaba..."
+
+    # 1. Reponer el programa anterior, si se habia apartado y no hay
+    #    uno nuevo en su sitio.
+    if ((Test-Path $RespaldoAgent) -and -not (Test-Path $AgentDir)) {
+        try {
+            Move-Item -Path $RespaldoAgent -Destination $AgentDir -Force
+            Write-Host "  programa anterior repuesto"
+        } catch {
+            Write-Host "  NO se pudo reponer el programa anterior:"
+            Write-Host "    esta en $RespaldoAgent"
+        }
+    }
+
+    # 2. Volver a arrancar lo que se paro.
+    if ($tareasDetenidas) {
+        foreach ($tarea in @($TaskName, $HelperTaskName)) {
+            if (Get-ScheduledTask -TaskName $tarea -ErrorAction SilentlyContinue) {
+                try {
+                    Start-ScheduledTask -TaskName $tarea
+                    Write-Host "  tarea '$tarea' arrancada de nuevo"
+                } catch {
+                    Write-Host "  NO se pudo arrancar '$tarea'. Reinicia el equipo."
+                }
+            }
+        }
+    }
+
+    Write-Host ""
+}
+
+# Se definen antes de pararlas: Restaurar-Lo-Que-Habia los necesita.
+$AgentDir = Join-Path $InstallDir "agent"
+$RespaldoAgent = Join-Path $InstallDir "agent.anterior"
+
+# La red general. Los try/catch concretos cubren los dos pasos mas
+# delicados; esto cubre TODO lo demas que venga despues -copiar el
+# runtime, escribir el .env, registrar las tareas- sin tener que
+# envolver cada paso a mano y sin que el proximo paso que alguien
+# añada se quede fuera por olvido.
+#
+# El guardia de $tareasDetenidas es lo que lo hace seguro: antes de
+# parar nada no hay nada que restaurar, y un fallo temprano -no eres
+# administrador, falta el paquete- debe salir tal cual.
+trap {
+
+    if ($tareasDetenidas) {
+        Restaurar-Lo-Que-Habia
+    }
+
+    break
+}
+
 # Si el Agent estaba corriendo, se para antes de sobrescribir sus
 # archivos: en Windows no se puede reemplazar lo que esta en uso.
 foreach ($tarea in @($TaskName, $HelperTaskName)) {
     if (Get-ScheduledTask -TaskName $tarea -ErrorAction SilentlyContinue) {
         Stop-ScheduledTask -TaskName $tarea -ErrorAction SilentlyContinue
+        $tareasDetenidas = $true
     }
 }
 
@@ -469,7 +557,6 @@ foreach ($tarea in @($TaskName, $HelperTaskName)) {
 # segundos bastan. Detener una tarea no es inmediato, y si el proceso
 # sigue vivo Copy-Item falla a mitad: el Agent queda parado y con los
 # archivos a medio reemplazar, que es el peor sitio donde dejarlo.
-$AgentDir = Join-Path $InstallDir "agent"
 
 function Procesos-Del-Agent {
     @(Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe'" `
@@ -479,16 +566,60 @@ function Procesos-Del-Agent {
 
 $limiteParada = (Get-Date).AddSeconds(30)
 
-while ((Procesos-Del-Agent).Count -gt 0 -and (Get-Date) -lt $limiteParada) {
+# El @() de fuera NO sobra, aunque la funcion ya devuelva un array.
+#
+# PowerShell deshace un array de un solo elemento al devolverlo. Lo
+# que llega aqui con UN proceso vivo es el objeto suelto, y .Count
+# sobre un PSCustomObject vale $null. Como $null -gt 0 es falso, la
+# comprobacion decia que no quedaba ninguno... justo en el caso
+# corriente de una actualizacion, donde queda exactamente uno.
+#
+# El resultado era que el instalador seguia adelante y reemplazaba
+# archivos en uso. Con dos o mas procesos funcionaba, que es lo que
+# hacia el fallo tan dificil de ver.
+while (@(Procesos-Del-Agent).Count -gt 0 -and (Get-Date) -lt $limiteParada) {
     Start-Sleep -Seconds 1
 }
 
-$siguenVivos = Procesos-Del-Agent
+$siguenVivos = @(Procesos-Del-Agent)
 
 if ($siguenVivos.Count -gt 0) {
+
+    # Rendirse aqui era lo que hacia antes, y estaba mal por dos
+    # razones. La primera, que dejaba las tareas paradas y el equipo
+    # sin Agent. La segunda, que es evitable: detener la tarea no
+    # siempre mata a sus hijos, y un proceso que ya se le pidio
+    # terminar y no termino en treinta segundos no va a terminar.
+    #
+    # Se cierran. Son procesos del propio Agent, identificados por su
+    # linea de comandos dentro de la carpeta de instalacion: no se
+    # toca ningun Python ajeno que el usuario tenga abierto.
+    Write-Host ""
+    Write-Host "El Agent no termino solo. Cerrando sus procesos..."
+
+    foreach ($proceso in $siguenVivos) {
+        try {
+            Stop-Process -Id $proceso.ProcessId -Force -ErrorAction Stop
+            Write-Host "  cerrado el proceso $($proceso.ProcessId)"
+        } catch {
+            Write-Host "  no se pudo cerrar el proceso $($proceso.ProcessId)"
+        }
+    }
+
+    Start-Sleep -Seconds 2
+
+    $siguenVivos = @(Procesos-Del-Agent)
+}
+
+if ($siguenVivos.Count -gt 0) {
+
+    # Ya ni cerrandolos. Aqui si hay que parar, pero dejando el
+    # equipo como estaba: las tareas vuelven a arrancar.
+    Restaurar-Lo-Que-Habia
+
     throw ("El Agent sigue en ejecucion y no se pueden reemplazar sus " +
            "archivos. Reinicia el equipo y vuelve a ejecutar el " +
-           "instalador. No se ha modificado nada.")
+           "instalador. El Agent anterior se ha dejado funcionando.")
 }
 
 # Apartar el programa anterior ANTES de escribir el nuevo.
@@ -502,32 +633,34 @@ if ($siguenVivos.Count -gt 0) {
 # Solo se aparta el PROGRAMA. config\, recordings\ y logs\ no se
 # tocan: son los datos del equipo.
 # inicio del respaldo
-$RespaldoAgent = Join-Path $InstallDir "agent.anterior"
+#
+# El Move-Item estaba FUERA del try. Si fallaba a medias -un archivo
+# bloqueado, un .pyd todavia cargado- el equipo se quedaba sin
+# carpeta agent y sin nada que la repusiera. Ahora los dos pasos,
+# apartar y copiar, estan dentro de la misma proteccion.
+try {
 
-if (Test-Path $AgentDir) {
+    if (Test-Path $AgentDir) {
 
-    # Solo se guarda el respaldo mas reciente. Es codigo del producto,
-    # reponible desde el instalador; no son datos del equipo.
-    if (Test-Path $RespaldoAgent) {
-        Remove-Item -Path $RespaldoAgent -Recurse -Force
+        # Solo se guarda el respaldo mas reciente. Es codigo del
+        # producto, reponible desde el instalador; no son datos del
+        # equipo.
+        if (Test-Path $RespaldoAgent) {
+            Remove-Item -Path $RespaldoAgent -Recurse -Force
+        }
+
+        Move-Item -Path $AgentDir -Destination $RespaldoAgent -Force
+
+        Write-Host "Programa anterior guardado en: $RespaldoAgent"
     }
 
-    Move-Item -Path $AgentDir -Destination $RespaldoAgent -Force
-
-    Write-Host "Programa anterior guardado en: $RespaldoAgent"
-}
-
-try {
     Copy-Item -Path (Join-Path $SourceDir "agent") -Destination $InstallDir -Recurse -Force
 
 } catch {
 
-    # Reponer lo que habia. Sin esto, un fallo aqui deja el equipo sin
-    # Agent: ni el viejo ni el nuevo.
-    if ((Test-Path $RespaldoAgent) -and -not (Test-Path $AgentDir)) {
-        Move-Item -Path $RespaldoAgent -Destination $AgentDir -Force
-        Write-Host "Fallo la copia. Se ha repuesto el programa anterior."
-    }
+    # Reponer lo que habia y volver a arrancarlo. Sin esto, un fallo
+    # aqui deja el equipo sin Agent: ni el viejo ni el nuevo.
+    Restaurar-Lo-Que-Habia
 
     throw
 }
@@ -584,7 +717,33 @@ $ConfigDir = Join-Path $InstallDir "config"
 
 New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
 
-icacls $ConfigDir /inheritance:r /grant:r "SYSTEM:(F)" "Administrators:(F)" | Out-Null
+# (OI)(CI) no sobra: sin ellos los permisos valen para la CARPETA y
+# no para lo que se cree dentro.
+#
+# Como ademas se quita la herencia, el identity.json que el Agent
+# escribe despues -y lo escribe como SYSTEM, que es quien corre la
+# tarea- quedaba accesible SOLO para SYSTEM. El propio instalador,
+# ejecutandose como administrador, no podia leerlo en la siguiente
+# actualizacion y se detenia con "No se pudo leer identity.json".
+#
+# Es decir: el equipo quedaba instalado y funcionando, pero ya no se
+# podia volver a actualizar nunca. Se vio en Windows Sandbox, al
+# instalar dos veces seguidas.
+#
+# (OI) lo hereda cada archivo, (CI) cada subcarpeta. Quien puede
+# leerlo sigue siendo el mismo: SYSTEM y los administradores del
+# equipo. El token individual no se expone a nadie mas.
+icacls $ConfigDir /inheritance:r `
+    /grant:r "SYSTEM:(OI)(CI)(F)" "Administrators:(OI)(CI)(F)" | Out-Null
+
+# Y si la carpeta ya existia de una instalacion anterior, sus
+# archivos llevan los permisos viejos: la herencia solo alcanza a lo
+# que se cree DESPUES. Se corrigen los que ya estan.
+if (Test-Path (Join-Path $ConfigDir "*")) {
+    icacls $ConfigDir /reset /t /c /q | Out-Null
+    icacls $ConfigDir /inheritance:r `
+        /grant:r "SYSTEM:(OI)(CI)(F)" "Administrators:(OI)(CI)(F)" | Out-Null
+}
 
 # --------------------------------------------------------------
 # 5. Dependencias
@@ -877,12 +1036,45 @@ if ($alta) {
 
 } else {
 
-    Write-Host "El Agent esta instalado y corriendo, pero todavia no se"
-    Write-Host "ha confirmado el alta."
+    # Aqui el instalador terminaba con exito y decia "instalado y
+    # corriendo". No siempre era verdad: si el Agent moria al
+    # arrancar, el equipo quedaba con las tareas puestas, sin dar de
+    # alta, sin registro y con un mensaje tranquilizador.
+    #
+    # Paso de verdad: el Python embebido no añadia la carpeta del
+    # script a la ruta de modulos, el Agent moria en su primer
+    # import y nadie se enteraba.
+    #
+    # Se distingue entre "tarda" y "no arranco" mirando si llego a
+    # escribir registro. Sin una sola linea no es lentitud: es que
+    # el proceso no vivio lo suficiente para escribirla.
+    $escribioRegistro = Test-Path $LogFile
+
     Write-Host ""
-    Write-Host "Sigue reintentando solo; si en unos minutos no aparece en"
-    Write-Host "el panel, el motivo estara aqui:"
-    Write-Host "  $LogFile"
+
+    if ($escribioRegistro) {
+
+        Write-Host "El Agent esta corriendo, pero todavia no se ha"
+        Write-Host "confirmado el alta."
+        Write-Host ""
+        Write-Host "Sigue reintentando solo; si en unos minutos no aparece"
+        Write-Host "en el panel, el motivo estara aqui:"
+        Write-Host "  $LogFile"
+
+    } else {
+
+        Write-Host "EL AGENT NO ARRANCO."
+        Write-Host ""
+        Write-Host "Los archivos estan instalados y las tareas registradas,"
+        Write-Host "pero el programa no llego a ejecutarse: no ha escrito"
+        Write-Host "ni una linea en"
+        Write-Host "  $LogFile"
+        Write-Host ""
+        Write-Host "Para ver por que muere, ejecuta esto y lee el error:"
+        Write-Host "  & '$Python' '$AgentScript'"
+
+        throw "El Agent no arranco. El equipo no ha quedado dado de alta."
+    }
 }
 
 Write-Host ""

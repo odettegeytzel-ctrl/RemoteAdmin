@@ -508,7 +508,23 @@ def test_el_instalador_protege_la_identidad():
               "icacls $ConfigDir" in GUION)
 
     comprobar("Solo SYSTEM y administradores",
-              '"SYSTEM:(F)" "Administrators:(F)"' in GUION)
+              '"SYSTEM:(OI)(CI)(F)" "Administrators:(OI)(CI)(F)"' in GUION)
+
+    # (OI)(CI) no es cosmetico. Sin ellos el permiso vale para la
+    # CARPETA y no para lo que se cree dentro, y como ademas se
+    # quita la herencia, el identity.json que el Agent escribe
+    # despues -como SYSTEM- quedaba accesible solo para SYSTEM. El
+    # instalador, aun siendo administrador, no podia leerlo en la
+    # siguiente actualizacion: el equipo quedaba instalado y sin
+    # poder actualizarse nunca.
+    comprobar("Y esos permisos los heredan los archivos de dentro",
+              "(OI)(CI)" in GUION.split("icacls $ConfigDir")[1][:200])
+
+    # Lo que NO debe pasar al heredar: abrirlo a cualquiera. Ahi
+    # vive el token individual del equipo.
+    comprobar("Sin abrirlo a cualquier usuario del equipo",
+              "Users:(OI)(CI)" not in GUION
+              and "Everyone" not in GUION)
 
     comprobar("Y tambien el .env, que lleva la credencial",
               "icacls $EnvFile" in GUION)

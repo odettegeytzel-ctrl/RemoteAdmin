@@ -94,9 +94,13 @@ comprobar(
     "Move-Item -Path $AgentDir -Destination $RespaldoAgent" in BLOQUE
 )
 
+# La reposicion ya no esta en linea dentro del bloque: vive en
+# Restaurar-Lo-Que-Habia, que ademas vuelve a arrancar las tareas
+# programadas. El bloque la LLAMA.
 comprobar(
     "y se repone si la copia falla",
-    "Move-Item -Path $RespaldoAgent -Destination $AgentDir" in BLOQUE
+    "Restaurar-Lo-Que-Habia" in BLOQUE
+    and "Move-Item -Path $RespaldoAgent -Destination $AgentDir" in FUENTE
 )
 
 
@@ -130,12 +134,18 @@ comprobar(
 comprobar(
     "no se espera un numero fijo de segundos a que salga el Agent",
     "$limiteParada = (Get-Date).AddSeconds(30)" in FUENTE
-    and "while ((Procesos-Del-Agent).Count -gt 0" in FUENTE
+    # El @() es obligatorio: sin el, con UN solo proceso vivo
+    # .Count vale $null y la espera no detecta nada.
+    and "while (@(Procesos-Del-Agent).Count -gt 0" in FUENTE
 )
 
+# Antes el mensaje decia "No se ha modificado nada", y era falso:
+# las tareas ya estaban paradas. Ahora se intenta cerrar los
+# procesos y, si aun asi siguen, se repone el estado anterior.
 comprobar(
     "y si no sale, no se copia nada encima",
-    "No se ha modificado nada." in FUENTE
+    "El Agent anterior se ha dejado funcionando." in FUENTE
+    and "No se ha modificado nada." not in FUENTE
 )
 
 
@@ -183,6 +193,18 @@ def correr(instalacion_previa=True, origen_valido=True):
         '$InstallDir = "%s"' % destino,
         '$SourceDir  = "%s"' % origen,
         '$AgentDir   = Join-Path $InstallDir "agent"',
+        '$RespaldoAgent = Join-Path $InstallDir "agent.anterior"',
+        # El bloque llama a esta funcion, que en el script real vive
+        # mas arriba y ademas rearranca las tareas programadas. Aqui
+        # se sustituye por su parte de archivos: las tareas las
+        # comprueba test_instalador_no_deja_el_equipo_peor, que
+        # ejecuta la fase entera.
+        'function Restaurar-Lo-Que-Habia {',
+        '    if ((Test-Path $RespaldoAgent) -and -not (Test-Path $AgentDir)) {',
+        '        Move-Item -Path $RespaldoAgent -Destination $AgentDir -Force',
+        '        Write-Host "  programa anterior repuesto"',
+        '    }',
+        '}',
         ""
     ])
 
@@ -305,7 +327,7 @@ comprobar(
 
 comprobar(
     "se dice en pantalla que se repuso",
-    "repuesto el programa anterior" in salida
+    "programa anterior repuesto" in salida
 )
 
 comprobar(

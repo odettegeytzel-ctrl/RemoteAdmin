@@ -44,6 +44,7 @@ o, sin empaquetar:
 """
 
 import atexit
+import io
 import json
 import os
 import socket
@@ -81,6 +82,84 @@ IDENTITY_FILE = os.path.join(INSTALL_DIR, "config", "identity.json")
 REGISTRO_INSTALACION = os.path.join(
     os.environ.get("ProgramData", r"C:\ProgramData"), "VEYRA-instalacion.log"
 )
+
+# Las frases con las que install-agent.ps1 se detiene a proposito.
+# Cuando una de estas aparece en el registro, ES el motivo, y
+# mostrarla ahorra tener que ir al equipo a abrir un archivo.
+#
+# No se busca "error" a secas: el registro de PowerShell lleva lineas
+# con esa palabra que no son la causa, y enseñar la equivocada manda
+# a quien la lee a mirar donde no es.
+MOTIVOS_CONOCIDOS = (
+    "Ejecuta PowerShell como administrador",
+    "No se encontro agent\\agent.py",
+    "No se encontro python.exe en el runtime",
+    "No se encontro Python.",
+    "No se sabe a que servidor conectar",
+    "La direccion del servidor debe empezar por",
+    "El archivo de la credencial",
+    "La ruta de la credencial",
+    "Identidad de otro servidor",
+    "El servidor no reconoce la identidad",
+    "No se pudo comprobar la identidad",
+    "Sin credencial de instalacion",
+    "Esa no parece una credencial de instalacion",
+    "El Agent sigue en ejecucion",
+    "No se pudo copiar el entorno de ejecucion",
+    "El entorno de ejecucion copiado no puede importar",
+    "Fallo la instalacion de dependencias",
+)
+
+
+def motivo_del_fallo(registro=None, maximo=6):
+    """
+    Por que fallo, en palabras, leido del registro de la instalacion.
+
+    Antes la ventana decia "codigo 1" y remitia a un archivo. Quien
+    instala en el equipo de un cliente no siempre puede abrirlo, y el
+    que diagnostica no esta delante. Un codigo de salida sin motivo
+    obliga a ir a la maquina para saber algo que el programa ya sabe.
+
+    Se devuelven las ultimas lineas utiles, no el archivo entero: el
+    registro acumula todos los intentos y el que importa es el ultimo.
+    """
+
+    ruta = registro or REGISTRO_INSTALACION
+
+    try:
+        with io.open(ruta, encoding="utf-8", errors="replace") as archivo:
+            lineas = archivo.read().splitlines()
+
+    except OSError:
+        return (
+            "No se pudo leer el registro de la instalacion.\n"
+            "Puede que una directiva del equipo impida crearlo."
+        )
+
+    # Solo el ultimo intento: el archivo se abre en modo anadir.
+    for i in range(len(lineas) - 1, -1, -1):
+        if "Inicio de la transcripci" in lineas[i]:
+            lineas = lineas[i:]
+            break
+
+    for frase in MOTIVOS_CONOCIDOS:
+        for linea in reversed(lineas):
+            if frase in linea:
+                return linea.strip()
+
+    # Ninguna conocida: se enseñan las ultimas lineas con contenido,
+    # que es mejor que no decir nada.
+    utiles = [
+        l.strip() for l in lineas
+        if l.strip() and not l.strip().startswith("+")
+        and "transcripci" not in l
+    ]
+
+    if not utiles:
+        return "El registro no dice nada. Es un fallo sin mensaje."
+
+    return "\n".join(utiles[-maximo:])
+
 
 TAREA_SERVICIO = "RemoteAdminAgent"
 
@@ -525,8 +604,9 @@ def instalar(url, credencial, registrar):
 
         if codigo != 0:
             return False, (
-                f"La instalacion termino con errores (codigo {codigo})."
-                "\n\nEl motivo esta al final de este archivo:\n"
+                f"La instalacion termino con errores (codigo {codigo}).\n\n"
+                + motivo_del_fallo()
+                + "\n\nRegistro completo:\n"
                 + REGISTRO_INSTALACION
             )
 
