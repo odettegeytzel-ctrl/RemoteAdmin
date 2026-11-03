@@ -522,20 +522,47 @@ class RecordingScheduler:
         """
         Si ahora mismo deberia estar grabando, y por que motivo.
 
-        El horario manda cuando esta activo: la continua se limita a
-        sus franjas. Quien configura "lunes a viernes de 9 a 17" no
-        quiere que se grabe el domingo de madrugada.
+        Son dos cosas, no una:
+
+            la grabacion continua   EL INTERRUPTOR: si se graba
+            el horario              LAS HORAS: cuando
+
+        Apagado el interruptor no se graba, haya horario o no. Es lo
+        que permite suspender un equipo a media mañana sin borrarle
+        la configuracion, y volver a encenderlo media hora despues
+        para que siga cumpliendo su horario desde ese punto.
+
+        Quien configura "lunes a viernes de 8 a 17" no quiere que se
+        grabe el domingo de madrugada, asi que con horario activo la
+        captura se limita a sus franjas.
+
+        Como era antes y por que cambio
+        -------------------------------
+
+        El horario mandaba por encima del interruptor: con un horario
+        puesto se grababa aunque la continua estuviera apagada, y la
+        continua solo servia en los equipos SIN horario. El panel
+        acababa enseñando "Grabacion continua: DESACTIVADA" al lado
+        de "GRABANDO", cada rotulo hablando de una cosa distinta, y
+        no habia forma de parar la grabacion del dia sin borrar el
+        horario.
+
+        Por eso tampoco quedan dos motivos: lo que graba a sus horas
+        es la continua. 'programada' ya no se usa como fuente.
         """
 
-        if franja is not None:
-            return True, "programada"
+        if not self._continuo:
+            return False, None
 
-        # Sin horario activo, la continua graba siempre. Con horario
-        # activo y fuera de franja, no: manda el horario.
-        if self._continuo and not self.horario.get("enabled"):
+        if self.horario.get("enabled"):
+
+            if franja is None:
+                return False, None
+
             return True, "continua"
 
-        return False, None
+        # Sin horario, el interruptor solo: graba siempre.
+        return True, "continua"
 
     def estado(self, ahora=None):
         """

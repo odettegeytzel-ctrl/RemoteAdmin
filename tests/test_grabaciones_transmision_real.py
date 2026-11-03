@@ -855,6 +855,64 @@ def test_un_agente_antiguo_no_da_un_falso_error_de_archivo():
               f"{tardanza:.1f}s")
 
 
+def test_una_grabacion_vacia_no_se_presenta_como_un_corte_de_red():
+    """
+    El mensaje que mandaba a buscar una averia que no existia.
+
+    Un MP4 de doscientos y pico bytes -solo la cabecera, sin un
+    fotograma dentro- lo produce un equipo que abrio el archivo y no
+    llego a capturar nada. El panel lo trataba asi:
+
+      1. la sonda pide UN byte (Range: bytes=0-0) y el equipo se lo
+         manda sin problema, porque el archivo existe;
+      2. el <video> carga los 261 bytes, no encuentra nada que
+         decodificar y dispara onerror;
+      3. el panel escribe "Se interrumpio la transmision desde el
+         equipo".
+
+    La transmision habia funcionado perfectamente. Buscar el corte
+    de red que ese mensaje anuncia cuesta una tarde y no lleva a
+    ninguna parte.
+    """
+
+    JS = io.open(
+        RAIZ / "frontend" / "app.js", encoding="utf-8"
+    ).read()
+
+    comprobar("El panel sabe reconocer una grabacion sin contenido",
+              "function grabacionSinContenido(" in JS)
+
+    comprobar("Y lo mira ANTES de intentar reproducirla",
+              JS.index("grabacionSinContenido(rec)")
+              < JS.index("const sonda ="),
+              "se comprueba despues de pedir el video")
+
+    comprobar("Lo dice con sus palabras",
+              "Esta grabación está vacía" in JS)
+
+    comprobar("Y descarta expresamente la causa equivocada",
+              "No es un problema de conexión." in JS)
+
+    # Y si aun asi falla la reproduccion, no se afirma lo que no
+    # consta: se dicen las dos posibilidades.
+    comprobar("Ya no se culpa a la transmision a ciegas",
+              '"Se interrumpió la transmisión desde el equipo."' not in JS)
+
+    comprobar("Se nombra primero el archivo danado",
+              "el archivo está dañado" in JS)
+
+    # El umbral: un segundo de pantalla ocupa decenas de kB, asi que
+    # por debajo de 10 kB no hay video posible. Lo que no puede
+    # pasar es que una ficha SIN tamano se de por vacia: eso es "no
+    # se sabe", y dar por vacia una grabacion buena seria peor que
+    # el fallo que se arregla.
+    bloque = JS.split("function grabacionSinContenido(", 1)[1][:900]
+
+    comprobar("Una ficha sin tamano no se da por vacia",
+              "tamano > 0" in bloque,
+              bloque[:200].replace(chr(10), " | "))
+
+
 def test_el_catalogo_real_encuentra_los_videos():
 
     fichas_locales = AGENTE.local_recordings_catalog()
@@ -905,6 +963,7 @@ def main():
         test_reproducir_no_sube_ni_copia,
         test_conservar_sigue_funcionando,
         test_un_agente_antiguo_no_da_un_falso_error_de_archivo,
+        test_una_grabacion_vacia_no_se_presenta_como_un_corte_de_red,
         test_el_catalogo_real_encuentra_los_videos
     ]
 

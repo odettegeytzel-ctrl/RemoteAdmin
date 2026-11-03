@@ -69,28 +69,17 @@ async function guardarNombreDelEquipo(alias) {
 
     try {
 
-        const respuesta =
-            await fetch(
-                `/api/devices/${selectedDevice.device_id}/alias`,
-                {
-                    method: "PUT",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ alias: alias })
-                }
-            );
+        const guardado =
+            await pedirCambioDeNombre(selectedDevice.device_id, alias);
 
-        const datos =
-            await respuesta.json().catch(() => ({}));
+        if (guardado.error) {
 
-        if (!respuesta.ok) {
-
-            mensajeDeAlias(
-                datos.message || "No se pudo guardar el nombre.",
-                true
-            );
+            mensajeDeAlias(guardado.error, true);
 
             return;
         }
+
+        const datos = { alias: guardado.alias };
 
         // Se refresca en memoria y en pantalla sin recargar la
         // pagina entera: cambiar un texto de una linea no justifica
@@ -209,6 +198,195 @@ function nombreRealSiHayAlias(equipo) {
 
     return equipo.hostname || "";
 }
+
+
+/* ==============================
+CAMBIAR EL NOMBRE DESDE LA LISTA
+============================== */
+
+// La peticion, en un solo sitio.
+//
+// La hacen dos pantallas -la ficha del equipo y la lista- y conviene
+// que fallen igual: si cada una interpreta la respuesta a su manera,
+// una acaba diciendo "guardado" sobre un nombre que el servidor
+// rechazo.
+//
+// Devuelve {alias} si fue bien y {error} si no. No lanza: quien
+// llama siempre tiene que pintar algo, y una excepcion suelta en un
+// manejador de eventos no la ve nadie.
+async function pedirCambioDeNombre(deviceId, alias) {
+
+    try {
+
+        const respuesta =
+            await fetch(
+                `/api/devices/${deviceId}/alias`,
+                {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ alias: alias })
+                }
+            );
+
+        const datos =
+            await respuesta.json().catch(() => ({}));
+
+        if (!respuesta.ok) {
+
+            return {
+                error: datos.message || "No se pudo guardar el nombre."
+            };
+        }
+
+        return { alias: datos.alias || null };
+
+    } catch (problema) {
+
+        return { error: "No se pudo guardar el nombre." };
+    }
+}
+
+
+// Convierte el nombre de una fila en un campo de texto.
+//
+// Entra con doble clic, no con uno solo: la fila entera abre la
+// ficha del equipo, y un clic simple que a veces abre la ficha y a
+// veces pone a escribir seria imposible de predecir.
+//
+// Enter guarda, Escape cancela, y salir del campo tambien guarda,
+// que es lo que espera quien se va a pinchar a otro sitio.
+function editarNombreEnLaLista(celda, device) {
+
+    // Ya se esta editando esta fila
+    if (celda.dataset.editando === "si") {
+        return;
+    }
+
+    celda.dataset.editando = "si";
+
+    const anterior = celda.textContent;
+
+    const campo = document.createElement("input");
+
+    campo.type = "text";
+    campo.value = device.alias || "";
+    campo.placeholder = device.hostname || "";
+    // El mismo tope que el campo de la ficha y que el servidor
+    // (ALIAS_MAXIMO). Cortar aqui evita teclear sesenta caracteres
+    // de mas para que luego los rechacen.
+    campo.maxLength = 60;
+
+    campo.className =
+        "w-full px-1 py-0.5 border border-slate-300 rounded "
+        + "text-sm font-medium text-slate-900";
+
+    // Dentro del campo, el raton y el teclado son suyos: sin esto,
+    // pinchar para colocar el cursor abriria la ficha del equipo.
+    campo.addEventListener("click", (evento) => evento.stopPropagation());
+    campo.addEventListener("dblclick", (evento) => evento.stopPropagation());
+
+    let cerrado = false;
+
+    function restaurar(texto) {
+
+        if (cerrado) {
+            return;
+        }
+
+        cerrado = true;
+
+        celda.textContent = texto;
+        celda.dataset.editando = "no";
+    }
+
+    async function guardar() {
+
+        if (cerrado) {
+            return;
+        }
+
+        const escrito = campo.value;
+
+        // Sin cambios: no se molesta al servidor ni se escribe en la
+        // auditoria por haber entrado a mirar.
+        if (escrito.trim() === (device.alias || "").trim()) {
+            restaurar(anterior);
+            return;
+        }
+
+        campo.disabled = true;
+
+        const resultado =
+            await pedirCambioDeNombre(device.device_id, escrito);
+
+        if (resultado.error) {
+
+            // Se deja el campo abierto con lo que se escribio: si se
+            // cerrara, quien puso un nombre largo tendria que
+            // volver a teclearlo entero para corregirlo.
+            campo.disabled = false;
+            campo.classList.add("border-red-400");
+
+            let queja = celda.querySelector("[data-queja]");
+
+            if (!queja) {
+                queja = document.createElement("p");
+                queja.dataset.queja = "si";
+                queja.className = "text-xs text-red-600 mt-1";
+                celda.appendChild(queja);
+            }
+
+            queja.textContent = resultado.error;
+
+            campo.focus();
+
+            return;
+        }
+
+        device.alias = resultado.alias;
+
+        restaurar(nombreDeEquipo(device));
+
+        // Y se repinta la lista, para que la linea del nombre de
+        // Windows aparezca o desaparezca segun haya alias o no.
+        loadDevices();
+    }
+
+    campo.addEventListener("keydown", (evento) => {
+
+        evento.stopPropagation();
+
+        if (evento.key === "Enter") {
+            evento.preventDefault();
+            guardar();
+        }
+
+        if (evento.key === "Escape") {
+            evento.preventDefault();
+            restaurar(anterior);
+        }
+    });
+
+    // Salir del campo guarda, salvo que el servidor ya haya
+    // rechazado el nombre: ahi irse es rendirse. Reintentar lo mismo
+    // en cada clic solo repetiria el mismo error.
+    campo.addEventListener("blur", () => {
+
+        if (celda.querySelector("[data-queja]")) {
+            restaurar(anterior);
+            return;
+        }
+
+        guardar();
+    });
+
+    celda.textContent = "";
+    celda.appendChild(campo);
+
+    campo.focus();
+    campo.select();
+}
+
 
 /* ==============================
 ICONOS
@@ -1378,13 +1556,12 @@ table.innerHTML = "";
             <td class="px-6 py-4">
                 <div>
                     <p class="font-medium text-slate-900">
-                        ${nombreDeEquipo(device)}${recordingBadge}
+                        <span data-nombre></span>${recordingBadge}
                     </p>
 
                     ${nombreRealSiHayAlias(device)
-                        ? `<p class="text-xs text-slate-500 mt-0.5">
-                               ${nombreRealSiHayAlias(device)}
-                           </p>`
+                        ? `<p class="text-xs text-slate-500 mt-0.5"
+                               data-nombre-real></p>`
                         : ""}
 
                     <p class="text-xs text-slate-500 mt-1">
@@ -1430,9 +1607,62 @@ table.innerHTML = "";
             </td>
         `;
 
+        // Los nombres se ponen como TEXTO, no dentro del HTML de la
+        // plantilla.
+        //
+        // El alias lo escribe una persona y el hostname lo manda el
+        // equipo: ninguno de los dos es marcado de confianza. Al
+        // interpolarlos en innerHTML, un nombre con etiquetas se
+        // ejecutaba en el panel de todos los que abrieran la lista.
+        const celdaNombre = row.querySelector("[data-nombre]");
+
+        if (celdaNombre) {
+            celdaNombre.textContent = nombreDeEquipo(device);
+        }
+
+        const celdaNombreReal = row.querySelector("[data-nombre-real]");
+
+        if (celdaNombreReal) {
+            celdaNombreReal.textContent = nombreRealSiHayAlias(device);
+        }
+
+        // Renombrar es devices.manage, el mismo permiso que dar de
+        // baja un equipo. Sin el, el nombre se lee y no se toca.
+        if (celdaNombre && puede("devices.manage")) {
+
+            celdaNombre.title = "Doble clic para cambiar el nombre";
+            celdaNombre.className = "cursor-text hover:underline "
+                + "decoration-dotted decoration-slate-400";
+
+            // Un clic sobre el nombre no abre la ficha.
+            //
+            // Hace falta porque el doble clic manda ANTES dos clics
+            // sueltos: sin frenarlos, empezar a renombrar cambiaba
+            // de pantalla y el campo recien abierto desaparecia. El
+            // resto de la fila sigue abriendo la ficha.
+            celdaNombre.addEventListener(
+                "click",
+                (evento) => evento.stopPropagation()
+            );
+
+            celdaNombre.addEventListener("dblclick", (evento) => {
+                evento.stopPropagation();
+                editarNombreEnLaLista(celdaNombre, device);
+            });
+        }
+
         row.addEventListener(
             "click",
-            () => showDeviceDetails(device)
+            () => {
+
+                // Mientras se escribe el nombre, la fila no abre la
+                // ficha: el clic es para el campo.
+                if (celdaNombre && celdaNombre.dataset.editando === "si") {
+                    return;
+                }
+
+                showDeviceDetails(device);
+            }
         );
 
         table.appendChild(row);
@@ -1630,6 +1860,14 @@ try {
 
     allDevices =
         await response.json();
+
+    // La sesion, antes de pintar: la lista decide con ella si el
+    // nombre se puede editar. Sin esperarla, la primera carga -la
+    // unica que ve quien entra- saldria siempre sin esa opcion.
+    // Si la sesion no carga no se cae el listado: se pinta sin la
+    // opcion de renombrar, que es lo prudente cuando no se sabe que
+    // permisos hay.
+    await asegurarSesion().catch(() => null);
 
     lastDevicesOkAt = Date.now();
 
@@ -3409,6 +3647,11 @@ function formatContinuousTime(iso) {
 // El estado del Agent trae "recording_source": quien sostiene la
 // grabacion. Antes solo decia SI se grababa, y el panel encendia el
 // control manual tambien cuando quien grababa era la programacion.
+//
+// 'programada' ya no la manda ningun Agent al dia: lo que graba a
+// sus horas es la continua, y el horario solo dice cuando. Se deja
+// el rotulo porque un equipo todavia sin actualizar la sigue
+// enviando, y sin el aparecerian como "Grabando" a secas.
 const ORIGEN_DE_LA_GRABACION = {
     manual: "Grabando",
     programada: "Grabando (programada)",
@@ -3442,20 +3685,20 @@ try {
 
     const stateEl = document.getElementById("continuous-state");
 
-    // Este rotulo es el INTERRUPTOR, no lo que esta pasando ahora.
+    // Este rotulo es el INTERRUPTOR: si el equipo graba o no.
     //
-    // Con un horario activo manda el horario: la continua se limita a
-    // sus franjas cuando esta encendida, y cuando esta apagada el
-    // horario graba igual. Sin decirlo, el panel mostraba
-    // "DESACTIVADA" junto a "GRABANDO (PROGRAMADA)" y parecia que se
-    // contradecian, cuando cada uno hablaba de una cosa distinta.
+    // El horario son sus HORAS, no otra forma de grabar. Apagado no
+    // se graba, haya horario o no; encendido, se graba en las horas
+    // que tenga puestas, o siempre si no tiene ninguna.
+    //
+    // Antes el horario mandaba por encima del interruptor, y el
+    // panel acababa enseñando "DESACTIVADA" al lado de "GRABANDO",
+    // cada rotulo hablando de una cosa distinta.
     const stateText = enabled
         ? (data.schedule_enabled
-            ? "ACTIVADA (dentro del horario)"
+            ? "ACTIVADA (en su horario)"
             : "ACTIVADA")
-        : (data.schedule_enabled
-            ? "DESACTIVADA (el horario manda)"
-            : "DESACTIVADA");
+        : "DESACTIVADA";
 
     // Solo escribe si cambió (evita reflow/parpadeo en cada ciclo del polling)
     if (stateEl.textContent !== stateText) {
@@ -3582,11 +3825,29 @@ GRABACION DEL DISPOSITIVO
 // con el clic del usuario).
 let lastRecordingUIState = null;
 
-function setRecordingUI(recording, origen) {
+// Los botones de grabar y detener son los del TROZO MANUAL.
+//
+// 'manual' dice si hay uno en marcha; 'recording' y 'origen' son de
+// la captura en general, y solo sirven para el indicador.
+//
+// Antes estos botones miraban 'recording', asi que en cuanto el
+// horario empezaba la jornada el boton pasaba a "Detener
+// grabacion": ofrecia parar algo que el no habia arrancado, y
+// pararlo dejaba al equipo sin grabar el resto del dia. Son dos
+// grabaciones distintas y cada boton habla de la suya.
+function setRecordingUI(recording, origen, manual) {
 
 recording = Boolean(recording);
 
-const clave = recording + "|" + (origen || "");
+// Un Agent sin actualizar no manda 'manual_recording'. Ahi se cae
+// al comportamiento de antes, que es lo unico que ese equipo sabe
+// hacer, en vez de dejar los dos botones escondidos.
+const hayTrozoManual =
+    manual === undefined || manual === null
+        ? recording
+        : Boolean(manual);
+
+const clave = recording + "|" + (origen || "") + "|" + hayTrozoManual;
 
 if (lastRecordingUIState === clave) {
     return;
@@ -3607,12 +3868,15 @@ if (!startButton || !stopButton || !indicator) {
 
 lastRecordingUIState = clave;
 
-startButton.classList.toggle("hidden", recording);
+startButton.classList.toggle("hidden", hayTrozoManual);
 
-// "Detener" sigue disponible sea cual sea el origen: una persona
-// tiene que poder cortar una grabacion programada sin ir a
-// desactivar la programacion entera.
-stopButton.classList.toggle("hidden", !recording);
+// "Detener" solo cuando hay un trozo manual que detener. La
+// grabacion del dia no se para desde aqui: se para apagando la
+// grabacion continua, que es su interruptor.
+stopButton.classList.toggle("hidden", !hayTrozoManual);
+
+// El indicador, en cambio, habla de la captura entera: si el equipo
+// esta grabando, se ve, lo haya pedido quien lo haya pedido.
 indicator.classList.toggle("hidden", !recording);
 
 // El indicador dice QUE la sostiene. Con textContent, que el origen
@@ -3648,7 +3912,11 @@ try {
         await response.json();
 
     // Solo se actualizan los botones si el estado cambió (sin parpadeo)
-    setRecordingUI(Boolean(data.recording), data.recording_source);
+    setRecordingUI(
+        Boolean(data.recording),
+        data.recording_source,
+        data.manual_recording
+    );
 
     // La misma respuesta sirve para el punto de la tabla: el equipo abierto
     // queda siempre al día sin pedir nada adicional.
@@ -3703,7 +3971,9 @@ try {
         statusElement.className =
             "px-4 py-3 rounded-lg text-sm bg-emerald-50 text-emerald-700";
 
-        setRecordingUI(true);
+        // Optimista, mientras llega la confirmacion del equipo:
+        // lo que acaba de empezar es el trozo manual.
+        setRecordingUI(true, "manual", true);
 
         // El punto de la tabla se enciende sin esperar al barrido
         setRecordingIndicator(selectedDevice.device_id, true);
@@ -3771,7 +4041,10 @@ try {
         statusElement.className =
             "px-4 py-3 rounded-lg text-sm bg-emerald-50 text-emerald-700";
 
-        setRecordingUI(false);
+        // Se para el trozo manual. Si la jornada sigue, el
+        // estado real que llega en un segundo lo corrige: el
+        // indicador volvera a encenderse.
+        setRecordingUI(false, null, false);
 
         // El punto de la tabla se apaga sin esperar al barrido
         setRecordingIndicator(selectedDevice.device_id, false);
@@ -6333,9 +6606,30 @@ try {
         );
 
     if (!response.ok) {
-        throw new Error(
-            "No se pudo iniciar el remoto"
-        );
+
+        // El motivo que da el servidor, donde se pueda leer.
+        //
+        // Esto acababa en console.error y la ventana remota ni se
+        // abria: desde fuera, pulsar "Control remoto" no hacia
+        // NADA. El caso corriente -nadie con la sesion iniciada en
+        // el equipo- se diagnostica solo si se dice.
+        const datos =
+            await response.json().catch(() => ({}));
+
+        const aviso = document.getElementById("action-status");
+
+        if (aviso) {
+
+            aviso.textContent =
+                datos.message || "No se pudo iniciar el control remoto.";
+
+            aviso.className =
+                "px-4 py-3 rounded-lg text-sm bg-amber-50 text-amber-800";
+
+            aviso.classList.remove("hidden");
+        }
+
+        return;
     }
 
     remoteScreen.classList.remove(
@@ -6496,7 +6790,22 @@ async function pedirMantenimiento(encendido) {
             }
         );
 
-    return respuesta.ok;
+    if (respuesta.ok) {
+        return { bien: true };
+    }
+
+    // El motivo que da el servidor, no uno inventado aqui.
+    //
+    // El caso que importa es "nadie tiene la sesion iniciada": sin
+    // escritorio no hay donde pintar el aviso, y decir solo "no se
+    // pudo" manda al tecnico a buscar una averia que no existe.
+    const datos =
+        await respuesta.json().catch(() => ({}));
+
+    return {
+        bien: false,
+        motivo: datos.message || "No se pudo cambiar el aviso"
+    };
 }
 
 
@@ -6540,13 +6849,14 @@ async function alternarMantenimiento() {
 
     try {
 
-        const bien = await pedirMantenimiento(queremos);
+        const resultado = await pedirMantenimiento(queremos);
 
-        if (!bien) {
+        if (!resultado || !resultado.bien) {
 
             if (estado) {
                 estado.textContent =
-                    "No se pudo cambiar el aviso";
+                    (resultado && resultado.motivo)
+                    || "No se pudo cambiar el aviso";
             }
 
             return;
@@ -6573,7 +6883,31 @@ async function alternarMantenimiento() {
 
             mantenimientoTemporizador =
                 setInterval(
-                    () => pedirMantenimiento(true),
+                    async () => {
+
+                        const renovado = await pedirMantenimiento(true);
+
+                        if (renovado && renovado.bien) {
+                            return;
+                        }
+
+                        // Dejo de poder renovarlo: lo normal es que
+                        // el usuario haya cerrado sesion, y entonces
+                        // el aviso ya no esta en ninguna pantalla.
+                        // Seguir pintando "Aviso mostrado" seria
+                        // mentir.
+                        mantenimientoActivo = false;
+
+                        detenerRenovacionDeMantenimiento();
+
+                        pintarMantenimiento();
+
+                        if (estado) {
+                            estado.textContent =
+                                (renovado && renovado.motivo)
+                                || "El aviso ya no esta puesto";
+                        }
+                    },
                     MANTENIMIENTO_RENUEVA_MS
                 );
         }
@@ -9775,6 +10109,29 @@ title.textContent = rec
 player.classList.remove("hidden");
 player.scrollIntoView({ behavior: "smooth", block: "nearest" });
 
+// Una grabación vacía se dice antes de intentar nada.
+//
+// La sonda de aquí abajo pide UN byte, así que un archivo roto de
+// 261 bytes la pasa sin problema; luego el <video> se traga el
+// archivo entero, no encuentra un MP4 que decodificar y dispara
+// onerror. El panel acababa diciendo "se interrumpió la transmisión
+// desde el equipo", que es falso: la transmisión fue perfecta y lo
+// que no hay es vídeo dentro.
+//
+// Mandar a alguien a buscar una avería de red que no existe cuesta
+// una tarde. Se mira la ficha, que ya dice lo que pesa y lo que
+// dura, y se cuenta lo que pasa de verdad.
+if (rec && grabacionSinContenido(rec)) {
+
+    mostrarErrorDeReproduccion(
+        "Esta grabación está vacía: el equipo no llegó a capturar "
+        + "nada. No es un problema de conexión.",
+        "aviso"
+    );
+
+    return;
+}
+
 // Antes de pedir el vídeo se comprueba que el origen responde. Así
 // la causa real —equipo desconectado, archivo borrado, sin permiso—
 // llega como texto legible en vez de convertirse en el "No se pudo
@@ -9833,9 +10190,18 @@ if (grabacionEnReproduccion !== id) {
 video.src = origen;
 
 video.onerror = () => {
+
+    // No se culpa a la transmisión sin saberlo.
+    //
+    // Hasta aquí se ha llegado con el origen respondiendo bien, así
+    // que lo mas probable no es que se cortara nada: es que el
+    // archivo no se puede reproducir. Se dicen las dos
+    // posibilidades, en ese orden, en vez de afirmar la que no
+    // consta.
     mostrarErrorDeReproduccion(
         desdeElEquipo
-            ? "Se interrumpió la transmisión desde el equipo."
+            ? "No se pudo reproducir: el archivo está dañado o la "
+              + "transmisión desde el equipo se cortó."
             : "No se pudo reproducir la grabación."
     );
 };
@@ -9951,6 +10317,43 @@ function textoDeFecha(iso) {
     }
 
     return `${partes.date} ${partes.time}`;
+}
+
+
+// Una grabación que no tiene vídeo dentro.
+//
+// Pasa cuando el equipo abrió el archivo y no llegó a capturar
+// nada: queda un MP4 de doscientos y pico bytes -solo la cabecera-
+// que ningún reproductor puede abrir. Durante semanas el panel
+// presentó eso como un corte de red.
+//
+// El umbral es generoso a propósito. Un segundo de pantalla ocupa
+// decenas de kilobytes, así que por debajo de diez mil bytes no hay
+// video posible; y se exige que el tamaño conste, porque una ficha
+// sin tamaño es "no se sabe", no "está vacía".
+const TAMANO_MINIMO_DE_UN_VIDEO = 10 * 1024;
+
+function grabacionSinContenido(grabacion) {
+
+    if (!grabacion) {
+        return false;
+    }
+
+    const duracion = Number(grabacion.duration_sec);
+    const tamano = Number(grabacion.size_bytes);
+
+    if (Number.isFinite(tamano) && tamano > 0
+            && tamano < TAMANO_MINIMO_DE_UN_VIDEO) {
+        return true;
+    }
+
+    // Cero segundos CON un tamaño conocido y ridículo ya está
+    // cubierto arriba. Aquí se cubre el caso contrario: duración
+    // cero declarada, que es lo que escribe el grabador cuando no
+    // consiguió ni un fotograma.
+    return Number.isFinite(duracion) && duracion === 0
+        && Number.isFinite(tamano) && tamano > 0
+        && tamano < TAMANO_MINIMO_DE_UN_VIDEO * 10;
 }
 
 

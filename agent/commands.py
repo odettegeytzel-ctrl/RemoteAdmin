@@ -85,6 +85,7 @@ BACKGROUND_PREFIXES_EXPECTED = (
     "get_processes:",
     "get_services:",
 
+
     # Ver una grabacion que sigue en el equipo. Lee un archivo del
     # disco: no necesita escritorio, y debe funcionar aunque nadie
     # tenga la sesion iniciada.

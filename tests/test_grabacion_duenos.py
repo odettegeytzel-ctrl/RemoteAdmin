@@ -42,7 +42,28 @@ sys.path.insert(0, str(RAIZ / "agent"))
 
 import owners  # noqa: E402
 
-from scheduler import RecordingScheduler  # noqa: E402
+from scheduler import RecordingScheduler as _Planificador  # noqa: E402
+
+
+def RecordingScheduler(horario=None):
+    """
+    Un planificador con el interruptor general encendido.
+
+    La grabacion continua paso a ser EL INTERRUPTOR -si el equipo
+    graba- y el horario solo SUS HORAS -cuando-. Antes el horario
+    mandaba por encima, y un equipo con horario grababa aunque la
+    continua estuviera apagada.
+
+    Este archivo prueba el reparto entre DUEÑOS, que es otra cosa,
+    asi que parte del interruptor encendido: sin el no habria nada
+    que repartir. Que apagado no se grabe se comprueba en
+    test_interruptor_general.
+    """
+
+    planificador = _Planificador(horario)
+    planificador.set_continuous(True)
+
+    return planificador
 
 
 AGENTE = io.open(RAIZ / "agent" / "agent.py", encoding="utf-8").read()
@@ -368,7 +389,7 @@ def test_matriz_completa():
     aplicar_horario(plan, d, cap, momento(13, 10))
 
     comprobar("Dentro + sin manual: solo continua",
-              d.activos() == (owners.PROGRAMADA,) and cap.corriendo,
+              d.activos() == (owners.CONTINUA,) and cap.corriendo,
               str(d.activos()))
 
     comprobar("Y una sola captura", cap.arranques == 1)
@@ -377,7 +398,7 @@ def test_matriz_completa():
     manual(d, cap, True, momento(13, 10, 30))
 
     comprobar("Dentro + iniciar manual: AMBAS activas",
-              d.activos() == (owners.MANUAL, owners.PROGRAMADA),
+              d.activos() == (owners.MANUAL, owners.CONTINUA),
               str(d.activos()))
 
     comprobar("Sin arrancar una segunda captura",
@@ -387,7 +408,7 @@ def test_matriz_completa():
     manual(d, cap, False, momento(13, 11))
 
     comprobar("Detener manual: la continua SIGUE",
-              cap.corriendo and d.activos() == (owners.PROGRAMADA,),
+              cap.corriendo and d.activos() == (owners.CONTINUA,),
               str(d.activos()))
 
     comprobar("Y no se paro la captura",
@@ -442,7 +463,7 @@ def test_el_horario_toma_su_turno_con_una_manual_en_marcha():
     aplicar_horario(plan, d, cap, momento(13, 9, 0))
 
     comprobar("09:00 el horario TOMA su turno",
-              d.sostiene(owners.PROGRAMADA), str(d.activos()))
+              d.sostiene(owners.CONTINUA), str(d.activos()))
 
     comprobar("Sin arrancar una segunda captura",
               cap.arranques == 1, "arranques: %d" % cap.arranques)
@@ -450,7 +471,7 @@ def test_el_horario_toma_su_turno_con_una_manual_en_marcha():
     manual(d, cap, False, momento(13, 9, 30))
 
     comprobar("09:30 se para la manual y la programada SIGUE",
-              cap.corriendo and d.activos() == (owners.PROGRAMADA,),
+              cap.corriendo and d.activos() == (owners.CONTINUA,),
               str(d.activos()))
 
     comprobar("No se corto la captura",
@@ -473,7 +494,7 @@ def test_reconexion_y_reinicio_sin_duplicados():
     aplicar_horario(plan2, d2, cap2, momento(13, 10, 5))
 
     comprobar("Tras reiniciar, la programada vuelve a tomar su turno",
-              d2.sostiene(owners.PROGRAMADA))
+              d2.sostiene(owners.CONTINUA))
 
     comprobar("Una sola captura, no dos",
               cap2.arranques == 1, "arranques: %d" % cap2.arranques)

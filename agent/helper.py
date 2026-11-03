@@ -184,9 +184,16 @@ class Ayudante:
 
         elif orden == "start_recording":
             agente.start_screen_recording(manual=True)
+            agente.report_status_threadsafe()
 
         elif orden == "stop_recording":
             agente.stop_screen_recording(manual=True)
+
+            # El panel tiene que enterarse YA, no en el proximo
+            # segmento: entre uno y otro pasan quince minutos, y
+            # durante ese rato el boton seguiria diciendo
+            # "Detener grabacion" sobre algo ya detenido.
+            agente.report_status_threadsafe()
 
         elif orden.startswith("mouse_move:"):
             datos = json.loads(orden.split(":", 1)[1])
@@ -338,6 +345,17 @@ class Ayudante:
                 )
 
     def correr(self):
+
+        # Por aqui sale todo lo que el ayudante tenga que contar.
+        #
+        # El grabador, el catalogo de grabaciones locales y la franja
+        # suprimida avisan desde sus propios hilos, llamando a
+        # send_ws_threadsafe. En este proceso no hay WebSocket, asi
+        # que sin esto esas llamadas se iban sin hacer nada y el
+        # panel no se enteraba de nada de lo que pasa en el
+        # escritorio: ni de que se esta grabando, ni de que hay
+        # grabaciones guardadas en el equipo.
+        self.agente.registrar_emisor(self.mandar_al_servidor)
 
         intentos = 0
 

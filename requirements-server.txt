@@ -21,3 +21,16 @@ uvicorn==0.52.4
 # version que ya esta en uso: pip elegiria una mas nueva y el servidor
 # acabaria corriendo una pieza distinta de la que se ha probado.
 starlette==1.6.0
+
+# Base de zonas horarias para zoneinfo.
+#
+# Hace falta para agrupar las grabaciones por dia: el dia se corta en
+# la hora DEL EQUIPO, y una jornada mexicana de 8 a 17 cae a caballo
+# de dos fechas UTC. Sin esto, ZoneInfo("America/Mexico_City") lanza
+# ZoneInfoNotFoundError y la agrupacion se va a UTC sin avisar.
+#
+# En Linux suele estar la base del sistema y funciona igual sin el
+# paquete; en Windows NO la hay, y el servidor tambien corre en
+# Windows para desarrollo. Se fija aqui para que el resultado sea el
+# mismo en las dos, en vez de depender de lo que traiga la maquina.
+tzdata==2025.2

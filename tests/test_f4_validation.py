@@ -416,7 +416,22 @@ def pruebas_endpoint():
         invalidas = rec.list_invalid_recordings()
 
         estados = {l["status"] for l in listado}
-        comprobar("el listado solo trae 'stored'", estados == {"stored"})
+        # Lo que NO debe aparecer es 'invalid'. Que ademas salga
+        # 'local' es correcto y deliberado: desde el cambio de
+        # modelo, las grabaciones se quedan en el equipo y el panel
+        # tiene que poder ensenarlas y ofrecer archivarlas.
+        #
+        # Esta comprobacion se escribio cuando todas las grabaciones
+        # vivian en el servidor, y se quedo exigiendo solo 'stored'.
+        # Fallaba desde entonces, marcando en rojo un listado
+        # perfectamente correcto.
+        comprobar("el listado no trae ninguna invalida",
+                  "invalid" not in estados)
+
+        comprobar("y solo trae estados que deben verse",
+                  estados <= {"stored", "local"})
+
+        print(f"        estados en el listado: {sorted(estados)}")
         comprobar("hay inválidas registradas aparte", len(invalidas) > 0)
         print(f"        listado normal: {len(listado)} | en cuarentena: {len(invalidas)}")
         comprobar("ninguna inválida se coló en el listado",

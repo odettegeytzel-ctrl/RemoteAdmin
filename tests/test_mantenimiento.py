@@ -443,6 +443,173 @@ def test_solo_quien_puede_controlar_puede_avisar():
               "respondio %d" % fuera.status_code)
 
 
+def test_sin_sesion_iniciada_se_dice_y_no_se_finge():
+    """
+    Un equipo encendido sin nadie dentro no puede enseñar el aviso.
+
+    El Agent va partido en dos: el servicio arranca con Windows, el
+    ayudante solo existe mientras hay un usuario con la sesion
+    abierta, y la ventana la pinta el ayudante. Sin sesion, el
+    servicio avisaba al servidor con 'interactive_unavailable:' y el
+    servidor NO ESCUCHABA ese mensaje: el panel respondia "ok" y el
+    tecnico se quedaba creyendo que el cliente veia un aviso que no
+    existia.
+    """
+
+    AGENTE = io.open(RAIZ / "agent" / "agent.py", encoding="utf-8").read()
+    SERVIDOR = io.open(RAIZ / "backend" / "main.py", encoding="utf-8").read()
+
+    # --- el equipo lo cuenta ---
+
+    comprobar("El Agent avisa de si hay sesion",
+              "def informar_sesion_interactiva(" in AGENTE)
+
+    comprobar("Al entrar el ayudante",
+              "informar_sesion_interactiva(True)" in AGENTE)
+
+    comprobar("Y al irse",
+              "informar_sesion_interactiva(False)" in AGENTE)
+
+    comprobar("Tambien al reconectar con el servidor",
+              '"interactive_session:" + json.dumps({' in AGENTE
+              and '"available": hay_sesion_interactiva()' in AGENTE)
+
+    # Lo de arriba importa porque lo normal es que el ayudante lleve
+    # horas conectado cuando se recupera una caida de red: sin
+    # repetirlo al conectar, el servidor se quedaria con lo ultimo
+    # que supo, que puede ser de hace dias.
+
+    # --- el servidor lo escucha ---
+
+    comprobar("El servidor atiende el estado de la sesion",
+              'message.startswith("interactive_session:")' in SERVIDOR)
+
+    comprobar("Y la orden que no se pudo entregar",
+              'message.startswith("interactive_unavailable:")' in SERVIDOR)
+
+    comprobar("Queda en la auditoria",
+              '"remote.sin_sesion"' in SERVIDOR)
+
+    comprobar("Se olvida al desconectar el equipo",
+              "interactive_sessions.pop(" in SERVIDOR)
+
+
+def test_ante_la_duda_el_equipo_antiguo_sigue_funcionando():
+    """
+    Un Agent anterior no manda el aviso nunca.
+
+    Si la ausencia se interpretara como "no hay sesion", añadir esta
+    comprobacion dejaria sin aviso de mantenimiento a TODOS los
+    equipos ya instalados. Por eso la duda se resuelve que si.
+    """
+
+    import backend.main as servidor
+
+    comprobar("Un equipo que nunca lo dijo cuenta como con sesion",
+              servidor.hay_sesion_interactiva("equipo-que-no-existe") is True)
+
+    servidor.interactive_sessions["equipo-sin-nadie"] = False
+
+    comprobar("Y uno que dijo que no, no",
+              servidor.hay_sesion_interactiva("equipo-sin-nadie") is False)
+
+    servidor.interactive_sessions["equipo-con-alguien"] = True
+
+    comprobar("Y uno que dijo que si, si",
+              servidor.hay_sesion_interactiva("equipo-con-alguien") is True)
+
+    servidor.interactive_sessions.pop("equipo-sin-nadie", None)
+    servidor.interactive_sessions.pop("equipo-con-alguien", None)
+
+
+def test_el_panel_dice_el_motivo_de_verdad():
+    """
+    "No se pudo cambiar el aviso" manda a buscar una averia que no
+    existe. "Nadie tiene la sesion iniciada" se arregla solo.
+    """
+
+    SERVIDOR = io.open(RAIZ / "backend" / "main.py", encoding="utf-8").read()
+
+    comprobar("El servidor no manda la orden si no hay sesion",
+              "if not hay_sesion_interactiva(device_id):" in SERVIDOR)
+
+    comprobar("Contesta 409 con un codigo que se puede mirar",
+              '"code": "sin_sesion_iniciada"' in SERVIDOR)
+
+    comprobar("Y explica por que",
+              "Nadie tiene la sesion iniciada en el equipo" in SERVIDOR)
+
+    peticion = JS.split("async function pedirMantenimiento(", 1)[1][:1800]
+
+    comprobar("El panel lee el motivo del servidor",
+              "datos.message" in peticion)
+
+    comprobar("No se inventa uno propio cuando lo hay",
+              "motivo: datos.message ||" in peticion)
+
+    comprobar("Y lo enseña en vez de 'no se pudo'",
+              "resultado.motivo" in JS)
+
+    # Y si deja de poder renovarse a mitad -el usuario cerro
+    # sesion-, el panel no puede seguir diciendo que el aviso esta
+    # puesto: ya no lo esta en ninguna pantalla.
+    comprobar("Si la renovacion falla, el boton se apaga",
+              "renovado.bien" in JS
+              and "mantenimientoActivo = false;" in JS)
+
+
+def test_el_control_remoto_tampoco_se_queda_en_negro():
+    """
+    El mismo agujero, en la pantalla remota.
+
+    La captura la hace el ayudante. Sin sesion iniciada el servidor
+    contestaba "sent" igual, el panel abria el rectangulo y se
+    quedaba esperando fotogramas que no iban a llegar: negro para
+    siempre y sin una palabra.
+
+    Es la peor forma de fallar, porque parece una averia del equipo
+    o de la red y no hay ninguna.
+    """
+
+    SERVIDOR = io.open(RAIZ / "backend" / "main.py", encoding="utf-8").read()
+
+    # Hasta el final de la funcion: la comprobacion va despues del
+    # permiso, de la auditoria y de mirar si el equipo esta
+    # conectado, asi que un recorte corto se la deja fuera.
+    pantalla = SERVIDOR.split(
+        'async def request_screen(', 1
+    )[1].split("\n@app.", 1)[0]
+
+    comprobar("No se manda la orden si no hay sesion",
+              "if not hay_sesion_interactiva(device_id):" in pantalla)
+
+    comprobar("Se contesta 409 con el mismo codigo que el aviso",
+              '"code": "sin_sesion_iniciada"' in pantalla)
+
+    # El texto va partido en dos lineas en el codigo fuente, asi que
+    # se busca el trozo que cabe entero en una.
+    comprobar("Y se explica que no hay pantalla que mostrar",
+              "hay pantalla que mostrar" in pantalla)
+
+    comprobar("Queda en la auditoria",
+              'details="Sin sesion iniciada en el equipo"' in pantalla)
+
+    # Y el panel lo enseña: antes esto iba a console.error, donde no
+    # lo ve nadie, y desde fuera el boton no hacia NADA.
+    remoto = JS.split("async function startRemoteDesktop(", 1)[1][:2600]
+
+    comprobar("El panel lee el motivo del servidor",
+              "datos.message" in remoto)
+
+    comprobar("Y lo enseña en pantalla, no en la consola",
+              'document.getElementById("action-status")' in remoto)
+
+    comprobar("Sin abrir la ventana remota en negro",
+              remoto.index("return;")
+              < remoto.index('remoteScreen.classList.remove'),
+              "se abre la ventana antes de rendirse")
+
+
 def test_el_aviso_no_se_pone_delante_de_lo_que_escribes():
     """
     La version anterior dejaba pasar TODOS los clics
@@ -637,7 +804,11 @@ def principal():
         test_se_lee_el_formato_anterior,
         test_la_orden_llega_al_escritorio,
         test_el_panel_lo_enciende_y_lo_renueva,
-        test_solo_quien_puede_controlar_puede_avisar
+        test_solo_quien_puede_controlar_puede_avisar,
+        test_sin_sesion_iniciada_se_dice_y_no_se_finge,
+        test_ante_la_duda_el_equipo_antiguo_sigue_funcionando,
+        test_el_panel_dice_el_motivo_de_verdad,
+        test_el_control_remoto_tampoco_se_queda_en_negro
     ]
 
     for prueba in pruebas:

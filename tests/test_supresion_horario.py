@@ -57,7 +57,32 @@ database.DATABASE_PATH = os.path.join(CARPETA, "prueba.db")
 from backend import devices as devices_mod  # noqa: E402
 
 import scheduler  # noqa: E402
-from scheduler import RecordingScheduler  # noqa: E402
+from scheduler import RecordingScheduler as _Planificador  # noqa: E402
+
+
+def RecordingScheduler(horario=None):
+    """
+    Un planificador con el interruptor general encendido.
+
+    La grabacion continua paso a ser EL INTERRUPTOR -si se graba- y
+    el horario solo SUS HORAS -cuando-. Antes el horario mandaba por
+    encima: con horario puesto se grababa aunque la continua
+    estuviera apagada.
+
+    El cambio es deliberado: hacia falta poder parar la grabacion de
+    un equipo a media mañana sin borrarle el horario, y que al
+    volver a encenderla siguiera cumpliendolo desde ese punto.
+
+    Este archivo prueba la SUPRESION manual, que es otra cosa, asi
+    que parte del interruptor encendido. Que un planificador con el
+    interruptor apagado no grabe se comprueba en
+    test_interruptor_general.
+    """
+
+    planificador = _Planificador(horario)
+    planificador.set_continuous(True)
+
+    return planificador
 
 
 resultados = []
@@ -75,6 +100,25 @@ LABORAL = {
     "timezone": "UTC",
 }
 
+# Un horario que SIEMPRE esta en franja.
+#
+# La seccion 9 entra por el camino real del Agent, y ese camino
+# -_aplicar_decision_del_horario()- consulta el RELOJ DE VERDAD:
+# no admite un instante de prueba. Con un horario de 8 a 17 de
+# lunes a viernes, esas comprobaciones salian verdes por la
+# mañana y rojas por la tarde, que es peor que no tenerlas.
+#
+# Los siete dias y el dia entero: asi la franja esta activa se
+# ejecute cuando se ejecute. Lo que ahi se prueba es el reparto
+# entre la jornada y el trozo manual, no a que hora empieza.
+SIEMPRE = {
+    "enabled": True,
+    "days": [0, 1, 2, 3, 4, 5, 6],
+    "start_time": "00:00",
+    "end_time": "23:59",
+    "timezone": "UTC",
+}
+
 
 def momento(dia, hora, minuto=0):
     """Un instante de la semana del 2026-10-26, que es lunes."""
@@ -87,60 +131,61 @@ def momento(dia, hora, minuto=0):
 
 
 # ==================================================================
-# 1. La causa raiz: el camino real llama a notify_manual
+# 1. El boton manual ya NO toca el horario
 # ==================================================================
 #
-# Esta es la comprobacion que faltaba. Las pruebas anteriores
-# llamaban a notify_manual a mano y por eso no detectaron que
-# agent.py no la invocaba nunca.
+# Esta seccion decia lo contrario, y con razon en su momento:
+# "Detener grabacion" no detenia nada, asi que se le hizo soltar
+# tambien el horario y anotar la franja como suprimida.
+#
+# El requisito cambio. El boton manual es para capturar un trozo
+# concreto -un error que enseñar, una gestion que documentar- y la
+# grabacion del dia se para con su propio interruptor, la grabacion
+# continua. Mezclarlos tenia un efecto que nadie esperaba: grabar
+# diez segundos a mano dejaba al equipo sin grabar la jornada.
+#
+# La supresion sigue existiendo en el planificador y se sigue
+# probando de la seccion 2 en adelante, pero el producto ya no la
+# dispara desde la parada manual.
 
 AGENTE = io.open(RAIZ / "agent" / "agent.py", encoding="utf-8").read()
 
 comprobar(
-    "agent.py llama a notify_manual (antes NADIE lo hacia)",
-    "recording_scheduler.notify_manual(" in AGENTE
+    "parar a mano NO anota ninguna supresion",
+    "recording_scheduler.notify_manual(False)" not in AGENTE
 )
 
 comprobar(
-    "y lo hace al soltar, no en cualquier sitio",
-    "supresion_del_operador" in AGENTE
-    and AGENTE.index("supresion_del_operador")
-    < AGENTE.index("recording_scheduler.notify_manual(")
+    "ni arrastra al horario",
+    "supresion_del_operador" not in AGENTE
+)
+
+_parada = AGENTE.split("def stop_screen_recording(", 1)[1][:2600]
+
+comprobar(
+    "la parada manual suelta su dueno y nada mas",
+    "hay_que_parar = duenos.soltar(origen)" in _parada
 )
 
 comprobar(
-    "la parada del OPERADOR suelta tambien el horario",
-    "if duenos.soltar_el_horario():" in AGENTE
+    "y una parada del horario sigue soltando el horario",
+    "duenos.soltar_el_horario()" in _parada
 )
 
 comprobar(
-    "una parada del propio horario NO suprime nada",
-    "origen == owners.MANUAL" in AGENTE
+    "el estado real se informa igual",
+    "recording_scheduler.notify_state(" in _parada
+)
+
+# El camino que SI queda: el interruptor general. Apagarlo para la
+# jornada; encenderlo la reanuda en las horas que tenga puestas.
+comprobar(
+    "el interruptor general sigue llegando al planificador",
+    "recording_scheduler.set_continuous(" in AGENTE
 )
 
 comprobar(
-    "el Agent informa la supresion al servidor",
-    "def report_schedule_suppression(" in AGENTE
-    and '"schedule_suppression:"' in AGENTE
-)
-
-# Que la funcion EXISTA no basta: tiene que llamarse desde el camino
-# de la parada. Sin esto, la supresion se quedaria en memoria y una
-# reconexion la perderia, que era el segundo fallo.
-# Se ancla a notify_manual, que es donde se decide suprimir: hay dos
-# bloques 'if supresion_del_operador' y el primero es el que suelta
-# el horario, no el que informa.
-_desde = AGENTE.index("recording_scheduler.notify_manual(False)")
-_bloque = AGENTE[_desde:_desde + 400]
-
-comprobar(
-    "y la llama al suprimir, no solo la define",
-    "report_schedule_suppression()" in _bloque,
-    _bloque[:140].replace(chr(10), " | ")
-)
-
-comprobar(
-    "y la recibe al conectar",
+    "la supresion se sigue recibiendo del servidor",
     'message.startswith("schedule_suppression:")' in AGENTE
 )
 
@@ -492,9 +537,25 @@ z2.notify_manual(False, momento(0, 10, 0))
 z2._tomada_en = momento(0, 10, 0) - timedelta(hours=25)
 z2.horario = dict(LOCAL, timezone="America/Mexico_City")
 
+# El instante se elige DENTRO de la franja en la zona NUEVA.
+#
+# Mexico va seis horas por detras de UTC, asi que las 11:00 UTC son
+# las 05:00 alli: fuera del horario de 8 a 17. Con ese instante, lo
+# que respondia el planificador era "fuera de hora" y la caducidad
+# del tope no llegaba a evaluarse nunca; la comprobacion salia
+# verde sin comprobar lo suyo.
+#
+# No se noto porque en Windows no hay base de zonas horarias:
+# ZoneInfo("America/Mexico_City") fallaba, el planificador caia a
+# UTC y las 11:00 si entraban en franja. Al instalar tzdata -que
+# hacia falta en el servidor para agrupar por dia- la zona empezo a
+# resolverse y el fallo salio a la luz.
+#
+# 16:00 UTC son las 10:00 en Mexico: dentro.
 comprobar(
     "pero caduca pasado el tope de 24 h",
-    z2.intencion(momento(0, 11, 0))[0] is True
+    z2.intencion(momento(0, 16, 0))[0] is True,
+    str(z2.intencion(momento(0, 16, 0)))
 )
 
 # Y el mismo caso por el otro camino: decide() tenia su propia copia
@@ -640,10 +701,14 @@ comprobar(
 # 7. La manual puntual sigue siendo independiente
 # ==================================================================
 
-m = RecordingScheduler({"enabled": False})
+# Aqui SI con el interruptor apagado, que es lo que se quiere
+# probar: sin horario y sin continua no se graba nada. Con la
+# continua encendida y sin horario se grabaria siempre, que es otro
+# caso y tiene su propia prueba.
+m = _Planificador({"enabled": False})
 
 comprobar(
-    "sin horario, el horario no quiere nada",
+    "sin horario ni continua, no se quiere grabar nada",
     m.intencion(momento(0, 10, 0))[0] is False
 )
 
@@ -678,14 +743,19 @@ comprobar(
 
 APP = io.open(RAIZ / "frontend" / "app.js", encoding="utf-8").read()
 
+# El rotulo decia "DESACTIVADA (el horario manda)", y era cierto
+# entonces: el horario grababa por encima del interruptor. Ya no.
+# Apagada la continua no se graba, haya horario o no, asi que la
+# matizacion sobraba y lo que hacia era contradecir al estado de al
+# lado.
 comprobar(
-    "con horario activo, DESACTIVADA se matiza",
-    '"DESACTIVADA (el horario manda)"' in APP
+    "apagada es apagada, sin matices",
+    '"DESACTIVADA (el horario manda)"' not in APP
 )
 
 comprobar(
-    "sin horario sigue diciendo DESACTIVADA a secas",
-    '"DESACTIVADA"' in APP
+    "y encendida con horario se ve encendida",
+    '"ACTIVADA (en su horario)"' in APP
 )
 
 comprobar(
@@ -771,8 +841,8 @@ agente = _cargar_agent()
 
 # Estado de partida limpio: nadie sostiene nada.
 agente.duenos = agente.owners.Duenos()
-agente.recording_scheduler = RecordingScheduler(LABORAL)
-agente.recording_scheduler.set_schedule(LABORAL)
+agente.recording_scheduler = RecordingScheduler(SIEMPRE)
+agente.recording_scheduler.set_schedule(SIEMPRE)
 
 comprobar(
     "de partida, el panel no ve ninguna grabacion",
@@ -781,107 +851,111 @@ comprobar(
 
 # --- el horario toma la captura, por el camino real ---------------
 
-agente.start_screen_recording(manual=False, origen=agente.owners.PROGRAMADA)
+agente.recording_scheduler.set_continuous(True)
+agente._aplicar_decision_del_horario()
 
-estado_programada = agente.build_recording_status()
-
-comprobar(
-    "una grabacion del horario se informa como programada",
-    estado_programada["recording_source"] == "programada",
-    str(estado_programada["recording_source"])
-)
-
-# --- el operador la detiene: el camino real de la supresion -------
-
-agente.stop_screen_recording()
+estado_jornada = agente.build_recording_status()
 
 comprobar(
-    "tras la parada del operador no queda nadie sosteniendola",
-    agente.build_recording_status()["recording"] is False
+    "la grabacion del dia se informa como continua",
+    estado_jornada["recording_source"] == "continua",
+    str(estado_jornada["recording_source"])
 )
 
 comprobar(
-    "y la franja queda suprimida",
-    agente.recording_scheduler.clave_suprimida() is not None
+    "y no consta ningun trozo manual",
+    estado_jornada["manual_recording"] is False
 )
 
-# --- y ahora una manual DENTRO de la franja suprimida -------------
+# --- un trozo manual DENTRO de la jornada -------------------------
 #
-# Este es el caso que fallaba en el equipo real.
+# El caso que el usuario describio: el boton de grabar a mano sirve
+# para capturar algo concreto, no para mandar sobre la jornada.
 
 agente.start_screen_recording()
 
-estado_manual = agente.build_recording_status()
+estado_con_trozo = agente.build_recording_status()
 
 comprobar(
-    "una manual dentro de la franja suprimida SI graba",
-    estado_manual["recording"] is True
+    "el trozo manual consta aparte",
+    estado_con_trozo["manual_recording"] is True
 )
 
 comprobar(
-    "y el panel la ve como manual, no como programada",
-    estado_manual["recording_source"] == "manual",
-    str(estado_manual["recording_source"])
+    "y la jornada sigue siendo quien manda",
+    estado_con_trozo["recording_source"] == "continua",
+    str(estado_con_trozo["recording_source"])
 )
 
-comprobar(
-    "los duenos coinciden con lo que se informa",
-    agente.duenos.fuente_principal() == "manual",
-    str(agente.duenos.fuente_principal())
-)
-
-comprobar(
-    "y arrancar a mano no levanta la supresion de la franja",
-    agente.recording_scheduler.clave_suprimida() is not None
-)
-
-# --- al pararla, se deja de informar fuente -----------------------
+# --- y al pararlo, la jornada SIGUE -------------------------------
+#
+# Esto es lo que antes no pasaba: parar el trozo manual soltaba
+# tambien el horario y suprimia la franja, asi que grabar diez
+# segundos a mano dejaba al equipo sin grabar el resto del dia.
 
 agente.stop_screen_recording()
 
+estado_despues = agente.build_recording_status()
+
 comprobar(
-    "parada la manual, el panel no ve fuente",
-    agente.build_recording_status()["recording_source"] is None
+    "parado el trozo manual, la jornada no se entera",
+    estado_despues["recording"] is True,
+    str(estado_despues)
 )
 
-# --- el horario sigue mandando cuando no hay supresion ------------
+comprobar(
+    "y la sigue sosteniendo el horario",
+    estado_despues["recording_source"] == "continua",
+    str(estado_despues["recording_source"])
+)
+
+comprobar(
+    "el trozo manual ya no consta",
+    estado_despues["manual_recording"] is False
+)
+
+comprobar(
+    "y no se ha suprimido ninguna franja",
+    agente.recording_scheduler.clave_suprimida() is None,
+    str(agente.recording_scheduler.clave_suprimida())
+)
+
+# --- apagar el interruptor SI para la jornada ---------------------
 #
-# Que el arreglo no cambie el caso normal: sin parada manual de por
-# medio, una grabacion del horario se sigue informando como suya.
+# El camino que queda para detenerla, y el que el usuario pidio:
+# apagarla a las 10 y volver a encenderla a las 10:30, siguiendo el
+# horario desde ese punto.
 
-# Se entra por donde se entra en produccion: el planificador decide
-# y _aplicar_decision_del_horario arranca. Llamar a
-# start_screen_recording a pelo con origen "continua" seria inventar
-# un camino que el producto no toma.
+agente.apply_continuous(False)
 
+comprobar(
+    "apagar la continua detiene la jornada",
+    agente.build_recording_status()["recording"] is False
+)
+
+agente.apply_continuous(True)
+
+comprobar(
+    "y encenderla la reanuda dentro de su horario",
+    agente.build_recording_status()["recording"] is True
+)
+
+agente.stop_screen_recording(manual=False, origen=agente.owners.PROGRAMADA)
 agente.duenos = agente.owners.Duenos()
+
+# --- sin horario, el interruptor graba siempre --------------------
+
 agente.recording_scheduler = RecordingScheduler({"enabled": False})
 agente.recording_scheduler.set_continuous(True)
 
 agente._aplicar_decision_del_horario()
 
 comprobar(
-    "la continua, por el camino del horario, arranca",
+    "sin horario, la continua graba igual",
     agente.build_recording_status()["recording"] is True
 )
 
-comprobar(
-    "y se informa como continua",
-    agente.build_recording_status()["recording_source"] == "continua",
-    str(agente.build_recording_status()["recording_source"])
-)
-
-# Con las dos activas manda el horario, que es la politica que ya
-# documentaba fuente_principal() y que este arreglo no cambia.
-agente.start_screen_recording()
-
-comprobar(
-    "con horario y manual a la vez, manda el horario",
-    agente.build_recording_status()["recording_source"] == "continua",
-    str(agente.build_recording_status()["recording_source"])
-)
-
-agente.stop_screen_recording()
+agente.stop_screen_recording(manual=False, origen=agente.owners.PROGRAMADA)
 agente.duenos = agente.owners.Duenos()
 
 # --- la deduccion sigue de respaldo -------------------------------

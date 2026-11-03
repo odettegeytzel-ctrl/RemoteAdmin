@@ -626,6 +626,170 @@ def query_recordings(device_id=None, start=None, end=None):
     return result
 
 
+# ==============================
+# LA JORNADA: UNA FILA POR EQUIPO Y DIA
+# ==============================
+#
+# El equipo graba en segmentos de quince minutos. No es un capricho:
+# un unico archivo de nueve horas no se puede reproducir mientras se
+# escribe, no se puede subir a trozos, y si se corta la luz a las
+# cuatro de la tarde se pierde el dia entero.
+#
+# Pero eso es como se GUARDA, no como se busca. Quien entra al panel
+# quiere ver "el lunes de Recepcion", no treinta y seis archivos de
+# quince minutos que tiene que abrir uno por uno para encontrar el
+# momento que busca.
+#
+# Asi que los segmentos siguen igual en disco y en la base -no se
+# unen, no se reescriben, no se borra ninguno- y lo que cambia es la
+# presentacion: una fila por equipo y dia, que se reproduce seguida.
+#
+# Los huecos
+# ----------
+#
+# Un dia puede tener huecos: el equipo apagado, la jornada
+# interrumpida a media mañana, un corte de luz. No se rellenan ni se
+# disimulan: la jornada dice cuanto se grabo de verdad y cuanto duro
+# de punta a punta, que son dos numeros distintos y los dos
+# interesan.
+
+
+def _zona_del_equipo(nombre):
+    """
+    Objeto de zona horaria, o None si no se puede saber.
+
+    'local' significa "la hora del equipo", que el servidor no
+    conoce: ahi se devuelve None y se agrupa por UTC.
+    """
+
+    if not nombre or nombre == "local":
+        return None
+
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(nombre)
+
+    except Exception:
+        return None
+
+
+def _zonas_por_equipo():
+    """La zona horaria configurada de cada equipo, si la tiene."""
+
+    connection = get_connection()
+
+    try:
+        filas = connection.execute(
+            "SELECT device_id, timezone FROM recording_schedule"
+        ).fetchall()
+
+    except sqlite3.Error:
+        filas = []
+
+    finally:
+        connection.close()
+
+    return {fila["device_id"]: fila["timezone"] for fila in filas}
+
+
+def jornadas(device_id=None, start=None, end=None, zonas=None):
+    """
+    Los segmentos agrupados por equipo y dia.
+
+    El dia se calcula en la zona horaria del EQUIPO, no en la del
+    servidor: un horario de 8 a 17 en Mexico cae a caballo de dos
+    fechas UTC segun la epoca del año, y agrupar por UTC partiria
+    unas jornadas si y otras no, de forma aparentemente aleatoria.
+
+    Devuelve las jornadas de la mas reciente a la mas antigua, con
+    los segmentos de cada una EN ORDEN para poder reproducirlos
+    seguidos.
+    """
+
+    if zonas is None:
+        zonas = _zonas_por_equipo()
+
+    agrupadas = {}
+
+    for segmento in query_recordings(device_id, start, end):
+
+        comienzo = _momento(segmento.get("started_at"))
+
+        if comienzo is None:
+            # Sin hora no se puede saber a que dia pertenece. No se
+            # tira: se deja fuera de la agrupacion y se devuelve
+            # aparte, para que no desaparezca del panel.
+            continue
+
+        zona = _zona_del_equipo(zonas.get(segmento["device_id"]))
+
+        local = comienzo.astimezone(zona) if zona else comienzo
+
+        clave = (segmento["device_id"], local.date().isoformat())
+
+        agrupadas.setdefault(clave, []).append((local, segmento))
+
+    resultado = []
+
+    for (equipo, fecha), piezas in agrupadas.items():
+
+        piezas.sort(key=lambda par: par[0])
+
+        segmentos = [segmento for _, segmento in piezas]
+
+        grabado = sum(
+            int(segmento.get("duration_sec") or 0)
+            for segmento in segmentos
+        )
+
+        final = max(
+            (_momento(s.get("ended_at")) or _momento(s.get("started_at"))
+             for s in segmentos),
+            default=None
+        )
+
+        resultado.append({
+            "device_id": equipo,
+            "hostname": segmentos[0].get("hostname"),
+            "fecha": fecha,
+
+            "inicio": segmentos[0].get("started_at"),
+            "fin": final.isoformat() if final else None,
+
+            # Dos numeros distintos a proposito: 'grabado' es lo que
+            # hay de verdad y 'segmentos' cuantos trozos son. Si la
+            # jornada tuvo huecos, de punta a punta dura mas que lo
+            # grabado, y esa diferencia es informacion, no un error.
+            "duracion_grabada_sec": grabado,
+            "segmentos": len(segmentos),
+
+            "size_bytes": sum(
+                int(segmento.get("size_bytes") or 0)
+                for segmento in segmentos
+            ),
+
+            # En orden: es lo que permite reproducir el dia seguido.
+            "ids": [segmento["id"] for segmento in segmentos],
+
+            # Donde esta cada trozo. Una jornada puede tener parte en
+            # el servidor y parte todavia en el equipo, y el
+            # reproductor necesita saberlo pieza a pieza.
+            "en_el_servidor": sum(
+                1 for segmento in segmentos
+                if segmento.get("storage_state") == "server_stored"
+            ),
+            "solo_en_el_equipo": sum(
+                1 for segmento in segmentos
+                if segmento.get("storage_state") == "local_only"
+            ),
+        })
+
+    resultado.sort(key=lambda dia: (dia["fecha"], dia["device_id"]),
+                   reverse=True)
+
+    return resultado
+
+
 def get_recording(recording_id):
 
     connection = get_connection()

@@ -1076,31 +1076,25 @@ def stop_screen_recording(manual=True, origen=None):
     if origen is None:
         origen = owners.MANUAL if manual else owners.PROGRAMADA
 
-    # Una parada del OPERADOR para de verdad, aunque el horario
-    # tambien sostenga la captura.
+    # La parada manual suelta LA MANUAL, y solo la manual.
     #
-    # Antes solo soltaba el dueno manual: con una franja activa la
-    # captura seguia y el boton "Detener grabacion" no detenia nada.
-    # Y aunque hubiera parado, el horario la reanudaba al tic
-    # siguiente. Por eso se suelta tambien el horario y se anota la
-    # franja como suprimida.
-    supresion_del_operador = (
-        origen == owners.MANUAL
-        and manual
-        and duenos.grabando()
-    )
-
+    # El boton de grabar a mano sirve para capturar un trozo
+    # concreto: un error que se quiere enseñar, una gestion que hay
+    # que documentar. No es el mando de la grabacion del dia.
+    #
+    # Hubo una version en la que si lo era: parar a mano soltaba
+    # tambien el horario y anotaba la franja como suprimida. Se hizo
+    # porque entonces no habia otra forma de detener la grabacion del
+    # dia, y el boton no detenia nada. Ahora si la hay -apagar la
+    # grabacion continua, que es el interruptor general- y mezclar
+    # las dos cosas en un boton tenia un efecto que nadie esperaba:
+    # grabar diez segundos a mano para enseñar algo dejaba al equipo
+    # sin grabar el resto de la jornada.
     if origen in owners.DEL_HORARIO:
         hay_que_parar = duenos.soltar_el_horario()
 
     else:
         hay_que_parar = duenos.soltar(origen)
-
-        if supresion_del_operador:
-            # El horario tambien suelta: si no, la captura seguiria
-            # viva y el operador habria pulsado Detener para nada.
-            if duenos.soltar_el_horario():
-                hay_que_parar = True
 
     if hay_que_parar:
         result = screen_recorder.stop()
@@ -1116,18 +1110,9 @@ def stop_screen_recording(manual=True, origen=None):
         if not screen_recorder.is_recording():
             agent_state = "idle"
 
-    if supresion_del_operador:
-
-        # notify_manual anota la franja en curso como excepcion. Es la
-        # funcion que ya existia y que NADIE llamaba: por eso el
-        # horario reanudaba la grabacion que el operador acababa de
-        # detener.
-        recording_scheduler.notify_manual(False)
-
-        report_schedule_suppression()
-
-    else:
-        recording_scheduler.notify_state(screen_recorder.is_recording())
+    # Ya no se anota ninguna supresion: parar el trozo manual no
+    # tiene por que apagar la jornada. Para eso esta el interruptor.
+    recording_scheduler.notify_state(screen_recorder.is_recording())
 
     log_duenos("suelta " + origen)
 
@@ -1193,6 +1178,26 @@ def _aplicar_decision_del_horario():
     por la manual, simplemente se suma.
     """
 
+    # EL SERVICIO NO GRABA. Nunca.
+    #
+    # Corre en la Sesion 0, donde no hay escritorio: lo que capture
+    # ahi es una pantalla negra. El hilo del horario ya se arranca
+    # solo fuera del servicio por este motivo, pero quedaba esta
+    # puerta abierta: apply_schedule y apply_continuous llaman aqui
+    # directamente, y esas ordenes SI las atiende el servicio.
+    #
+    # Resultado: cada vez que el servidor mandaba el horario -en cada
+    # conexion del Agent- el servicio abria un video de la Sesion 0 y
+    # nadie lo cerraba, porque el hilo que termina las franjas no
+    # corre ahi. De ahi los archivos de 261 bytes y cero segundos.
+    #
+    # Y encima el panel preguntaba el estado al servicio, que decia
+    # "grabando", mientras "Detener grabacion" se reenviaba al
+    # ayudante, que no estaba grabando. El boton no detenia nada
+    # porque le hablaba al proceso equivocado.
+    if AGENT_ROLE == ROLE_SERVICE:
+        return None
+
     # Primero, la realidad: si el grabador se ha caido, aqui no puede
     # constar que alguien lo sostiene.
     if duenos.reconciliar(screen_recorder.is_recording()):
@@ -1208,11 +1213,17 @@ def _aplicar_decision_del_horario():
             print("[horario] Empieza la franja (%s)" % fuente)
             start_screen_recording(manual=False, origen=fuente)
 
+            # Que el panel lo sepa al empezar la franja, no quince
+            # minutos despues, cuando cierre el primer segmento.
+            report_status_threadsafe()
+
         return "start"
 
     if any(duenos.sostiene(o) for o in owners.DEL_HORARIO):
         print("[horario] Termina la franja")
         stop_screen_recording(manual=False, origen=owners.PROGRAMADA)
+
+        report_status_threadsafe()
 
         return "stop"
 
@@ -1308,6 +1319,16 @@ def build_recording_status():
             "continuous_recording_enabled": continuous_enabled,
             "recording": recording,
             "recording_source": fuente,
+
+            # Si hay un trozo manual EN MARCHA, que es otra cosa que
+            # "se esta grabando".
+            #
+            # El boton de grabar a mano miraba 'recording' y por eso
+            # se ponia en "Detener" en cuanto el horario empezaba la
+            # jornada, ofreciendo parar algo que ese boton no habia
+            # arrancado. Son dos grabaciones distintas y cada boton
+            # habla de la suya.
+            "manual_recording": duenos.sostiene(owners.MANUAL),
             "schedule_enabled": bool(
                 recording_scheduler.horario.get("enabled")
             ),
@@ -1323,6 +1344,32 @@ _event_loop = None
 _ws = None
 
 
+# Por donde salen los mensajes cuando este proceso NO tiene el
+# WebSocket.
+#
+# El ayudante no esta autenticado contra el servidor: todo lo suyo
+# pasa por el servicio. Hasta ahora no habia por donde, asi que
+# CUALQUIER cosa que el ayudante quisiera contar se perdia en
+# silencio -el estado del grabador, el catalogo de grabaciones
+# locales, la franja suprimida-, porque _ws vale None en su proceso y
+# send_ws_threadsafe se iba sin hacer nada.
+_emisor_alternativo = None
+
+
+def registrar_emisor(funcion):
+    """
+    Dice por donde salen los mensajes de este proceso.
+
+    La usa el ayudante al arrancar para encaminar lo suyo por el
+    canal con el servicio. En el servicio y en el Agent de una sola
+    pieza no se llama: ahi el WebSocket es propio.
+    """
+
+    global _emisor_alternativo
+
+    _emisor_alternativo = funcion
+
+
 def send_ws_threadsafe(payload):
     """
     Envia un mensaje por el WebSocket desde un hilo que no es el del bucle.
@@ -1331,6 +1378,14 @@ def send_ws_threadsafe(payload):
     poder vivir sin ello. Lo que se manda por aqui es informativo, y al
     reconectar se reenvia el catalogo completo.
     """
+
+    if _emisor_alternativo is not None:
+
+        try:
+            return bool(_emisor_alternativo(payload))
+
+        except Exception:
+            return False
 
     if _event_loop is None or _ws is None:
         return False
@@ -1344,11 +1399,11 @@ def send_ws_threadsafe(payload):
 
 
 def report_status_threadsafe():
-    if _event_loop is None or _ws is None:
-        return
+
     try:
-        payload = "recording_status:" + json.dumps(build_recording_status())
-        asyncio.run_coroutine_threadsafe(_ws.send(payload), _event_loop)
+        send_ws_threadsafe(
+            "recording_status:" + json.dumps(build_recording_status())
+        )
     except Exception:
         pass
 
@@ -1423,6 +1478,11 @@ def _atender_al_ayudante():
 
             print(f"[ipc] Ayudante conectado (pid {pid})")
 
+            informar_sesion_interactiva(True)
+
+            # El horario que ya hay, para el que acaba de llegar.
+            poner_al_dia_al_ayudante()
+
             while True:
 
                 mensaje = canal.recibir()
@@ -1442,14 +1502,21 @@ def _atender_al_ayudante():
             # sigue: se vuelve a esperar a que entre otro.
             print("[ipc] Ayudante desconectado")
 
+            informar_sesion_interactiva(False)
+
         except ipc.IPCError as problema:
 
             # Incluye el rechazo por origen no autorizado
             print(f"[ipc] {problema}")
 
+            informar_sesion_interactiva(False)
+
         except Exception as error:
 
             print(f"[ipc] Error inesperado: {error}")
+
+            informar_sesion_interactiva(False)
+
             time.sleep(1)
 
 
@@ -1543,6 +1610,90 @@ def _bucle_de_actualizacion():
             print(f"[update] Error en la comprobacion: {error}")
 
             time.sleep(siguiente_espera(intentos))
+
+
+# Ajustes que el servicio guarda pero que cumple el ayudante.
+#
+# El horario no necesita escritorio para GUARDARSE, y por eso lo
+# recibe el servicio, que es el que sobrevive a que el usuario cierre
+# sesion. Pero quien tiene que cumplirlo es el ayudante, porque es el
+# unico que puede capturar la pantalla.
+#
+# Hasta ahora el servicio se los quedaba y no los pasaba: el ayudante
+# arrancaba con el horario vacio y no grababa jamas en su franja.
+AJUSTES_DEL_AYUDANTE = (
+    "set_schedule:",
+    "set_continuous:",
+    "schedule_suppression:",
+)
+
+# El ultimo de cada clase, para dárselos al ayudante que entre luego.
+#
+# El servidor los manda cuando el SERVICIO se conecta. Un usuario que
+# inicia sesion tres horas despues no provoca ninguna reconexion, asi
+# que si no se guardan aqui, su ayudante se queda sin horario hasta
+# que alguien toque algo en el panel.
+_ajustes_vigentes = {}
+
+
+def recordar_ajuste(mensaje):
+    """Guarda el ultimo ajuste de cada clase y lo pasa al ayudante."""
+
+    for prefijo in AJUSTES_DEL_AYUDANTE:
+
+        if mensaje.startswith(prefijo):
+            _ajustes_vigentes[prefijo] = mensaje
+            break
+
+    reenviar_al_ayudante(mensaje)
+
+
+def poner_al_dia_al_ayudante():
+    """
+    Le da al ayudante recien llegado los ajustes que ya hay.
+
+    El orden importa: el horario lleva dentro la franja suprimida, y
+    mandarla despues por separado no hace dano, pero al reves si
+    borraria la supresion que acaba de llegar.
+    """
+
+    for prefijo in AJUSTES_DEL_AYUDANTE:
+
+        mensaje = _ajustes_vigentes.get(prefijo)
+
+        if mensaje:
+            reenviar_al_ayudante(mensaje)
+
+
+def informar_sesion_interactiva(disponible):
+    """
+    Le dice al servidor si hay alguien con la sesion iniciada.
+
+    Lo necesita para contestar al panel ANTES de mandar una orden que
+    no va a poder cumplirse. Sin esto, pulsar "Aviso de
+    mantenimiento" en un equipo sin sesion devolvia "ok" y no pasaba
+    nada: el servicio se daba cuenta, lo decia, y el mensaje no lo
+    escuchaba nadie.
+
+    Se manda al conectar y en cada cambio. Si no hay conexion no se
+    guarda: al reconectar se vuelve a mandar el estado de ese
+    momento, que es el bueno.
+    """
+
+    send_ws_threadsafe(
+        "interactive_session:" + json.dumps({"available": bool(disponible)})
+    )
+
+
+def hay_sesion_interactiva():
+    """True si el ayudante esta conectado ahora mismo."""
+
+    # En un Agent de una sola pieza (standalone) el escritorio es el
+    # del propio proceso: no hay ayudante al que esperar.
+    if AGENT_ROLE != ROLE_SERVICE:
+        return True
+
+    return bool(_canal_ayudante is not None and _canal_ayudante.hay_ayudante)
 
 
 def reenviar_al_ayudante(mensaje):
@@ -2736,15 +2887,33 @@ async def handle_file_transfer_message(websocket, message):
 
 def resolve_download_path(path):
 
-    # La ruta siempre debe quedar DENTRO de C:\RemoteAdmin\Downloads
+    # Cualquier archivo del equipo, no solo los de una carpeta.
+    #
+    # Antes solo se dejaba sacar lo que hubiera en
+    # C:\RemoteAdmin\Downloads, y eso convertia la funcion en un
+    # buzon: servia para recoger algo que alguien hubiera dejado
+    # ahi, no para administrar un equipo. Un tecnico que necesita el
+    # registro de una aplicacion, un volcado o un archivo de
+    # configuracion tenia que desplazarse hasta la maquina.
+    #
+    # Es una herramienta de administracion remota y esto es lo que
+    # se espera de ella. Lo que sostiene que sea seguro no es esta
+    # linea, sino lo de alrededor:
+    #
+    #   - hace falta sesion de panel, y el aislamiento por empresa
+    #     se comprueba en el servidor para todas las rutas;
+    #   - hace falta la capacidad 'remote.actions', la misma que
+    #     mover el raton o escribir en el equipo;
+    #   - cada descarga queda en la auditoria con quien la pidio,
+    #     desde que IP y QUE RUTA se llevo.
+    #
+    # Lo que se mantiene es lo que protege al equipo de un disparate:
+    # tiene que ser un archivo, tiene que existir, y hay un tope de
+    # tamano.
     if not path or not isinstance(path, str):
         raise ValueError("Ruta vacía")
 
-    base = os.path.realpath(DOWNLOADS_DIR)
     target = os.path.realpath(path)
-
-    if target != base and not target.startswith(base + os.sep):
-        raise ValueError("La ruta está fuera de la carpeta permitida")
 
     if not os.path.exists(target):
         raise FileNotFoundError("El archivo no existe")
@@ -3122,8 +3291,27 @@ async def websocket_connection():
                 # las de archivados explicitos que quedaron a medias) y se
                 # informa el estado.
                 _process_pending()
+
+                # El estado inicial, solo si este proceso graba. En
+                # el servicio lo manda el ayudante en cuanto entra.
+                if AGENT_ROLE != ROLE_SERVICE:
+
+                    await websocket.send(
+                        "recording_status:"
+                        + json.dumps(build_recording_status())
+                    )
+
+                # Si hay alguien con la sesion iniciada.
+                #
+                # Va aqui, y no solo cuando el ayudante entra o sale,
+                # porque lo corriente es que el ayudante lleve horas
+                # conectado cuando se recupera una caida de red: sin
+                # esto el servidor se quedaria creyendo lo ultimo que
+                # supo, que puede ser de hace dias.
                 await websocket.send(
-                    "recording_status:" + json.dumps(build_recording_status())
+                    "interactive_session:" + json.dumps({
+                        "available": hay_sesion_interactiva()
+                    })
                 )
 
                 # La ficha del equipo, SIN que nadie la pida.
@@ -3222,6 +3410,16 @@ async def websocket_connection():
                             )
 
                         continue
+
+                    # Ajustes de grabacion: los guarda el servicio y
+                    # los cumple el ayudante, asi que van a los dos.
+                    # No se usa 'continue': el servicio tiene que
+                    # seguir y quedarselos, para poder dárselos al
+                    # ayudante que inicie sesion mas tarde.
+                    if (AGENT_ROLE == ROLE_SERVICE
+                            and message.startswith(AJUSTES_DEL_AYUDANTE)):
+
+                        recordar_ajuste(message)
 
                     if message == "ping":
 
@@ -3339,9 +3537,19 @@ async def websocket_connection():
 
                         await asyncio.to_thread(apply_schedule, horario)
 
-                        await websocket.send(
-                            "recording_status:" + json.dumps(build_recording_status())
-                        )
+                        # El estado lo cuenta QUIEN GRABA.
+                        #
+                        # El servicio tambien recibe el horario, pero
+                        # el no graba: si contestara, diria "no se
+                        # esta grabando" justo cuando el ayudante
+                        # acaba de empezar, y el panel se lo creeria
+                        # por ser el ultimo en hablar.
+                        if AGENT_ROLE != ROLE_SERVICE:
+
+                            await websocket.send(
+                                "recording_status:"
+                                + json.dumps(build_recording_status())
+                            )
 
                     elif message.startswith("schedule_suppression:"):
 
@@ -3371,9 +3579,14 @@ async def websocket_connection():
                             bool(data.get("enabled"))
                         )
 
-                        await websocket.send(
-                            "recording_status:" + json.dumps(build_recording_status())
-                        )
+                        # Igual que con el horario: contesta el que
+                        # graba, no el que solo guarda el ajuste.
+                        if AGENT_ROLE != ROLE_SERVICE:
+
+                            await websocket.send(
+                                "recording_status:"
+                                + json.dumps(build_recording_status())
+                            )
 
                     elif message == "get_system_info":
 

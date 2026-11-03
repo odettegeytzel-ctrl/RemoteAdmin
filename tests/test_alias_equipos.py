@@ -232,11 +232,28 @@ def test_un_intento_de_xss_se_guarda_como_texto():
     comprobar("La ficha lo pinta con textContent",
               len(bloque) == 2)
 
-    # El listado lo mete en una plantilla: ahi SI importa de donde
-    # viene. El alias lo escribe un usuario autenticado de la propia
-    # organizacion, igual que el resto de campos de la fila.
     comprobar("Hay una sola funcion de presentacion",
               "function nombreDeEquipo(" in JS)
+
+    # El LISTADO tambien, que antes no.
+    #
+    # La fila se arma con una plantilla y el nombre se interpolaba
+    # dentro: un alias con etiquetas se ejecutaba en el panel de
+    # cualquiera que abriera la lista. Que lo escriba un usuario
+    # autenticado de la propia organizacion no lo hace marcado de
+    # confianza, y el hostname lo manda el equipo.
+    fila_lista = JS.split("visibles.forEach(device => {", 1)[1][:6000]
+
+    comprobar("El listado NO interpola el nombre en la plantilla",
+              "${nombreDeEquipo(device)}" not in fila_lista,
+              "sigue interpolandose en innerHTML")
+
+    comprobar("Ni el nombre de Windows",
+              "${nombreRealSiHayAlias(device)}" not in fila_lista)
+
+    comprobar("Los pone como texto",
+              'celdaNombre.textContent = nombreDeEquipo(device)' in JS
+              and "celdaNombreReal.textContent" in JS)
 
 
 # ==================================================================
@@ -520,16 +537,117 @@ def test_la_ficha_permite_editarlo():
               and "loadDevices()" in cuerpo)
 
 
+def test_el_listado_permite_renombrar_sin_entrar_a_la_ficha():
+    """
+    Doble clic sobre el nombre y a escribir.
+
+    Lo que mas importa aqui no es que se pueda editar, sino que al
+    hacerlo NO pase ninguna otra cosa: la fila entera abre la ficha
+    del equipo, y si ese clic siguiera su camino, empezar a
+    renombrar cambiaria de pantalla y se perderia lo escrito.
+    """
+
+    cuerpo = JS.split("function editarNombreEnLaLista(", 1)
+
+    comprobar("Existe el editor de la lista", len(cuerpo) == 2)
+
+    if len(cuerpo) != 2:
+        return
+
+    editor = cuerpo[1][:4200]
+
+    comprobar("Se entra con doble clic, no con uno solo",
+              'celdaNombre.addEventListener("dblclick"' in JS)
+
+    comprobar("El clic sobre el nombre no abre la ficha",
+              'celdaNombre.addEventListener(\n                "click",\n'
+              '                (evento) => evento.stopPropagation()\n'
+              '            );' in JS)
+
+    comprobar("Ni el del propio campo",
+              'campo.addEventListener("click", '
+              '(evento) => evento.stopPropagation());' in editor)
+
+    comprobar("Mientras se escribe, la fila no navega",
+              'celdaNombre.dataset.editando === "si"' in JS)
+
+    comprobar("Enter guarda", 'evento.key === "Enter"' in editor)
+
+    comprobar("Escape cancela y repone lo que habia",
+              'evento.key === "Escape"' in editor
+              and "restaurar(anterior)" in editor)
+
+    comprobar("El teclado no se escapa de la fila",
+              "evento.stopPropagation();" in editor)
+
+    # Parte del campo, no del nombre visible: si no hay alias el
+    # campo tiene que salir VACIO, no relleno con el de Windows.
+    comprobar("El campo parte del alias, no del nombre visible",
+              'campo.value = device.alias || "";' in editor)
+
+    comprobar("Y enseña el de Windows como pista",
+              'campo.placeholder = device.hostname' in editor)
+
+    comprobar("Mismo tope que el servidor",
+              "campo.maxLength = %d;" % devices.ALIAS_MAXIMO in editor,
+              "ALIAS_MAXIMO = %d" % devices.ALIAS_MAXIMO)
+
+    comprobar("Sin cambios no se llama al servidor",
+              'escrito.trim() === (device.alias || "").trim()' in editor)
+
+    comprobar("Un nombre rechazado no se da por guardado",
+              "if (resultado.error)" in editor
+              and "queja.textContent = resultado.error;" in editor)
+
+    comprobar("Y no se repite el intento al salir del campo",
+              'if (celda.querySelector("[data-queja]"))' in editor)
+
+
+def test_renombrar_desde_la_lista_pide_el_mismo_permiso():
+    """
+    devices.manage, igual que la ficha y que el servidor.
+
+    Ver el inventario y renombrar lo que hay en el no son la misma
+    responsabilidad.
+    """
+
+    comprobar("El listado consulta el permiso",
+              'puede("devices.manage")' in JS)
+
+    # Y la lista espera a la sesion antes de pintar: sin eso, la
+    # primera carga -la unica que ve quien entra- saldria siempre
+    # sin la opcion.
+    cuerpo = JS.split("async function loadDevices(", 1)[1][:1200]
+
+    comprobar("Y espera a tener la sesion antes de pintar",
+              "await asegurarSesion()" in cuerpo)
+
+    comprobar("Sin tumbar el listado si la sesion falla",
+              ".catch(() => null)" in cuerpo)
+
+    # El servidor es quien manda, no el panel
+    comprobar("El servidor lo exige igual",
+              'require_permission(request, "devices.manage")'
+              in io.open(RAIZ / "backend" / "main.py",
+                         encoding="utf-8").read())
+
+
 def test_el_alias_no_se_usa_como_identificador():
     """
     En las peticiones siempre device_id, nunca el alias.
     """
 
-    cuerpo = JS.split("async function guardarNombreDelEquipo(", 1)[1][:1200]
+    # La peticion la hace una sola funcion, que recibe el
+    # identificador. Se mira ahi, no en quien la llama.
+    cuerpo = JS.split("async function pedirCambioDeNombre(", 1)[1][:1200]
 
     comprobar("La peticion va por device_id",
-              "${selectedDevice.device_id}/alias" in cuerpo,
+              "${deviceId}/alias" in cuerpo,
               cuerpo[:260])
+
+    comprobar("Y quien la llama le pasa el device_id, no el nombre",
+              "pedirCambioDeNombre(selectedDevice.device_id, alias)" in JS
+              and "pedirCambioDeNombre(device.device_id, escrito)" in JS)
 
 
 # ==================================================================
@@ -562,6 +680,8 @@ def principal():
         test_el_panel_lo_enseña_en_todas_partes,
         test_el_buscador_encuentra_por_los_dos_nombres,
         test_la_ficha_permite_editarlo,
+        test_el_listado_permite_renombrar_sin_entrar_a_la_ficha,
+        test_renombrar_desde_la_lista_pide_el_mismo_permiso,
         test_el_alias_no_se_usa_como_identificador
     ]
 

@@ -1,4 +1,5 @@
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -518,6 +519,49 @@ def init_db():
                 "SET schedule_suppressed_slot = schedule_suppressed_until "
                 "WHERE schedule_suppressed_until IS NOT NULL"
             )
+
+    # El interruptor general, encendido en los equipos que YA graban.
+    #
+    # La grabacion continua paso a ser el interruptor -si el equipo
+    # graba- y el horario sus horas -cuando-. Antes el horario mandaba
+    # por encima: un equipo con horario puesto grababa aunque la
+    # continua estuviera apagada, que es como esta hoy la mayoria.
+    #
+    # Sin esto, el cambio dejaria de grabar a todos esos equipos sin
+    # que nadie lo hubiera pedido, y nadie se daria cuenta hasta
+    # buscar una grabacion que no existe.
+    #
+    # Se hace UNA vez y solo hacia arriba: enciende a quien ya
+    # grababa, no apaga a nadie. Un equipo sin horario activo no se
+    # toca, porque ese no estaba grabando.
+    # Se hace UNA SOLA VEZ, y queda constancia de que se hizo.
+    #
+    # Sin la marca, esto correria en cada arranque del servidor y
+    # volveria a encender el interruptor que el tecnico acaba de
+    # apagar: apagar la grabacion de un equipo duraria hasta el
+    # siguiente reinicio, y seria dificilisimo de relacionar con su
+    # causa.
+    HECHA = "migracion.continua_es_el_interruptor"
+
+    ya_hecha = connection.execute(
+        "SELECT 1 FROM settings WHERE key = ?", (HECHA,)
+    ).fetchone()
+
+    if not ya_hecha and "continuous_recording" in columnas_devices:
+
+        connection.execute(
+            "UPDATE devices SET continuous_recording = 1 "
+            "WHERE COALESCE(continuous_recording, 0) = 0 "
+            "AND device_id IN ("
+            "    SELECT device_id FROM recording_schedule "
+            "    WHERE enabled = 1"
+            ")"
+        )
+
+        connection.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?)",
+            (HECHA, datetime.now(timezone.utc).isoformat())
+        )
 
     if "invalid_reason" not in columnas_recordings:
         connection.execute(

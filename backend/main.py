@@ -77,6 +77,7 @@ from backend.recordings import (
     list_recordings_page,
     count_recordings,
     query_recordings,
+    jornadas,
     get_recording,
     get_recordings_dir,
     set_keep,
@@ -730,6 +731,31 @@ def agent_supports(device_id, capacidad):
     datos = agent_capabilities.get(device_id) or {}
 
     return capacidad in (datos.get("capabilities") or [])
+
+
+# Si hay alguien con la sesion iniciada en cada equipo.
+#
+# El Agent corre partido en dos: un servicio, que funciona desde que
+# arranca Windows, y un ayudante, que solo existe mientras hay un
+# usuario con la sesion abierta. Todo lo que toca la pantalla -el
+# aviso de mantenimiento, el teclado, el raton, el portapapeles, la
+# grabacion- lo hace el ayudante.
+#
+# En memoria, como las capacidades: vale mientras dure la conexion.
+interactive_sessions = {}
+
+
+def hay_sesion_interactiva(device_id):
+    """
+    Si el equipo tiene escritorio ahora mismo.
+
+    Ante la duda, SI. Un Agent anterior a este cambio nunca manda el
+    aviso, y su equipo no aparece aqui: suponer que no tiene sesion
+    dejaria sin control remoto a todos los equipos ya instalados por
+    haber añadido una comprobacion.
+    """
+
+    return interactive_sessions.get(device_id, True)
 
 
 @app.on_event("startup")
@@ -2441,6 +2467,58 @@ async def agent_websocket(websocket: WebSocket):
                     pass
 
 
+            elif message.startswith("interactive_session:"):
+
+                # El equipo dice si hay alguien con la sesion
+                # iniciada. Con esto el panel puede explicar por que
+                # una accion de escritorio no va a funcionar, en vez
+                # de aceptarla y no hacer nada.
+                try:
+                    datos = json.loads(message.split(":", 1)[1])
+                except json.JSONDecodeError:
+                    datos = {}
+
+                interactive_sessions[device_id] = bool(
+                    datos.get("available")
+                )
+
+                print(
+                    "[sesion] %s: %s" % (
+                        device_id,
+                        "con sesion iniciada"
+                        if interactive_sessions[device_id]
+                        else "sin sesion iniciada"
+                    )
+                )
+
+
+            elif message.startswith("interactive_unavailable:"):
+
+                # Una orden concreta no se pudo entregar porque no
+                # hay escritorio. Hasta ahora este mensaje llegaba y
+                # NADIE lo leia: el panel daba la accion por buena.
+                try:
+                    datos = json.loads(message.split(":", 1)[1])
+                except json.JSONDecodeError:
+                    datos = {}
+
+                interactive_sessions[device_id] = False
+
+                orden = str(datos.get("command") or "")[:60]
+
+                log_audit(
+                    "remote.sin_sesion",
+                    device_id=device_id,
+                    status=STATUS_ERROR,
+                    details={"orden": orden}
+                )
+
+                print(
+                    f"[sesion] {device_id} no pudo con '{orden}': "
+                    "no hay sesion iniciada"
+                )
+
+
             elif message == "pong":
 
                 print(
@@ -2490,6 +2568,11 @@ async def agent_websocket(websocket: WebSocket):
             )
 
             latest_recording_status.pop(
+                device_id,
+                None
+            )
+
+            interactive_sessions.pop(
                 device_id,
                 None
             )
@@ -2671,6 +2754,32 @@ async def set_maintenance(device_id: str, data: dict, request: Request):
             status_code=409,
             content={"status": "error",
                      "message": "El equipo no esta conectado"}
+        )
+
+    # El aviso es una ventana en el escritorio del usuario. Sin nadie
+    # con la sesion iniciada no hay donde pintarla, y antes esto se
+    # contestaba "ok": el tecnico creia que el cliente estaba viendo
+    # el aviso y no habia ningun aviso.
+    if not hay_sesion_interactiva(device_id):
+
+        log_audit(
+            "remote.maintenance",
+            request=request,
+            device_id=device_id,
+            status=STATUS_ERROR,
+            details="Sin sesion iniciada en el equipo"
+        )
+
+        return JSONResponse(
+            status_code=409,
+            content={
+                "status": "error",
+                "code": "sin_sesion_iniciada",
+                "message": (
+                    "Nadie tiene la sesion iniciada en el equipo: el "
+                    "aviso no se puede mostrar."
+                )
+            }
         )
 
     if encendido:
@@ -2968,6 +3077,36 @@ async def request_screen(device_id: str, request: Request):
             "status": "error",
             "message": "Agent is not connected"
         }
+
+    # La pantalla la captura el ayudante, que vive en la sesion del
+    # usuario. Sin nadie dentro no hay escritorio que capturar.
+    #
+    # Antes esto se contestaba "sent" igual: el panel abria el
+    # rectangulo y se quedaba esperando fotogramas que no iban a
+    # llegar. Negro para siempre y sin una palabra, que es la peor
+    # forma de fallar: parece una averia del equipo o de la red, y
+    # no hay ninguna.
+    if not hay_sesion_interactiva(device_id):
+
+        log_audit(
+            "remote.session_start",
+            request=request,
+            device_id=device_id,
+            status=STATUS_ERROR,
+            details="Sin sesion iniciada en el equipo"
+        )
+
+        return JSONResponse(
+            status_code=409,
+            content={
+                "status": "error",
+                "code": "sin_sesion_iniciada",
+                "message": (
+                    "Nadie tiene la sesion iniciada en el equipo: no "
+                    "hay pantalla que mostrar."
+                )
+            }
+        )
 
     await websocket.send_text(
         "start_screen_stream"
@@ -3537,21 +3676,7 @@ async def send_file_transfer_abort(websocket, transfer_id):
 import os as _os
 import urllib.parse as _urlparse
 
-DOWNLOADS_BASE = r"C:\RemoteAdmin\Downloads"
-
 file_downloads = {}
-
-
-def path_within_downloads(path):
-
-    # Validacion ligera en backend; el Agent hace la validacion definitiva
-    if not path or ".." in path.replace("/", "\\").split("\\"):
-        return False
-
-    base = _os.path.normpath(DOWNLOADS_BASE).lower()
-    target = _os.path.normpath(path).lower()
-
-    return target == base or target.startswith(base + "\\")
 
 
 # Transmisiones de grabaciones locales en curso, por transfer_id.
@@ -3713,6 +3838,19 @@ async def download_file(device_id: str, path: str, request: Request):
             details={"path": path, **(detalle or {})}
         )
 
+    # Sacar CUALQUIER archivo de un equipo ajeno pide el mismo
+    # permiso que tomar el control de esa maquina.
+    #
+    # Antes no pedia ninguno, y se sostenia porque solo se podia
+    # sacar lo que hubiera en una carpeta concreta. Desde que se
+    # puede pedir cualquier ruta, quien mira el inventario no tiene
+    # por que poder llevarse los documentos de nadie.
+    _, denegado = require_permission(request, "remote.control")
+
+    if denegado:
+        auditar(STATUS_ERROR, {"error": "Sin permiso remote.control"})
+        return denegado
+
     auditar(STATUS_REQUESTED)
 
     websocket = connected_agents.get(
@@ -3723,9 +3861,16 @@ async def download_file(device_id: str, path: str, request: Request):
         auditar(STATUS_ERROR, {"error": "Agent no conectado"})
         return file_transfer_error(404, "Agent is not connected")
 
-    if not path_within_downloads(path):
-        auditar(STATUS_ERROR, {"error": "Ruta fuera de la carpeta permitida"})
-        return file_transfer_error(403, "Solo se permiten archivos dentro de C:\\RemoteAdmin\\Downloads")
+    # Se puede traer cualquier archivo del equipo. Lo que decide que
+    # eso sea legitimo no es la ruta, sino quien lo pide: hace falta
+    # 'remote.actions' -la misma capacidad que mover el raton o
+    # escribir en el equipo- y queda en la auditoria con el usuario,
+    # su IP y la ruta exacta.
+    #
+    # La restriccion anterior a C:\RemoteAdmin\Downloads convertia la
+    # funcion en un buzon: solo servia para recoger lo que alguien
+    # hubiera dejado ahi a mano, que es justo lo que no se puede
+    # hacer cuando el equipo esta a cien kilometros.
 
     loop = asyncio.get_running_loop()
     transfer_id = uuid.uuid4().hex
@@ -4244,6 +4389,52 @@ def _respuesta_paginada(device_id, start, end, limit, offset,
         "offset": desde,
         "limit": len(filas),
         "has_more": (desde + len(filas)) < total
+    }
+
+
+@app.get("/api/recordings/days")
+def recordings_days(request: Request, device_id: str = None,
+                    start: str = None, end: str = None):
+    """
+    El historial por JORNADAS: una fila por equipo y dia.
+
+    El equipo graba en segmentos de quince minutos, y eso no cambia:
+    un unico archivo de nueve horas no se puede reproducir mientras
+    se escribe, ni subir a trozos, y un corte de luz a las cuatro se
+    llevaria el dia entero.
+
+    Pero asi es como se GUARDA, no como se busca. Quien abre el
+    panel quiere "el lunes de Recepcion", no treinta y seis archivos
+    que abrir uno a uno hasta dar con el momento que busca.
+
+    No agrupa nada en disco: los segmentos siguen donde estaban, con
+    su fila y su archivo. Lo unico que cambia es como se presentan.
+    """
+
+    usuario, error = require_permission(request, "recordings.view")
+
+    if error:
+        return error
+
+    dias = jornadas(device_id, start, end)
+
+    # Cada empresa ve lo suyo. Se filtra por EQUIPO y no por jornada
+    # para no tener que repetir la regla: un equipo ajeno
+    # sencillamente no aparece, igual que en el listado normal.
+    if not is_platform_owner(usuario):
+
+        propia = organization_of(usuario)
+
+        equipos = {
+            equipo["device_id"] for equipo in get_devices()
+            if equipo.get("organization_id") == propia
+        }
+
+        dias = [dia for dia in dias if dia["device_id"] in equipos]
+
+    return {
+        "status": "ok",
+        "days": dias
     }
 
 
