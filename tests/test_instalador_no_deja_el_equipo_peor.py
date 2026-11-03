@@ -502,6 +502,57 @@ comprobar(
 # instalando dos veces seguidas, y es el mismo error que aparecio en
 # un equipo de produccion.
 
+print("8b. Que un aviso inofensivo no tumbe la instalacion")
+
+# En un equipo de verdad, la instalacion murio aqui:
+#
+#   & $Python -c "import mss, wmi, cryptography, websockets" 2>$null
+#   wmi.py:32: SyntaxWarning: invalid escape sequence '\_'
+#   TerminatingError: ... "ErrorActionPreference" ...
+#
+# Los imports funcionaban. Lo que paso es que el modulo wmi escribe
+# ese aviso por la salida de ERROR, y en PowerShell 5.1 redirigir la
+# salida de error de un programa EXTERNO envuelve cada linea en un
+# error; con la preferencia en Stop, eso aborta el script entero.
+#
+# El 2>$null que pretendia silenciarlo era justo lo que lo
+# provocaba.
+#
+# No salio en Windows Sandbox porque el aviso solo aparece la
+# primera vez que se compila el .pyc, y alli el runtime ya lo traia
+# hecho.
+
+bloque_imports = texto.split("import mss, wmi, cryptography, websockets")[0]
+
+comprobar(
+    "Los avisos de Python se silencian en el origen (-W ignore)",
+    "-W ignore -c \"import mss, wmi" in texto
+)
+
+comprobar(
+    "Y un aviso por la salida de error no aborta el script",
+    '$ErrorActionPreference = "Continue"' in bloque_imports[-900:],
+    "falta bajar la preferencia alrededor de la llamada"
+)
+
+comprobar(
+    "Lo que decide es el codigo de salida, no lo que se escribio",
+    "$codigoImports = $LASTEXITCODE" in texto
+    and "if ($codigoImports -ne 0)" in texto
+)
+
+comprobar(
+    "Y la preferencia se restaura despues",
+    "$ErrorActionPreference = $preferenciaAnterior" in texto
+)
+
+# pip hace lo mismo: avisa de versiones por la salida de error.
+comprobar(
+    "pip tambien queda protegido",
+    "$codigoPip = $LASTEXITCODE" in texto
+)
+
+
 print("8. Que identity.json siga siendo legible al actualizar")
 
 linea_config = next(

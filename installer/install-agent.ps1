@@ -770,10 +770,35 @@ if ($UsaRuntimeEmbebido) {
         throw "No se pudo copiar el entorno de ejecucion a $RuntimeDestino"
     }
 
-    # Que funcione de verdad, no que los archivos esten ahi
-    & $Python -c "import mss, wmi, cryptography, websockets" 2>$null
+    # Que funcione de verdad, no que los archivos esten ahi.
+    #
+    # Dos cuidados aqui, y los dos cuestan una instalacion si faltan:
+    #
+    # -W ignore. El modulo wmi escribe un SyntaxWarning por su
+    # secuencia de escape '\_'. Es inofensivo -el import funciona-,
+    # pero solo aparece la PRIMERA vez que se compila el .pyc. Por
+    # eso no se veia al probar: el runtime del repositorio ya traia
+    # el .pyc hecho, y en el equipo del cliente no.
+    #
+    # ErrorActionPreference en Continue mientras dura la llamada.
+    # En PowerShell 5.1, redirigir la salida de error de un programa
+    # EXTERNO envuelve cada linea en un error; con la preferencia en
+    # Stop, ese aviso inofensivo aborta la instalacion entera. El
+    # '2>$null' que pretendia silenciarlo era justo lo que lo
+    # provocaba.
+    #
+    # Lo que decide si las dependencias estan es el codigo de
+    # salida, no lo que se haya escrito por la salida de error.
+    $preferenciaAnterior = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
 
-    if ($LASTEXITCODE -ne 0) {
+    & $Python -W ignore -c "import mss, wmi, cryptography, websockets" 2>$null
+
+    $codigoImports = $LASTEXITCODE
+
+    $ErrorActionPreference = $preferenciaAnterior
+
+    if ($codigoImports -ne 0) {
         throw "El entorno de ejecucion copiado no puede importar las dependencias del Agent."
     }
 
@@ -784,10 +809,22 @@ if ($UsaRuntimeEmbebido) {
     Write-Host ""
     Write-Host "Instalando dependencias (puede tardar un par de minutos)..."
 
+    # Por lo mismo que la comprobacion de imports de arriba: pip
+    # escribe avisos por la salida de error -versiones, rutas- que no
+    # son fallos, y con la preferencia en Stop y la transcripcion
+    # abierta pueden abortar la instalacion. Lo que decide es el
+    # codigo de salida.
+    $preferenciaAnterior = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+
     & $Python -m pip install --quiet --disable-pip-version-check --upgrade pip
     & $Python -m pip install --quiet --disable-pip-version-check -r (Join-Path $InstallDir "requirements-agent-windows.txt")
 
-    if ($LASTEXITCODE -ne 0) {
+    $codigoPip = $LASTEXITCODE
+
+    $ErrorActionPreference = $preferenciaAnterior
+
+    if ($codigoPip -ne 0) {
         throw "Fallo la instalacion de dependencias. Revisa la conexion a internet y vuelve a ejecutar el script."
     }
 }
