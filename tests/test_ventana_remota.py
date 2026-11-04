@@ -35,6 +35,8 @@ import time
 
 from pathlib import Path
 
+import chrome_de_pruebas
+
 
 RAIZ = Path(__file__).resolve().parent.parent
 
@@ -234,6 +236,69 @@ def carpeta_de_perfil(base):
     return None
 
 
+def test_el_navegador_de_pruebas_no_deja_restos_ni_mide_a_ciegas():
+    """
+    Dos fallos de las PRUEBAS, no del producto, que costaron una
+    tarde de buscar en el sitio equivocado.
+
+    El primero: terminate() mata el chrome.exe que se lanzo, pero
+    Chrome arranca hijos -renderizador, GPU- que sobreviven. Cada
+    ejecucion dejaba un par sueltos, headless y sin ventana.
+
+    El segundo: con la maquina cargada por esos restos, los cuatro
+    segundos de espera fija no bastaban. Chrome todavia no estaba
+    listo, la sonda se conectaba a medias y las medidas salian mal.
+    Y eso es peor que fallar, porque unas medidas equivocadas
+    parecen un defecto de la ventana remota.
+
+    Esta suite llego a dar 26 de 40 por esto, con el codigo de la
+    ventana intacto.
+    """
+
+    AQUI = io.open(__file__, encoding="utf-8").read()
+    TECLADO = io.open(
+        RAIZ / "tests" / "test_teclado_remoto.py", encoding="utf-8"
+    ).read()
+    UTIL = io.open(
+        RAIZ / "tests" / "chrome_de_pruebas.py", encoding="utf-8"
+    ).read()
+
+    for nombre, fuente in (("la ventana", AQUI), ("el teclado", TECLADO)):
+
+        comprobar("En %s se espera a que Chrome conteste" % nombre,
+                  "esperar_a_chrome(" in fuente)
+
+        # Por LINEA, no buscando el texto en el archivo entero:
+        # esta misma comprobacion contiene la cadena que busca, y
+        # se encontraba a si misma.
+        espera_fija = [
+            linea for linea in fuente.splitlines()
+            if linea.strip().startswith("time.sleep(4)")
+        ]
+
+        comprobar("Y ya no hay espera fija en %s" % nombre,
+                  not espera_fija,
+                  "queda: " + "; ".join(espera_fija))
+
+        comprobar("En %s se cierra el arbol entero" % nombre,
+                  "cerrar_del_todo(" in fuente)
+
+    comprobar("El cierre alcanza a los hijos",
+              '"/T", "/F"' in UTIL)
+
+    # Y solo a los nuestros. Buscar "chrome.exe" por nombre cerraria
+    # el navegador de la persona, que no es nuestro y no se toca.
+    comprobar("Nunca se cierra Chrome por nombre",
+              "taskkill" in UTIL and "/IM" not in UTIL,
+              "se estaria cerrando cualquier Chrome")
+
+    comprobar("Se cierra el arbol del proceso que lanzamos",
+              "str(proceso.pid)" in UTIL)
+
+    comprobar("Si Chrome no levanta, se dice en vez de medir",
+              "BLOQUEADA: Chrome no levanto a tiempo" in AQUI)
+
+
 def test_en_un_navegador_de_verdad():
     """Mide pixeles. Es lo unico que detecta una deformacion."""
 
@@ -276,7 +341,22 @@ def test_en_un_navegador_de_verdad():
     )
 
     try:
-        time.sleep(4)
+
+        # Se espera a que Chrome CONTESTE, no un numero fijo
+        # de segundos. Cuatro bastan en una maquina
+        # descansada; con la maquina ocupada la sonda se
+        # conectaba a medias y las medidas salian mal. No
+        # fallaba: medía MAL, que es peor, porque parece un
+        # defecto del producto.
+        if not chrome_de_pruebas.esperar_a_chrome(puerto_chrome):
+            comprobar(
+                "BLOQUEADA: Chrome no levanto a tiempo", False,
+                "suele ser un Chrome headless huerfano de una "
+                "corrida anterior ocupando la maquina"
+            )
+            return
+
+        chrome_de_pruebas.esperar_al_servidor(puerto_web)
 
         salida = subprocess.run(
             [node, str(SONDA), str(puerto_web), str(puerto_chrome)],
@@ -297,15 +377,12 @@ def test_en_un_navegador_de_verdad():
         return
 
     finally:
+        # El ARBOL entero, no solo el padre: Chrome deja
+        # hijos -renderizador, GPU- que sobreviven a
+        # terminate() y se acumulan de una corrida a la
+        # siguiente hasta estropear las medidas.
         for proceso in (chrome, web):
-            try:
-                proceso.terminate()
-                proceso.wait(timeout=8)
-            except Exception:
-                try:
-                    proceso.kill()
-                except Exception:
-                    pass
+            chrome_de_pruebas.cerrar_del_todo(proceso)
 
         shutil.rmtree(perfil, ignore_errors=True)
 
@@ -418,7 +495,18 @@ def test_los_ocho_tiradores_en_un_navegador():
     )
 
     try:
-        time.sleep(4)
+
+        # Igual que la otra: se espera a que Chrome conteste. Esta
+        # era precisamente la funcion cuyas medidas salian mal.
+        if not chrome_de_pruebas.esperar_a_chrome(puerto_chrome):
+            comprobar(
+                "BLOQUEADA: Chrome no levanto a tiempo (tiradores)", False,
+                "suele ser un Chrome headless huerfano de una corrida "
+                "anterior ocupando la maquina"
+            )
+            return
+
+        chrome_de_pruebas.esperar_al_servidor(puerto_web)
 
         salida = subprocess.run(
             [node, str(SONDA_TIRADORES),
@@ -440,15 +528,9 @@ def test_los_ocho_tiradores_en_un_navegador():
         return
 
     finally:
+        # El arbol entero, igual que arriba.
         for proceso in (chrome, web):
-            try:
-                proceso.terminate()
-                proceso.wait(timeout=8)
-            except Exception:
-                try:
-                    proceso.kill()
-                except Exception:
-                    pass
+            chrome_de_pruebas.cerrar_del_todo(proceso)
 
         shutil.rmtree(perfil, ignore_errors=True)
 
@@ -515,6 +597,7 @@ def principal():
         test_el_marco_se_puede_redimensionar,
         test_cada_sesion_empieza_desplegada,
         test_el_tamano_se_guarda_sin_romperse,
+        test_el_navegador_de_pruebas_no_deja_restos_ni_mide_a_ciegas,
         test_en_un_navegador_de_verdad,
         test_los_ocho_tiradores_en_un_navegador
     ]

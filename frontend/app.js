@@ -12643,6 +12643,87 @@ if (botonHorarioDefecto) {
     botonHorarioDefecto.addEventListener("click", aplicarHorarioPorDefecto);
 }
 
+
+/* Borrar las grabaciones que no tienen video dentro.
+
+   Se borran del EQUIPO y del servidor, en ese orden. Borrar solo la
+   ficha no sirve de nada: el equipo manda su catalogo al conectar y
+   el servidor la vuelve a crear. Paso de verdad -58 fichas
+   borradas volvieron once minutos despues- y por eso esto pasa por
+   el equipo. */
+async function limpiarGrabacionesVacias() {
+
+    const boton = document.getElementById("limpiar-vacias");
+    const estado = document.getElementById("limpiar-vacias-estado");
+
+    if (!boton || !estado) {
+        return;
+    }
+
+    boton.disabled = true;
+
+    estado.className = "text-xs mt-2 text-slate-500";
+    estado.classList.remove("hidden");
+    estado.textContent = "Borrando...";
+
+    try {
+
+        const respuesta = await fetch(
+            "/api/recordings/cleanup-empty",
+            { method: "POST" }
+        );
+
+        const datos = await respuesta.json().catch(() => ({}));
+
+        if (!respuesta.ok) {
+            estado.className = "text-xs mt-2 text-red-600";
+            estado.textContent = datos.message || "No se pudo limpiar.";
+            return;
+        }
+
+        // Se cuenta TODO, no solo lo borrado. Lo que no se pudo
+        // tocar es lo que de verdad hay que saber: una limpieza que
+        // dice "listo" y deja la mitad sin tocar se descubre tarde.
+        const partes = [`${datos.borradas} borrada(s).`];
+
+        if (datos.conservadas) {
+            partes.push(
+                `${datos.conservadas} marcada(s) como Conservar, sin tocar.`
+            );
+        }
+
+        if (datos.sin_conexion) {
+            partes.push(
+                `${datos.sin_conexion} en equipos desconectados: se borrarán `
+                + `cuando vuelvan.`
+            );
+        }
+
+        if (datos.fallidas) {
+            partes.push(`${datos.fallidas} no se pudieron borrar.`);
+        }
+
+        estado.className = "text-xs mt-2 text-emerald-600";
+        estado.textContent = partes.join(" ");
+
+        loadRecordings();
+
+    } catch (error) {
+        estado.className = "text-xs mt-2 text-red-600";
+        estado.textContent = "No se pudo limpiar.";
+
+    } finally {
+        boton.disabled = false;
+    }
+}
+
+
+const botonLimpiarVacias = document.getElementById("limpiar-vacias");
+
+if (botonLimpiarVacias) {
+    botonLimpiarVacias.addEventListener("click", limpiarGrabacionesVacias);
+}
+
 /* ==============================
 DASHBOARD
 ============================== */

@@ -46,6 +46,8 @@ import time
 
 from pathlib import Path
 
+import chrome_de_pruebas
+
 
 RAIZ = Path(__file__).resolve().parent.parent
 
@@ -201,7 +203,22 @@ def test_tecleando_de_verdad():
     )
 
     try:
-        time.sleep(4)
+
+        # Se espera a que Chrome CONTESTE, no un numero fijo
+        # de segundos. Cuatro bastan en una maquina
+        # descansada; con la maquina ocupada la sonda se
+        # conectaba a medias y las medidas salian mal. No
+        # fallaba: medía MAL, que es peor, porque parece un
+        # defecto del producto.
+        if not chrome_de_pruebas.esperar_a_chrome(PUERTO_CHROME):
+            comprobar(
+                "BLOQUEADA: Chrome no levanto a tiempo", False,
+                "suele ser un Chrome headless huerfano de una "
+                "corrida anterior ocupando la maquina"
+            )
+            return
+
+        chrome_de_pruebas.esperar_al_servidor(PUERTO_WEB)
 
         salida = subprocess.run(
             [node, str(SONDA), str(PUERTO_WEB), str(PUERTO_CHROME)],
@@ -222,15 +239,12 @@ def test_tecleando_de_verdad():
         return
 
     finally:
+        # El ARBOL entero, no solo el padre: Chrome deja
+        # hijos -renderizador, GPU- que sobreviven a
+        # terminate() y se acumulan de una corrida a la
+        # siguiente hasta estropear las medidas.
         for proceso in (chrome, web):
-            try:
-                proceso.terminate()
-                proceso.wait(timeout=8)
-            except Exception:
-                try:
-                    proceso.kill()
-                except Exception:
-                    pass
+            chrome_de_pruebas.cerrar_del_todo(proceso)
 
         shutil.rmtree(perfil, ignore_errors=True)
 

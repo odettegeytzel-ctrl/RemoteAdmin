@@ -45,12 +45,21 @@ KIND_POWER = "power"
 # identidad ya estan resueltos aqui.
 KIND_STORE = "store"
 
+# Borrado de una grabacion del disco del equipo.
+#
+# Hace falta esperar la respuesta, no vale mandarla y olvidarse: la
+# ficha del servidor solo puede retirarse cuando el archivo ya no
+# esta. Al reves, el catalogo que el equipo manda al conectar la
+# vuelve a crear, y el borrado no borra nada.
+KIND_DELETE = "delete"
+
 # Prefijo del mensaje que envía el Agent con la respuesta
 RESPONSE_PREFIXES = {
     "processes_info:": KIND_PROCESSES,
     "services_info:": KIND_SERVICES,
     "power_result:": KIND_POWER,
-    "store_result:": KIND_STORE
+    "store_result:": KIND_STORE,
+    "delete_result:": KIND_DELETE
 }
 
 

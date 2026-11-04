@@ -43,6 +43,7 @@ from backend.settings import (
     UnknownSettingError
 )
 from backend import settings as ajustes_mod
+from backend import recordings as recordings_mod
 from backend.auth import (
     authenticate,
     change_password,
@@ -118,6 +119,7 @@ from backend.queries import (
     KIND_SERVICES,
     KIND_POWER,
     KIND_STORE,
+    KIND_DELETE,
     QUERY_TIMEOUT_SECONDS
 )
 from backend.audit import (
@@ -6110,6 +6112,286 @@ async def recording_schedule_set(device_id: str, data: dict,
         "schedule": horario,
         "description": recording_schedule.describe(horario),
         "delivered": entregado
+    }
+
+
+# Por debajo de esto no hay video posible: un segundo de pantalla
+# ocupa decenas de kilobytes. El mismo numero que usa el panel para
+# no prometer la reproduccion de un archivo vacio.
+TAMANO_MINIMO_DE_UN_VIDEO = 10 * 1024
+
+DELETE_TIMEOUT_SECONDS = 30
+
+
+async def _borrar_grabacion(recording_id, request, auditar):
+    """
+    Borra una grabacion de verdad: primero del equipo, luego la ficha.
+
+    El orden NO es un detalle. El Agent manda su catalogo de
+    grabaciones locales al conectar, y el servidor crea una ficha
+    por cada archivo que encuentra. Borrar la ficha con el archivo
+    todavia en disco no borra nada: vuelve en la siguiente conexion.
+
+    Paso de verdad en produccion. Se borraron 58 fichas y once
+    minutos despues estaban las 58 otra vez. De ahi este camino.
+
+    Devuelve (borrada, respuesta_de_error). Si el equipo no esta
+    conectado NO se borra la ficha: dejarla es correcto, porque el
+    archivo sigue existiendo y la ficha dice la verdad.
+    """
+
+    grabacion = get_recording(recording_id)
+
+    if not grabacion:
+        return False, JSONResponse(
+            status_code=404,
+            content={"status": "error",
+                     "message": "Grabación no encontrada"}
+        )
+
+    # Una marca de conservar es una decision de una persona. No se
+    # pisa por una limpieza automatica, ni aunque la grabacion este
+    # vacia: quien la marco sabra por que.
+    if grabacion.get("keep"):
+        return False, JSONResponse(
+            status_code=409,
+            content={
+                "status": "error",
+                "code": "marcada_para_conservar",
+                "message": (
+                    "Esta grabación está marcada como Conservar. "
+                    "Quita la marca antes de borrarla."
+                )
+            }
+        )
+
+    device_id = grabacion["device_id"]
+    nombre = _os.path.basename(str(grabacion.get("path") or ""))
+
+    # --- 1. La copia del servidor, si la hay ---
+    if grabacion.get("storage_state") == STORAGE_STORED:
+
+        try:
+            ruta = _os.path.join(str(get_recordings_dir()), grabacion["path"])
+
+            if _os.path.isfile(ruta):
+                _os.remove(ruta)
+
+        except OSError as problema:
+            auditar(STATUS_ERROR, {"error": f"No se pudo borrar del servidor: {problema}"})
+
+            return False, JSONResponse(
+                status_code=500,
+                content={"status": "error",
+                         "message": "No se pudo borrar el archivo del servidor"}
+            )
+
+    # --- 2. La copia del equipo ---
+    #
+    # Siempre se pide, aunque la ficha diga que esta archivada: el
+    # equipo conserva su copia hasta que se le dice que la suelte.
+    websocket = connected_agents.get(device_id)
+
+    if not websocket:
+        auditar(STATUS_ERROR, {"error": "El equipo no esta conectado"})
+
+        return False, JSONResponse(
+            status_code=409,
+            content={
+                "status": "error",
+                "code": "equipo_desconectado",
+                "message": (
+                    "El equipo está desconectado. La grabación sigue "
+                    "en su disco, así que borrar solo la ficha no "
+                    "serviría: volvería a aparecer al reconectarse."
+                )
+            }
+        )
+
+    if not agent_supports(device_id, "delete_recording"):
+        auditar(STATUS_ERROR, {"error": "Agent sin borrado"})
+
+        return False, JSONResponse(
+            status_code=409,
+            content={
+                "status": "error",
+                "code": "agent_sin_borrado",
+                "message": (
+                    "Este equipo tiene una versión del Agent que "
+                    "todavía no sabe borrar grabaciones."
+                )
+            }
+        )
+
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    query_id = create_query(device_id, KIND_DELETE, future)
+
+    try:
+        await websocket.send_text(
+            "delete_recording:" + json.dumps({
+                "query_id": query_id,
+                "filename": nombre
+            })
+        )
+
+        respuesta = await asyncio.wait_for(future, DELETE_TIMEOUT_SECONDS)
+
+    except asyncio.TimeoutError:
+        discard_query(query_id)
+        auditar(STATUS_ERROR, {"error": "El equipo no respondio a tiempo"})
+
+        return False, JSONResponse(
+            status_code=504,
+            content={"status": "error",
+                     "message": "El equipo no respondió a tiempo"}
+        )
+
+    except Exception as error:
+        discard_query(query_id)
+        auditar(STATUS_ERROR, {"error": str(error)})
+
+        return False, JSONResponse(
+            status_code=502,
+            content={"status": "error",
+                     "message": f"No se pudo pedir el borrado: {error}"}
+        )
+
+    finally:
+        discard_query(query_id)
+
+    if not isinstance(respuesta, dict) or not respuesta.get("ok"):
+
+        motivo = "El equipo no pudo borrarla"
+
+        if isinstance(respuesta, dict) and respuesta.get("message"):
+            motivo = str(respuesta["message"])[:200]
+
+        auditar(STATUS_ERROR, {"error": motivo})
+
+        return False, JSONResponse(
+            status_code=502,
+            content={"status": "error", "message": motivo}
+        )
+
+    # --- 3. Y AHORA la ficha ---
+    recordings_mod.borrar_ficha(recording_id)
+
+    auditar(STATUS_SUCCESS, {
+        "archivo": nombre,
+        "ya_no_estaba_en_el_equipo": bool(respuesta.get("ya_no_estaba"))
+    })
+
+    return True, None
+
+
+@app.delete("/api/recordings/{recording_id}")
+async def borrar_grabacion(recording_id: int, request: Request):
+    """
+    Borra una grabacion del equipo y del servidor.
+
+    No existia ninguna forma de borrar una grabacion, y por eso una
+    limpieza hecha a mano en la base se deshizo sola: el catalogo
+    del equipo volvio a crear las fichas.
+    """
+
+    usuario, error = require_permission(request, "recordings.manage")
+
+    if error:
+        return error
+
+    grabacion = get_recording(recording_id)
+
+    if grabacion and not is_platform_owner(usuario):
+
+        if (get_device_organization(grabacion["device_id"])
+                != organization_of(usuario)):
+
+            return JSONResponse(
+                status_code=404,
+                content={"status": "error",
+                         "message": "Grabación no encontrada"}
+            )
+
+    def auditar(estado, detalle=None):
+        log_audit("recording.delete", request=request,
+                  device_id=(grabacion or {}).get("device_id"),
+                  status=estado,
+                  details={"recording_id": recording_id, **(detalle or {})})
+
+    borrada, fallo = await _borrar_grabacion(recording_id, request, auditar)
+
+    if not borrada:
+        return fallo
+
+    return {"status": "ok", "borrada": recording_id}
+
+
+@app.post("/api/recordings/cleanup-empty")
+async def limpiar_grabaciones_vacias(request: Request):
+    """
+    Borra las grabaciones que no tienen video dentro.
+
+    Son archivos de doscientos y pico bytes -solo la cabecera- que
+    produjo un equipo que abrio el archivo y no llego a capturar
+    nada. No se pueden reproducir y no van a poder nunca.
+
+    Se borran del EQUIPO y del servidor, en ese orden. Las marcadas
+    como Conservar no se tocan, y los equipos desconectados se
+    dejan para otra vez: su archivo sigue ahi y la ficha dice la
+    verdad.
+    """
+
+    usuario, error = require_permission(request, "recordings.manage")
+
+    if error:
+        return error
+
+    propia = None if is_platform_owner(usuario) else organization_of(usuario)
+
+    borradas = 0
+    conservadas = 0
+    sin_conexion = 0
+    fallidas = 0
+
+    for grabacion in list_recordings():
+
+        if int(grabacion.get("size_bytes") or 0) >= TAMANO_MINIMO_DE_UN_VIDEO:
+            continue
+
+        if propia is not None:
+            if get_device_organization(grabacion["device_id"]) != propia:
+                continue
+
+        if grabacion.get("keep"):
+            conservadas += 1
+            continue
+
+        if grabacion["device_id"] not in connected_agents:
+            sin_conexion += 1
+            continue
+
+        def auditar(estado, detalle=None, _g=grabacion):
+            log_audit("recording.delete", request=request,
+                      device_id=_g["device_id"], status=estado,
+                      details={"recording_id": _g["id"],
+                               "limpieza": True, **(detalle or {})})
+
+        borrada, _fallo = await _borrar_grabacion(
+            grabacion["id"], request, auditar
+        )
+
+        if borrada:
+            borradas += 1
+        else:
+            fallidas += 1
+
+    return {
+        "status": "ok",
+        "borradas": borradas,
+        "conservadas": conservadas,
+        "sin_conexion": sin_conexion,
+        "fallidas": fallidas
     }
 
 

@@ -696,6 +696,51 @@ def find_managed_recording(filename):
     return None
 
 
+def borrar_grabacion_local(filename):
+    """
+    Borra UNA grabacion del disco de este equipo.
+
+    Por que hace falta: el equipo manda su catalogo de grabaciones
+    locales al conectar, y el servidor crea una ficha por cada
+    archivo que encuentra. Borrar la ficha en el servidor sin borrar
+    el archivo no borra nada: en la siguiente conexion el catalogo
+    la devuelve. Paso de verdad -58 fichas borradas volvieron once
+    minutos despues- y por eso existe esta orden.
+
+    Solo borra DENTRO de la carpeta administrada y solo por nombre:
+    el servidor manda 'rec_1791566280.mp4', nunca una ruta. Lo que
+    no sea una grabacion de este Agent no se toca, aunque lo pida.
+
+    Nunca lanza: devuelve que paso, para que el servidor decida si
+    retira la ficha o la deja.
+    """
+
+    ruta = find_managed_recording(filename)
+
+    if ruta is None:
+        # Ya no esta. Para el servidor es el mismo resultado util
+        # que si la acabara de borrar: el archivo no existe.
+        return {
+            "ok": True,
+            "ya_no_estaba": True,
+            "filename": os.path.basename(str(filename or ""))
+        }
+
+    try:
+        os.remove(ruta)
+
+    except OSError as problema:
+        return {
+            "ok": False,
+            "filename": os.path.basename(ruta),
+            "message": str(problema)
+        }
+
+    print(f"[grabaciones] Borrada del equipo: {os.path.basename(ruta)}")
+
+    return {"ok": True, "filename": os.path.basename(ruta)}
+
+
 def store_recording_on_server(filename):
     """
     Sube UNA grabacion concreta, la que el servidor acaba de pedir.
@@ -3479,7 +3524,15 @@ async def websocket_connection():
                             "capabilities": [
                                 "recording_stream",
                                 "clipboard",
-                                "input_lock"
+                                "input_lock",
+
+                                # Borrar una grabacion del disco. El
+                                # servidor lo comprueba antes de
+                                # pedirlo: a un Agent que no sabe
+                                # hacerlo hay que decirselo, no
+                                # esperar a que venza el plazo y
+                                # llamarlo averia.
+                                "delete_recording"
                             ]
                         })
                     )
@@ -3682,6 +3735,28 @@ async def websocket_connection():
 
                         await websocket.send(
                             "store_result:" + json.dumps(resultado)
+                        )
+
+                    elif message.startswith("delete_recording:"):
+
+                        # El servidor pide borrar UNA grabacion del
+                        # disco de este equipo. Igual que archivar:
+                        # del mensaje solo se lee un nombre, que se
+                        # busca dentro de la carpeta administrada.
+                        try:
+                            peticion = json.loads(message.split(":", 1)[1])
+                        except json.JSONDecodeError:
+                            peticion = {}
+
+                        resultado = await asyncio.to_thread(
+                            borrar_grabacion_local,
+                            peticion.get("filename")
+                        )
+
+                        resultado["query_id"] = peticion.get("query_id")
+
+                        await websocket.send(
+                            "delete_result:" + json.dumps(resultado)
                         )
 
                     elif message == "get_recording_catalog":

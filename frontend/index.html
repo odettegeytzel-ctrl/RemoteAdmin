@@ -2967,6 +2967,36 @@
                     >
                     </div>
 
+                    <!--
+                    Las vacias: archivos de doscientos y pico bytes
+                    que un equipo abrio sin llegar a capturar nada.
+                    No se pueden reproducir y no van a poder nunca.
+
+                    Se borran del EQUIPO y del servidor. Borrar solo
+                    la ficha no sirve: el catalogo del equipo la
+                    vuelve a crear al reconectar.
+                    -->
+                    <div class="px-6 py-4 border-t border-slate-200">
+
+                        <button
+                            id="limpiar-vacias"
+                            class="px-4 py-2 rounded-lg border border-slate-300
+                                   text-sm hover:bg-slate-50 transition"
+                        >
+                            Borrar las grabaciones vac&iacute;as
+                        </button>
+
+                        <p class="text-xs text-slate-500 mt-2">
+                            Las que no llegaron a capturar nada. Se borran
+                            tambi&eacute;n del disco del equipo. Las marcadas
+                            como <strong>Conservar</strong> no se tocan.
+                        </p>
+
+                        <p id="limpiar-vacias-estado"
+                           class="hidden text-xs mt-2"></p>
+
+                    </div>
+
                     <div
                         id="recording-player"
                         class="hidden border-t border-slate-200 p-6"

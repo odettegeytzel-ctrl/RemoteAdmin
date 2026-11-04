@@ -790,6 +790,35 @@ def jornadas(device_id=None, start=None, end=None, zonas=None):
     return resultado
 
 
+def borrar_ficha(recording_id):
+    """
+    Quita la fila de una grabacion. Nada mas.
+
+    OJO con el orden: esto solo debe llamarse DESPUES de que el
+    archivo haya desaparecido del equipo. El Agent manda su catalogo
+    al conectar y el servidor crea una ficha por cada archivo que
+    encuentra, asi que borrar la fila con el archivo todavia en
+    disco no borra nada: vuelve en la siguiente conexion.
+
+    Paso de verdad. Se borraron 58 fichas y once minutos despues
+    estaban las 58 otra vez, recreadas por el catalogo. Por eso el
+    borrado de verdad empieza en el equipo y termina aqui.
+    """
+
+    connection = get_connection()
+
+    try:
+        cursor = connection.execute(
+            "DELETE FROM recordings WHERE id = ?", (recording_id,)
+        )
+        connection.commit()
+
+        return cursor.rowcount > 0
+
+    finally:
+        connection.close()
+
+
 def get_recording(recording_id):
 
     connection = get_connection()

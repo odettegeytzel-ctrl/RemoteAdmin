@@ -100,6 +100,11 @@ BACKGROUND_PREFIXES_EXPECTED = (
     # ayudante, pero decidir el horario o la retencion no necesita
     # escritorio: son ajustes que el servicio guarda y transmite.
     "store_recording:",
+
+    # Borrar una grabacion del disco del equipo. De fondo: es un
+    # archivo, no una ventana, y tiene que funcionar aunque no haya
+    # nadie con la sesion iniciada.
+    "delete_recording:",
     "set_retention:",
     "set_schedule:",
     "set_continuous:",
