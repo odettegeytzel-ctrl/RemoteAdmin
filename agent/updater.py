@@ -37,6 +37,8 @@ datos no estan en lo que se sustituye.
 import json
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -310,6 +312,103 @@ REPLACEABLE = ("agent", "installer")
 PRESERVED = ("config", "recordings", "logs", ".env")
 
 
+# ==============================
+# LIBRERIAS NUEVAS
+# ==============================
+#
+# Hasta aqui el actualizador solo reemplazaba codigo. Eso basta para
+# arreglar y para anadir funciones con lo que ya hay instalado, pero
+# no para una que necesite una libreria nueva: el codigo llegaria y
+# moriria en su primer import.
+#
+# Y entonces la unica salida era ir equipo por equipo con el .exe.
+# Con treinta maquinas eso deja de ser una molestia y pasa a ser un
+# coste; con cien, una razon para no hacer la mejora.
+#
+# Las ruedas viajan DENTRO del paquete firmado, en wheels\, y se
+# instalan sin red:
+#
+#   - un equipo puede no tener salida a PyPI, y es normal que no la
+#     tenga;
+#   - bajar codigo sin firmar en mitad de una actualizacion es
+#     exactamente lo que la firma existe para evitar. Lo que entra
+#     va dentro de lo que se firmo, o no entra.
+#
+# Si la instalacion de una rueda falla, se vuelve atras como con
+# cualquier otro fallo: mas vale la version anterior entera que una
+# nueva a la que le falta una pieza.
+
+CARPETA_DE_RUEDAS = "wheels"
+
+# Lo que puede tardar pip con las ruedas en local. Generoso porque
+# algunas traen extensiones que se copian despacio en un disco lento,
+# y acotado porque un actualizador colgado es un equipo que no se
+# entera de las versiones siguientes.
+PLAZO_DE_PIP = 300
+
+
+def ruedas_del_paquete(extraido):
+    """Las ruedas que trae el paquete, o lista vacia si no trae."""
+
+    carpeta = os.path.join(extraido, CARPETA_DE_RUEDAS)
+
+    if not os.path.isdir(carpeta):
+        return []
+
+    return sorted(
+        os.path.join(carpeta, nombre)
+        for nombre in os.listdir(carpeta)
+        if nombre.lower().endswith(".whl")
+    )
+
+
+def instalar_ruedas(ruedas, registrar=print):
+    """
+    Instala las ruedas del paquete, sin tocar la red.
+
+    Lanza UpdateError si alguna falla, para que quien llame vuelva
+    atras: una libreria a medias es peor que no haberla instalado.
+    """
+
+    if not ruedas:
+        return
+
+    registrar(f"[update] Instalando {len(ruedas)} libreria(s)")
+
+    # El interprete que esta corriendo, que es el del Agent. No se
+    # busca ningun python por el PATH: en un equipo cualquiera eso
+    # podria ser otro, y las librerias acabarian donde no sirven.
+    orden = [
+        sys.executable, "-m", "pip", "install",
+        "--quiet", "--disable-pip-version-check",
+
+        # Sin red. Lo que no este en la carpeta, no se instala.
+        "--no-index",
+        "--find-links", os.path.dirname(ruedas[0]),
+    ] + ruedas
+
+    try:
+        resultado = subprocess.run(
+            orden, capture_output=True, timeout=PLAZO_DE_PIP
+        )
+
+    except Exception as problema:
+        raise UpdateError(f"No se pudo ejecutar pip: {problema}")
+
+    if resultado.returncode != 0:
+
+        detalle = (
+            (resultado.stderr or b"").decode(errors="replace").strip()
+            or (resultado.stdout or b"").decode(errors="replace").strip()
+        )
+
+        raise UpdateError(
+            "pip fallo (codigo %d): %s" % (resultado.returncode, detalle[:400])
+        )
+
+    registrar("[update] Librerias instaladas")
+
+
 def install_package(contenido, install_dir, manifiesto, registrar=print):
     """
     Instala una version nueva, con vuelta atras si algo sale mal.
@@ -365,6 +464,16 @@ def install_package(contenido, install_dir, manifiesto, registrar=print):
 
         # --- Instalacion ---
         try:
+
+            # Las librerias ANTES que el codigo.
+            #
+            # El orden importa: si se copiara primero el codigo y
+            # luego fallara una rueda, entre una cosa y otra el
+            # Agent podria reiniciarse -por la tarea programada, por
+            # un reinicio del equipo- y arrancar con codigo que
+            # importa algo que no esta. Asi, si pip falla, lo que
+            # hay en disco sigue siendo la version anterior entera.
+            instalar_ruedas(ruedas_del_paquete(extraido), registrar)
 
             for parte in REPLACEABLE:
 

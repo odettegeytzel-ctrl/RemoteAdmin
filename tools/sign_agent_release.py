@@ -327,6 +327,30 @@ def _construir_paquete():
 
             paquete.write(origen, arcname=relativo)
 
+        # Las ruedas, si las hay.
+        #
+        # Van en el paquete FIRMADO y no se bajan de Internet: un
+        # equipo puede no tener salida a PyPI, y descargar codigo sin
+        # firmar en mitad de una actualizacion es justo lo que la
+        # firma existe para evitar. Lo que entra en la maquina va
+        # dentro de lo que se firmo, o no entra.
+        #
+        # La carpeta esta vacia mientras no haga falta ninguna
+        # libreria nueva, y entonces el paquete pesa lo de siempre.
+        ruedas = os.path.join(RAIZ, "releases", "wheels")
+
+        if os.path.isdir(ruedas):
+
+            for nombre in sorted(os.listdir(ruedas)):
+
+                if not nombre.lower().endswith(".whl"):
+                    continue
+
+                paquete.write(
+                    os.path.join(ruedas, nombre),
+                    arcname="wheels/" + nombre
+                )
+
     return buffer.getvalue()
 
 

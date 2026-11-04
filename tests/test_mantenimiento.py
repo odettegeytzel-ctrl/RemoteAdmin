@@ -586,10 +586,12 @@ def test_el_control_remoto_tampoco_se_queda_en_negro():
     comprobar("Se contesta 409 con el mismo codigo que el aviso",
               '"code": "sin_sesion_iniciada"' in pantalla)
 
-    # El texto va partido en dos lineas en el codigo fuente, asi que
-    # se busca el trozo que cabe entero en una.
-    comprobar("Y se explica que no hay pantalla que mostrar",
-              "hay pantalla que mostrar" in pantalla)
+    # El texto ya no se escribe aqui: lo compone motivo_sin_escritorio,
+    # que distingue "no hay nadie" de "hay alguien pero falta el
+    # ayudante". Son dos situaciones distintas y mandan a hacer cosas
+    # distintas.
+    comprobar("Y se explica el motivo concreto",
+              "motivo_sin_escritorio(device_id)" in pantalla)
 
     comprobar("Queda en la auditoria",
               'details="Sin sesion iniciada en el equipo"' in pantalla)
@@ -608,6 +610,119 @@ def test_el_control_remoto_tampoco_se_queda_en_negro():
               remoto.index("return;")
               < remoto.index('remoteScreen.classList.remove'),
               "se abre la ventana antes de rendirse")
+
+
+def test_el_ayudante_no_depende_de_que_alguien_inicie_sesion():
+    """
+    El defecto que dejo dos kioscos ciegos durante semanas.
+
+    La tarea del ayudante tiene UN disparador: "al iniciar sesion".
+    En un equipo normal da igual, porque la gente entra y sale todos
+    los dias. En un kiosco que no se apaga nunca, la sesion lleva
+    meses abierta: el Agent se instala DENTRO de esa sesion, y ese
+    inicio de sesion ya no va a volver a ocurrir.
+
+    El equipo respondia al latido, informaba su RAM y su disco, se
+    dejaba apagar... y no se veia la pantalla, no grababa, no habia
+    portapapeles ni aviso. Todo lo que necesita escritorio, y solo
+    eso.
+    """
+
+    AGENTE = io.open(RAIZ / "agent" / "agent.py", encoding="utf-8").read()
+
+    comprobar("El servicio vigila si falta el ayudante",
+              "def _vigilar_al_ayudante(" in AGENTE)
+
+    comprobar("Y lo arranca el mismo",
+              "def intentar_lanzar_ayudante(" in AGENTE
+              and '"schtasks", "/Run", "/TN", TAREA_DEL_AYUDANTE' in AGENTE)
+
+    comprobar("El vigilante corre solo en el servicio",
+              "target=_vigilar_al_ayudante" in AGENTE
+              and AGENTE.index("if AGENT_ROLE == ROLE_SERVICE:")
+              < AGENTE.index("target=_vigilar_al_ayudante"))
+
+    vigilante = AGENTE.split("def _vigilar_al_ayudante(", 1)[1][:2200]
+
+    comprobar("Si el ayudante esta, no se toca nada",
+              "if hay_sesion_interactiva():" in vigilante)
+
+    comprobar("Y si no hay NADIE dentro, tampoco se insiste",
+              "if usuario is None:" in vigilante)
+
+    # Lo ultimo importa: en un equipo sin nadie no hay escritorio
+    # donde pintar, asi que arrancar el ayudante cada minuto no
+    # arreglaria nada y solo llenaria el registro.
+    comprobar("Los reintentos se van espaciando",
+              "espera = min(espera * 2, ESPERA_MAXIMA)" in vigilante)
+
+    comprobar("Con un tope, para que no deje de intentarlo nunca",
+              "ESPERA_MAXIMA = 15 * 60" in AGENTE)
+
+
+def test_no_se_confunde_sin_sesion_con_sin_ayudante():
+    """
+    El panel decia "Nadie tiene la sesion iniciada en el equipo"
+    sobre dos kioscos que tenian a alguien trabajando delante y la
+    pantalla encendida.
+
+    Mandar a una persona a iniciar una sesion que ya esta abierta es
+    peor que no decir nada: parece que el programa sabe lo que dice.
+    """
+
+    import backend.main as servidor
+
+    AGENTE = io.open(RAIZ / "agent" / "agent.py", encoding="utf-8").read()
+
+    comprobar("El Agent sabe quien tiene la sesion abierta",
+              "def usuario_con_la_sesion_abierta(" in AGENTE)
+
+    comprobar("Y lo informa aparte de si hay ayudante",
+              '"logged_in"' in AGENTE and '"available"' in AGENTE)
+
+    # --- y el servidor dice lo que corresponde ---
+
+    servidor.interactive_sessions["eq-con-ayudante"] = True
+    servidor.interactive_logins["eq-con-ayudante"] = True
+
+    comprobar("Con ayudante no hay nada que explicar",
+              servidor.motivo_sin_escritorio("eq-con-ayudante") is None)
+
+    servidor.interactive_sessions["eq-kiosco"] = False
+    servidor.interactive_logins["eq-kiosco"] = True
+
+    kiosco = servidor.motivo_sin_escritorio("eq-kiosco")
+
+    comprobar("Con sesion abierta y sin ayudante NO se dice que no hay nadie",
+              "Nadie tiene la sesion iniciada" not in kiosco, kiosco)
+
+    comprobar("Se dice que falta el ayudante",
+              "ayudante" in kiosco.lower(), kiosco)
+
+    comprobar("Y que se esta arreglando solo",
+              "intentando arrancar" in kiosco, kiosco)
+
+    servidor.interactive_sessions["eq-vacio"] = False
+    servidor.interactive_logins["eq-vacio"] = False
+
+    vacio = servidor.motivo_sin_escritorio("eq-vacio")
+
+    comprobar("Sin nadie dentro si se dice",
+              "Nadie tiene la sesion iniciada" in vacio, vacio)
+
+    # Un Agent anterior no manda 'logged_in': no se sabe, y no se
+    # puede afirmar ninguna de las dos cosas.
+    servidor.interactive_sessions["eq-antiguo"] = False
+    servidor.interactive_logins["eq-antiguo"] = None
+
+    antiguo = servidor.motivo_sin_escritorio("eq-antiguo")
+
+    comprobar("Con un Agent antiguo no se afirma lo que no consta",
+              "Suele ser" in antiguo, antiguo)
+
+    for clave in ("eq-con-ayudante", "eq-kiosco", "eq-vacio", "eq-antiguo"):
+        servidor.interactive_sessions.pop(clave, None)
+        servidor.interactive_logins.pop(clave, None)
 
 
 def test_el_aviso_no_se_pone_delante_de_lo_que_escribes():
@@ -808,7 +923,9 @@ def principal():
         test_sin_sesion_iniciada_se_dice_y_no_se_finge,
         test_ante_la_duda_el_equipo_antiguo_sigue_funcionando,
         test_el_panel_dice_el_motivo_de_verdad,
-        test_el_control_remoto_tampoco_se_queda_en_negro
+        test_el_control_remoto_tampoco_se_queda_en_negro,
+        test_el_ayudante_no_depende_de_que_alguien_inicie_sesion,
+        test_no_se_confunde_sin_sesion_con_sin_ayudante
     ]
 
     for prueba in pruebas:

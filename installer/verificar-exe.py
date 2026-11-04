@@ -189,8 +189,8 @@ def main():
 
     print(f"VERSION DEL AGENT DENTRO DEL EXE: {version_dentro}")
 
-    comprobar("La version empaquetada es 1.6.0",
-              version_dentro == "1.6.0", version_dentro)
+    comprobar("La version empaquetada es 1.7.0",
+              version_dentro == "1.7.0", version_dentro)
 
     print()
 

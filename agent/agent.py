@@ -1665,6 +1665,131 @@ def poner_al_dia_al_ayudante():
             reenviar_al_ayudante(mensaje)
 
 
+# ==============================
+# QUE EL AYUDANTE NO DEPENDA DE QUE ALGUIEN INICIE SESION
+# ==============================
+#
+# El defecto: la tarea del ayudante tiene UN solo disparador, "al
+# iniciar sesion". El instalador la arranca al terminar, pero con
+# -ErrorAction SilentlyContinue: si eso falla, no se entera nadie.
+#
+# En un equipo normal da igual, porque la gente entra y sale todos
+# los dias y el disparador salta. En un KIOSCO no: la sesion lleva
+# meses abierta, el equipo no se apaga nunca, y el Agent se instala
+# dentro de una sesion que ya estaba. Ese inicio de sesion no va a
+# ocurrir, asi que el ayudante no arranca jamas.
+#
+# Resultado: el equipo responde al latido, informa su RAM, su disco
+# y su software, deja apagarse y reiniciarse... y no se ve la
+# pantalla, no se graba, no hay portapapeles ni aviso de
+# mantenimiento. Todo lo que necesita escritorio, y solo eso.
+#
+# Los kioscos no son un caso raro: son el caso para el que se compra
+# esto.
+#
+# Se arranca con schtasks y no abriendo el proceso a mano, que
+# tambien se podria: la tarea ya sabe con que interprete, con que
+# argumentos, en que carpeta y con que permisos tiene que correr. Un
+# segundo camino para lo mismo son dos cosas que mantener y una que
+# se olvida.
+
+TAREA_DEL_AYUDANTE = "RemoteAdminAgentHelper"
+
+# Cada cuanto se mira si falta el ayudante.
+VIGILANCIA_DEL_AYUDANTE = 60
+
+# Lo que se espera entre intentos cuando no sale. Crece para no
+# llenar el registro ni castigar a un equipo donde de verdad no hay
+# nadie: ahi no hay nada que arrancar y volver a intentarlo cada
+# minuto no cambia eso.
+ESPERA_MINIMA = 60
+ESPERA_MAXIMA = 15 * 60
+
+
+def intentar_lanzar_ayudante():
+    """
+    Pide a Windows que arranque la tarea del ayudante.
+
+    Devuelve True si la orden se acepto. No significa que el
+    ayudante ya este: eso se sabra cuando se conecte al canal, y si
+    no lo hace, el vigilante volvera a intentarlo.
+    """
+
+    import subprocess
+
+    try:
+        # Lista de argumentos, nunca una cadena para el interprete de
+        # ordenes: aqui no se construye ningun comando con texto que
+        # venga de fuera.
+        resultado = subprocess.run(
+            ["schtasks", "/Run", "/TN", TAREA_DEL_AYUDANTE],
+            capture_output=True, timeout=30
+        )
+
+    except Exception as error:
+        print(f"[ayudante] No se pudo pedir el arranque: {error}")
+        return False
+
+    if resultado.returncode == 0:
+        print("[ayudante] Arranque solicitado")
+        return True
+
+    salida = (resultado.stdout or b"").decode(errors="replace").strip()
+    error = (resultado.stderr or b"").decode(errors="replace").strip()
+
+    print("[ayudante] No arranco (codigo %d): %s"
+          % (resultado.returncode, error or salida))
+
+    return False
+
+
+def _vigilar_al_ayudante():
+    """
+    Si falta el ayudante y hay alguien dentro, se arranca.
+
+    Corre solo en el servicio, que es quien puede hacerlo: el
+    ayudante no puede arrancarse a si mismo cuando no existe.
+    """
+
+    espera = ESPERA_MINIMA
+
+    while True:
+
+        time.sleep(VIGILANCIA_DEL_AYUDANTE)
+
+        try:
+
+            if hay_sesion_interactiva():
+                # Esta donde debe: se vuelve al ritmo corto para que
+                # la proxima ausencia se note enseguida.
+                espera = ESPERA_MINIMA
+                continue
+
+            usuario = usuario_con_la_sesion_abierta()
+
+            if usuario is None:
+                # Nadie dentro. No hay escritorio donde pintar nada,
+                # asi que no hay ayudante que arrancar. No es un
+                # fallo y no se insiste.
+                continue
+
+            print(
+                "[ayudante] Falta, y %s tiene la sesion abierta: "
+                "se intenta arrancar" % usuario
+            )
+
+            if not intentar_lanzar_ayudante():
+
+                # Se espera mas cada vez: si no arranca, insistir
+                # cada minuto no lo va a arreglar y solo llena el
+                # registro de ruido que tapa la causa.
+                time.sleep(espera)
+                espera = min(espera * 2, ESPERA_MAXIMA)
+
+        except Exception as problema:
+            print(f"[ayudante] Error en la vigilancia: {problema}")
+
+
 def informar_sesion_interactiva(disponible):
     """
     Le dice al servidor si hay alguien con la sesion iniciada.
@@ -1680,8 +1805,21 @@ def informar_sesion_interactiva(disponible):
     momento, que es el bueno.
     """
 
+    # Se mandan las DOS cosas, porque son distintas y el panel tiene
+    # que poder decir cual pasa:
+    #
+    #   available  hay ayudante, o sea hay escritorio utilizable
+    #   logged_in  hay alguien con la sesion abierta
+    #
+    # available falso con logged_in verdadero es el caso del kiosco:
+    # el equipo esta en uso y lo que falta es el proceso. Decir ahi
+    # "nadie tiene la sesion iniciada" manda a alguien a iniciar una
+    # sesion que ya esta abierta.
     send_ws_threadsafe(
-        "interactive_session:" + json.dumps({"available": bool(disponible)})
+        "interactive_session:" + json.dumps({
+            "available": bool(disponible),
+            "logged_in": usuario_con_la_sesion_abierta() is not None
+        })
     )
 
 
@@ -1694,6 +1832,76 @@ def hay_sesion_interactiva():
         return True
 
     return bool(_canal_ayudante is not None and _canal_ayudante.hay_ayudante)
+
+
+# ==============================
+# QUIEN HAY SENTADO DELANTE
+# ==============================
+#
+# "No hay ayudante" y "no hay nadie con la sesion iniciada" NO son lo
+# mismo, y confundirlos costo una tarde entera.
+#
+# El panel decia "Nadie tiene la sesion iniciada en el equipo" porque
+# no llegaba el ayudante, y en dos kioscos eso era FALSO: habia
+# sesion abierta, habia alguien usandolos y la pantalla encendida. Lo
+# que faltaba era el proceso del ayudante, que es otra cosa.
+#
+# Mandar a alguien a iniciar sesion en un equipo donde ya hay sesion
+# iniciada es la peor forma de equivocarse: parece que el programa
+# sabe lo que dice.
+
+WTS_SESION_ACTUAL = -1
+WTS_NOMBRE_DE_USUARIO = 5
+SIN_SESION = 0xFFFFFFFF
+
+
+def usuario_con_la_sesion_abierta():
+    """
+    Quien tiene la sesion iniciada en la consola, o None.
+
+    Devuelve el nombre para poder decirlo en el registro. None
+    significa que no hay nadie: ni la pantalla de inicio de sesion
+    cuenta, porque ahi no hay usuario que valga.
+
+    Si no se puede averiguar, se devuelve None y quien llame no debe
+    concluir nada: el unico uso es afinar lo que se cuenta, nunca
+    impedir que algo se intente.
+    """
+
+    if os.name != "nt":
+        return None
+
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        sesion = ctypes.windll.kernel32.WTSGetActiveConsoleSessionId()
+
+        if sesion == SIN_SESION:
+            return None
+
+        puntero = ctypes.c_wchar_p()
+        tamano = wintypes.DWORD(0)
+
+        bien = ctypes.windll.wtsapi32.WTSQuerySessionInformationW(
+            None, sesion, WTS_NOMBRE_DE_USUARIO,
+            ctypes.byref(puntero), ctypes.byref(tamano)
+        )
+
+        if not bien:
+            return None
+
+        try:
+            nombre = (puntero.value or "").strip()
+
+        finally:
+            ctypes.windll.wtsapi32.WTSFreeMemory(puntero)
+
+        return nombre or None
+
+    except Exception as error:
+        print(f"[sesion] No se pudo consultar quien esta dentro: {error}")
+        return None
 
 
 def reenviar_al_ayudante(mensaje):
@@ -3310,7 +3518,10 @@ async def websocket_connection():
                 # supo, que puede ser de hace dias.
                 await websocket.send(
                     "interactive_session:" + json.dumps({
-                        "available": hay_sesion_interactiva()
+                        "available": hay_sesion_interactiva(),
+                        "logged_in": (
+                            usuario_con_la_sesion_abierta() is not None
+                        )
                     })
                 )
 
@@ -3946,6 +4157,15 @@ async def main():
         threading.Thread(
             target=_atender_al_ayudante,
             name="InteractiveHelperChannel",
+            daemon=True
+        ).start()
+
+        # Y quien lo arranca si falta. Sin esto, un equipo que no se
+        # apaga nunca se queda sin ayudante para siempre: su unico
+        # disparador es el inicio de sesion, y ahi no va a haber otro.
+        threading.Thread(
+            target=_vigilar_al_ayudante,
+            name="InteractiveHelperWatchdog",
             daemon=True
         ).start()
 

@@ -744,6 +744,51 @@ def agent_supports(device_id, capacidad):
 # En memoria, como las capacidades: vale mientras dure la conexion.
 interactive_sessions = {}
 
+# Si hay alguien con la sesion ABIERTA, que es otra cosa.
+#
+# Un equipo puede tener a una persona trabajando delante y aun asi
+# no tener ayudante: su tarea solo se dispara al iniciar sesion, y
+# en un equipo que no se apaga nunca ese momento no vuelve.
+#
+# Confundir las dos cosas hizo que el panel dijera "Nadie tiene la
+# sesion iniciada" sobre dos kioscos en uso, con su pantalla
+# encendida. Mandar a alguien a iniciar una sesion que ya esta
+# abierta es peor que no decir nada.
+#
+# None = no se sabe (Agent anterior), que no es False.
+interactive_logins = {}
+
+
+def motivo_sin_escritorio(device_id):
+    """
+    Por que no se puede tocar la pantalla de este equipo, en
+    palabras que se puedan leer. None si si se puede.
+    """
+
+    if hay_sesion_interactiva(device_id):
+        return None
+
+    if interactive_logins.get(device_id):
+
+        return (
+            "El equipo tiene la sesion iniciada, pero el ayudante de "
+            "VEYRA no esta activo. Se esta intentando arrancar; "
+            "vuelve a probar en un minuto."
+        )
+
+    if interactive_logins.get(device_id) is None:
+
+        # Agent anterior: solo consta que no hay ayudante.
+        return (
+            "El equipo no tiene el ayudante de VEYRA activo. Suele "
+            "ser que nadie ha iniciado sesion."
+        )
+
+    return (
+        "Nadie tiene la sesion iniciada en el equipo: no hay "
+        "pantalla que mostrar."
+    )
+
 
 def hay_sesion_interactiva(device_id):
     """
@@ -2482,12 +2527,20 @@ async def agent_websocket(websocket: WebSocket):
                     datos.get("available")
                 )
 
+                # Dos hechos distintos. Un Agent anterior solo manda
+                # el primero, y entonces no se sabe nada del segundo:
+                # se deja en None, que no es lo mismo que False.
+                interactive_logins[device_id] = (
+                    bool(datos.get("logged_in"))
+                    if "logged_in" in datos else None
+                )
+
                 print(
-                    "[sesion] %s: %s" % (
+                    "[sesion] %s: ayudante %s, sesion %s" % (
                         device_id,
-                        "con sesion iniciada"
-                        if interactive_sessions[device_id]
-                        else "sin sesion iniciada"
+                        "si" if interactive_sessions[device_id] else "NO",
+                        {True: "si", False: "no",
+                         None: "?"}[interactive_logins[device_id]]
                     )
                 )
 
@@ -2573,6 +2626,11 @@ async def agent_websocket(websocket: WebSocket):
             )
 
             interactive_sessions.pop(
+                device_id,
+                None
+            )
+
+            interactive_logins.pop(
                 device_id,
                 None
             )
@@ -2775,10 +2833,7 @@ async def set_maintenance(device_id: str, data: dict, request: Request):
             content={
                 "status": "error",
                 "code": "sin_sesion_iniciada",
-                "message": (
-                    "Nadie tiene la sesion iniciada en el equipo: el "
-                    "aviso no se puede mostrar."
-                )
+                "message": motivo_sin_escritorio(device_id)
             }
         )
 
@@ -3101,10 +3156,7 @@ async def request_screen(device_id: str, request: Request):
             content={
                 "status": "error",
                 "code": "sin_sesion_iniciada",
-                "message": (
-                    "Nadie tiene la sesion iniciada en el equipo: no "
-                    "hay pantalla que mostrar."
-                )
+                "message": motivo_sin_escritorio(device_id)
             }
         )
 

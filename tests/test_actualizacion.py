@@ -576,6 +576,192 @@ def test_una_actualizacion_conserva_todo_lo_del_equipo():
         shutil.rmtree(base, ignore_errors=True)
 
 
+def test_una_libreria_nueva_llega_sola():
+    """
+    Hasta aqui el actualizador solo reemplazaba CODIGO.
+
+    Eso basta para arreglar y para anadir funciones con lo que ya hay
+    instalado, pero no para una que necesite una libreria nueva: el
+    codigo llegaria y moriria en su primer import. Y entonces la
+    unica salida era ir equipo por equipo con el .exe, que con
+    treinta maquinas deja de ser una molestia y pasa a ser una razon
+    para no hacer la mejora.
+    """
+
+    base = instalacion_de_prueba("1.1.0")
+
+    llamadas = []
+
+    real = updater.subprocess.run
+
+    def pip_falso(orden, **kwargs):
+
+        llamadas.append(orden)
+
+        class Resultado:
+            returncode = 0
+            stdout = b""
+            stderr = b""
+
+        return Resultado()
+
+    try:
+
+        updater.subprocess.run = pip_falso
+
+        # Un paquete con una rueda dentro
+        buffer = io.BytesIO()
+
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("agent/agent.py", "# Agent 1.2.0\n")
+            z.writestr("agent/version.py", 'AGENT_VERSION = "1.2.0"\n')
+            z.writestr("installer/install-agent.ps1", "# instalador\n")
+            z.writestr("wheels/ejemplo-1.0-py3-none-any.whl", "rueda")
+
+        datos = buffer.getvalue()
+        manifiesto = release.build_manifest("1.2.0", datos)
+
+        nueva = updater.install_package(
+            datos, base, manifiesto, registrar=lambda _l: None
+        )
+
+        comprobar("Se instala la version con libreria nueva",
+                  nueva == "1.2.0")
+
+        comprobar("Se llamo a pip una vez",
+                  len(llamadas) == 1, str(len(llamadas)))
+
+        if not llamadas:
+            return
+
+        orden = llamadas[0]
+
+        comprobar("Con el interprete del Agent, no uno del PATH",
+                  orden[0] == sys.executable, orden[0])
+
+        comprobar("SIN RED: no se baja nada de Internet",
+                  "--no-index" in orden, " ".join(orden[:8]))
+
+        comprobar("Y la rueda sale del propio paquete",
+                  any(str(a).endswith(".whl") for a in orden))
+
+    finally:
+        updater.subprocess.run = real
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_un_paquete_sin_ruedas_no_llama_a_pip():
+    """
+    Lo corriente es que no haga falta ninguna libreria. Ahi el
+    actualizador tiene que comportarse exactamente como antes.
+    """
+
+    base = instalacion_de_prueba("1.1.0")
+
+    llamadas = []
+
+    real = updater.subprocess.run
+
+    def pip_falso(orden, **kwargs):
+        llamadas.append(orden)
+
+        class Resultado:
+            returncode = 0
+            stdout = b""
+            stderr = b""
+
+        return Resultado()
+
+    try:
+
+        updater.subprocess.run = pip_falso
+
+        manifiesto, _firma, datos = firmar("1.2.0")
+
+        updater.install_package(
+            datos, base, manifiesto, registrar=lambda _l: None
+        )
+
+        comprobar("Sin ruedas, no se toca pip", llamadas == [])
+
+    finally:
+        updater.subprocess.run = real
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_si_falla_la_libreria_se_vuelve_atras_entero():
+    """
+    Lo mas importante de los tres.
+
+    Una libreria a medias es peor que no haberla instalado: deja un
+    Agent que no arranca, y un equipo remoto que no arranca es un
+    equipo perdido hasta que alguien vaya fisicamente.
+
+    Por eso pip corre ANTES de copiar el codigo: si falla, lo que
+    hay en disco sigue siendo la version anterior ENTERA, y da igual
+    que el equipo se reinicie en ese momento.
+    """
+
+    base = instalacion_de_prueba("1.1.0")
+
+    antes = estado(base)
+
+    real = updater.subprocess.run
+
+    def pip_que_falla(orden, **kwargs):
+
+        class Resultado:
+            returncode = 1
+            stdout = b""
+            stderr = b"no se pudo instalar"
+
+        return Resultado()
+
+    try:
+
+        updater.subprocess.run = pip_que_falla
+
+        buffer = io.BytesIO()
+
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("agent/agent.py", "# Agent 1.2.0\n")
+            z.writestr("agent/version.py", 'AGENT_VERSION = "1.2.0"\n')
+            z.writestr("installer/install-agent.ps1", "# instalador\n")
+            z.writestr("wheels/rota-1.0-py3-none-any.whl", "rueda")
+
+        datos = buffer.getvalue()
+        manifiesto = release.build_manifest("1.2.0", datos)
+
+        comprobar(
+            "Si pip falla, la actualizacion falla",
+            falla(
+                lambda: updater.install_package(
+                    datos, base, manifiesto, registrar=lambda _l: None
+                ),
+                updater.UpdateError
+            )
+        )
+
+        despues = estado(base)
+
+        comprobar("El Agent sigue siendo el de antes",
+                  despues["version"] == antes["version"],
+                  despues["version"][:40])
+
+        comprobar("Y no se quedo a medias",
+                  '"1.1.0"' in despues["version"])
+
+        comprobar("La identidad sigue intacta",
+                  despues["identidad"] == antes["identidad"])
+
+        comprobar("Y las grabaciones tambien",
+                  despues["grabacion"])
+
+    finally:
+        updater.subprocess.run = real
+        shutil.rmtree(base, ignore_errors=True)
+
+
 def test_se_vuelve_atras_si_la_instalacion_queda_mal():
     """
     El caso que de verdad importa: una actualizacion a medias deja un
@@ -1481,6 +1667,9 @@ def main():
         test_un_paquete_no_puede_escribir_fuera_de_su_sitio,
         test_un_paquete_incompleto_se_rechaza,
         test_una_actualizacion_conserva_todo_lo_del_equipo,
+        test_una_libreria_nueva_llega_sola,
+        test_un_paquete_sin_ruedas_no_llama_a_pip,
+        test_si_falla_la_libreria_se_vuelve_atras_entero,
         test_se_vuelve_atras_si_la_instalacion_queda_mal,
         test_un_paquete_que_miente_sobre_su_version_no_se_instala,
         test_una_actualizacion_no_vuelve_a_pedir_enrollment,
