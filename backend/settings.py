@@ -19,7 +19,26 @@ DEFAULT_SETTINGS = {
     # Dias que se conservan las grabaciones antes de la limpieza
     # automatica. Configurable: un periodo fijo obliga a tocar el codigo
     # cada vez que cambia la politica de la casa.
-    "recording_retention_days": "90"
+    "recording_retention_days": "90",
+
+    # Con que grabacion nace un equipo nuevo.
+    #
+    # Hasta ahora nacian SIN horario y con el interruptor apagado, y
+    # habia que configurarlos uno por uno. Con siete equipos es una
+    # molestia; con treinta es una tarde perdida y la certeza de que
+    # alguno se queda sin grabar sin que nadie lo note hasta que
+    # haga falta esa grabacion.
+    #
+    # Es un valor POR DEFECTO, no una imposicion: se aplica en el
+    # alta y a partir de ahi el equipo tiene el suyo. Apagarlo en el
+    # panel para una maquina concreta no se deshace al reiniciar
+    # nada, que es justo lo que se pidio: "que nazca encendido y se
+    # apague el que no lo necesite".
+    "recording_default_enabled": "true",
+    "recording_default_start": "08:00",
+    "recording_default_end": "17:00",
+    "recording_default_days": "0,1,2,3,4",
+    "recording_default_timezone": "local"
 }
 
 # Valores admitidos para la retencion. Lista cerrada: evita que un "0" o un
@@ -65,6 +84,40 @@ def get_retention_days(organization_id=None):
         return int(DEFAULT_SETTINGS["recording_retention_days"])
 
     return int(valor)
+
+
+def grabacion_por_defecto(organization_id=None):
+    """
+    Con que grabacion nace un equipo nuevo de esta empresa.
+
+    Devuelve None si la empresa no quiere que nazcan grabando, y en
+    ese caso el equipo se da de alta como siempre: sin horario y con
+    el interruptor apagado.
+
+    Los valores se validan al usarlos, no aqui: quien los guarda es
+    el panel, y el horario tiene su propia validacion en
+    backend/schedule.py. Repetirla seria tener dos reglas que un dia
+    dejan de coincidir.
+    """
+
+    ajustes = get_settings(organization_id)
+
+    if str(ajustes.get("recording_default_enabled", "")).lower() != "true":
+        return None
+
+    dias = [
+        int(d) for d in
+        str(ajustes.get("recording_default_days", "")).split(",")
+        if d.strip().isdigit()
+    ]
+
+    return {
+        "enabled": True,
+        "start_time": ajustes.get("recording_default_start", "08:00"),
+        "end_time": ajustes.get("recording_default_end", "17:00"),
+        "days": dias or [0, 1, 2, 3, 4],
+        "timezone": ajustes.get("recording_default_timezone", "local"),
+    }
 
 
 def get_settings(organization_id=None):

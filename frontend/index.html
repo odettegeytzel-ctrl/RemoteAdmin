@@ -2014,6 +2014,23 @@
                                         class="text-xs text-slate-400 ml-1"></span>
 
                                     <!--
+                                    Cuanto cuesta y cuanto tarda esta
+                                    sesion, en vivo.
+
+                                    Esta aqui y no escondido en un
+                                    menu porque la pregunta "por que
+                                    va lento" se hace MIENTRAS va
+                                    lento, no despues.
+                                    -->
+                                    <span
+                                        id="remote-medida"
+                                        class="hidden text-xs px-2 py-1 rounded-md
+                                               bg-slate-800 text-slate-300 ml-1
+                                               font-mono"
+                                        title="Medido en vivo: ida y vuelta al equipo, captura, fotogramas y ancho de banda"
+                                    ></span>
+
+                                    <!--
                                     Sin esto, escribir y que no pase
                                     nada no tiene explicacion visible.
                                     -->
@@ -3379,6 +3396,41 @@
                                 <strong>Conservar</strong> no se borran nunca
                                 por antig&uuml;edad.
                             </p>
+
+                        </div>
+
+                        <!--
+                        Los equipos nuevos nacen con el horario de la
+                        empresa. Los que ya estaban, no: el valor por
+                        defecto se aplica en el alta y nada mas, para
+                        que apagar un equipo concreto no se deshaga
+                        solo. Esto es la forma EXPRESA de ponerselo a
+                        los que ya existen.
+                        -->
+                        <div class="mt-6">
+
+                            <p class="block text-sm text-slate-600 mb-1">
+                                Horario de grabaci&oacute;n en los equipos
+                                que ya existen
+                            </p>
+
+                            <p class="text-xs text-slate-500 mb-3">
+                                Los equipos nuevos nacen con el horario de
+                                la empresa. Esto se lo pone a los que ya
+                                estaban. <strong>No toca</strong> a los que
+                                tengan un horario propio.
+                            </p>
+
+                            <button
+                                id="aplicar-horario-defecto"
+                                class="px-4 py-2 rounded-lg border border-slate-300
+                                       text-sm hover:bg-slate-50 transition"
+                            >
+                                Aplicar a los equipos sin horario
+                            </button>
+
+                            <p id="aplicar-horario-estado"
+                               class="hidden text-xs mt-2"></p>
 
                         </div>
 

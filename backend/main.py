@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+import time
 import uuid
 
 from fastapi import FastAPI, Header, Request, WebSocket, WebSocketDisconnect
@@ -41,6 +42,7 @@ from backend.settings import (
     migrate_settings_to_organization,
     UnknownSettingError
 )
+from backend import settings as ajustes_mod
 from backend.auth import (
     authenticate,
     change_password,
@@ -742,6 +744,112 @@ def agent_supports(device_id, capacidad):
 # grabacion- lo hace el ayudante.
 #
 # En memoria, como las capacidades: vale mientras dure la conexion.
+# ==============================
+# CUANTO CUESTA LA PANTALLA EN VIVO
+# ==============================
+#
+# Para que: hay que decidir si merece la pena la conexion directa,
+# que son unos 90 MB en cada equipo. Esa decision no se toma con una
+# impresion -"va lento"- sino con numeros, y hoy no hay ninguno.
+#
+# Lo que se mide y por que ESOS tres:
+#
+#   fotogramas y bytes   lo que cuesta mantener una sesion abierta,
+#                        que es lo que decide cuantas aguanta un
+#                        servidor de un nucleo;
+#
+#   captura              lo que tarda el EQUIPO en hacer la foto y
+#                        comprimirla, que no depende de la red;
+#
+#   ida y vuelta al      lo que se ahorraria yendo directo. Es el
+#   equipo               numero que decide si los 90 MB valen la pena.
+#
+# Se guarda en memoria y por equipo. Es una medida, no un historial:
+# al desconectarse se olvida.
+
+import collections as _collections
+
+VENTANA_DE_MEDIDA = 50
+
+mediciones_de_pantalla = {}
+
+# Cronometros abiertos: un ping por equipo como mucho. Pedir la
+# medida dos veces a la vez no tiene sentido y la segunda se queda
+# con la respuesta.
+pings_pendientes = {}
+
+# Lo que se espera un pong antes de darlo por perdido. Si un equipo
+# tarda mas de dos segundos en contestar "pong" a "ping", el numero
+# exacto da igual: ese remoto es inservible.
+PLAZO_DEL_PING = 2.0
+
+
+def anotar_fotograma(device_id, tamano, captura_ms=None):
+    """Un fotograma mas de este equipo."""
+
+    medida = mediciones_de_pantalla.get(device_id)
+
+    if medida is None:
+        medida = {
+            "momentos": _collections.deque(maxlen=VENTANA_DE_MEDIDA),
+            "bytes": _collections.deque(maxlen=VENTANA_DE_MEDIDA),
+            "captura": _collections.deque(maxlen=VENTANA_DE_MEDIDA),
+            "ida_y_vuelta_ms": None,
+        }
+        mediciones_de_pantalla[device_id] = medida
+
+    medida["momentos"].append(time.monotonic())
+    medida["bytes"].append(int(tamano or 0))
+
+    if captura_ms is not None:
+
+        try:
+            medida["captura"].append(float(captura_ms))
+        except (TypeError, ValueError):
+            pass
+
+
+def medida_de_pantalla(device_id):
+    """
+    Lo medido, en numeros que se puedan leer.
+
+    Devuelve None si no hay nada medido todavia: es mejor no decir
+    nada que inventar un cero que parece un dato.
+    """
+
+    medida = mediciones_de_pantalla.get(device_id)
+
+    if not medida or len(medida["momentos"]) < 2:
+        return None
+
+    momentos = list(medida["momentos"])
+    transcurrido = momentos[-1] - momentos[0]
+
+    if transcurrido <= 0:
+        return None
+
+    fotogramas = len(momentos) - 1
+
+    capturas = list(medida["captura"])
+
+    return {
+        "fps": round(fotogramas / transcurrido, 1),
+
+        # Lo que viaja de verdad, ya en base64: es lo que paga el
+        # servidor, no el tamano del JPEG antes de codificarlo.
+        "kb_por_segundo": round(
+            sum(list(medida["bytes"])[1:]) / transcurrido / 1024, 1
+        ),
+
+        "captura_ms": (
+            round(sum(capturas) / len(capturas), 1) if capturas else None
+        ),
+
+        "ida_y_vuelta_ms": medida["ida_y_vuelta_ms"],
+        "muestras": fotogramas,
+    }
+
+
 interactive_sessions = {}
 
 # Si hay alguien con la sesion ABIERTA, que es otra cosa.
@@ -1012,6 +1120,37 @@ def register(
         data.ip_address,
         organization_id=organizacion
     )
+
+    # El equipo nace grabando, si la empresa lo quiere asi.
+    #
+    # Antes nacia sin horario y con el interruptor apagado, y habia
+    # que configurarlo a mano uno por uno. Con treinta equipos eso es
+    # una tarde y la certeza de que alguno se queda sin grabar hasta
+    # el dia que haga falta esa grabacion.
+    #
+    # Es un valor por DEFECTO: se aplica aqui, en el alta, y a partir
+    # de ese momento el equipo tiene el suyo. Apagarlo despues desde
+    # el panel no lo deshace nada.
+    #
+    # Si esto falla, el alta NO se cae: un equipo dado de alta sin
+    # horario se arregla con dos clics, pero un alta que revienta
+    # deja la maquina fuera del sistema.
+    try:
+
+        por_defecto = ajustes_mod.grabacion_por_defecto(organizacion)
+
+        if por_defecto is not None:
+
+            recording_schedule.set_schedule(device_id, por_defecto)
+            set_continuous_recording(device_id, True)
+
+            print(
+                f"[alta] {device_id} nace con horario "
+                f"{por_defecto['start_time']}-{por_defecto['end_time']}"
+            )
+
+    except Exception as problema:
+        print(f"[alta] No se pudo aplicar el horario por defecto: {problema}")
 
     # Alta correcta: se limpia el historial de esa IP, igual que en el login.
     reset_failures(client_ip, scope="enroll")
@@ -2261,6 +2400,18 @@ async def agent_websocket(websocket: WebSocket):
 
                     latest_screens[device_id] = screen_json["image"]
 
+                    # Cuanto cuesta de verdad la pantalla en vivo.
+                    #
+                    # Se mide aqui, donde pasan todos los fotogramas,
+                    # y no se deduce de nada: hasta ahora la unica
+                    # forma de saber si el remoto iba lento era
+                    # mirarlo y opinar.
+                    anotar_fotograma(
+                        device_id,
+                        len(screen_json["image"]),
+                        screen_json.get("captura_ms")
+                    )
+
                 mouse = screen_json.get("mouse")
 
                 if mouse:
@@ -2573,6 +2724,17 @@ async def agent_websocket(websocket: WebSocket):
 
 
             elif message == "pong":
+
+                # Si alguien estaba cronometrando, aqui se cierra el
+                # cronometro. Es el numero que dice cuanto se
+                # ahorraria con una conexion directa.
+                pendiente = pings_pendientes.pop(device_id, None)
+
+                if pendiente is not None and not pendiente["futuro"].done():
+
+                    pendiente["futuro"].set_result(
+                        (time.monotonic() - pendiente["desde"]) * 1000
+                    )
 
                 print(
                     f"Pong received from {device_id}"
@@ -3192,6 +3354,83 @@ def get_screen(device_id: str, request: Request):
     return {
         "status": "ok",
         "image": screen
+    }
+
+
+@app.get("/api/devices/{device_id}/diagnostico-remoto")
+async def diagnostico_remoto(device_id: str, request: Request):
+    """
+    Cuanto cuesta y cuanto tarda la pantalla en vivo de este equipo.
+
+    Existe para poder decidir con numeros en vez de con impresiones.
+    La pregunta concreta que responde es si merece la pena la
+    conexion directa, que son unos 90 MB en cada equipo: si el viaje
+    a la nube y vuelta cuesta poco, no hace falta; si cuesta mucho,
+    es lo primero que hay que hacer.
+
+    'ida_y_vuelta_ms' es el numero que decide. Se mide de verdad,
+    mandando un ping por el WebSocket y cronometrando el pong, no se
+    estima.
+    """
+
+    _, error = require_permission(request, "remote.control")
+
+    if error:
+        return error
+
+    websocket = connected_agents.get(device_id)
+
+    if not websocket:
+        return JSONResponse(
+            status_code=409,
+            content={"status": "error",
+                     "message": "El equipo no esta conectado"}
+        )
+
+    loop = asyncio.get_running_loop()
+    futuro = loop.create_future()
+
+    anterior = pings_pendientes.get(device_id)
+
+    if anterior is not None and not anterior["futuro"].done():
+        anterior["futuro"].cancel()
+
+    pings_pendientes[device_id] = {
+        "futuro": futuro,
+        "desde": time.monotonic()
+    }
+
+    ida_y_vuelta = None
+
+    try:
+        await websocket.send_text("ping")
+        ida_y_vuelta = round(
+            await asyncio.wait_for(futuro, PLAZO_DEL_PING), 1
+        )
+
+    except asyncio.TimeoutError:
+        # No se inventa un numero: no contestar a tiempo ES el dato.
+        pings_pendientes.pop(device_id, None)
+
+    except asyncio.CancelledError:
+        pass
+
+    except Exception:
+        pings_pendientes.pop(device_id, None)
+
+    medida = medida_de_pantalla(device_id) or {}
+
+    if ida_y_vuelta is not None:
+
+        medida["ida_y_vuelta_ms"] = ida_y_vuelta
+
+        if device_id in mediciones_de_pantalla:
+            mediciones_de_pantalla[device_id]["ida_y_vuelta_ms"] = ida_y_vuelta
+
+    return {
+        "status": "ok",
+        "device_id": device_id,
+        **medida
     }
 
 
@@ -5871,6 +6110,120 @@ async def recording_schedule_set(device_id: str, data: dict,
         "schedule": horario,
         "description": recording_schedule.describe(horario),
         "delivered": entregado
+    }
+
+
+@app.post("/api/recording/schedule/apply-default")
+async def aplicar_horario_por_defecto(data: dict, request: Request):
+    """
+    Pone el horario de la empresa en sus equipos, de una vez.
+
+    Existe porque configurar treinta equipos a mano es una tarde
+    perdida y la certeza de olvidarse de alguno. El valor por
+    defecto solo se aplica en el ALTA -a proposito, para que apagar
+    un equipo concreto no se deshaga solo-, asi que los que ya
+    estaban necesitan algo expreso.
+
+    Y expreso quiere decir expreso: esto se ejecuta cuando alguien
+    lo pulsa, nunca por su cuenta. Lo contrario convertiria el
+    ajuste de la empresa en algo que reescribe decisiones ajenas
+    cada cierto tiempo.
+
+    Por omision NO pisa a quien ya tiene horario propio. Un equipo
+    que alguien configuro a mano -el turno de noche del almacen, por
+    ejemplo- tiene su razon de ser, y rellenar huecos es una cosa y
+    borrar el trabajo de otro es otra. Para pisarlos hay que pedirlo
+    aparte, y entonces se dice cuantos se van a pisar.
+    """
+
+    usuario, error = require_permission(request, "recordings.manage")
+
+    if error:
+        return error
+
+    pisar = bool(data.get("incluir_configurados"))
+
+    organizacion = organization_of(usuario)
+
+    por_defecto = ajustes_mod.grabacion_por_defecto(organizacion)
+
+    if por_defecto is None:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "status": "error",
+                "message": (
+                    "Esta empresa tiene desactivado el horario por "
+                    "defecto. Actívalo en Ajustes antes de aplicarlo."
+                )
+            }
+        )
+
+    aplicados = []
+    respetados = []
+
+    for equipo in get_devices():
+
+        if (not is_platform_owner(usuario)
+                and equipo.get("organization_id") != organizacion):
+            continue
+
+        if equipo.get("decommissioned_at"):
+            continue
+
+        device_id = equipo["device_id"]
+
+        actual = recording_schedule.get_schedule(device_id)
+
+        if actual.get("enabled") and not pisar:
+            respetados.append(device_id)
+            continue
+
+        try:
+            horario = recording_schedule.set_schedule(device_id, por_defecto)
+
+        except recording_schedule.ScheduleError:
+            continue
+
+        set_continuous_recording(device_id, True)
+
+        # Al Agent, si esta conectado. Si no lo esta, lo recibira al
+        # reconectar: el servidor le manda el horario en cada
+        # conexion, asi que no hace falta recordar nada.
+        websocket = connected_agents.get(device_id)
+
+        if websocket:
+
+            try:
+                await websocket.send_text(
+                    "set_schedule:" + json.dumps(horario)
+                )
+                await websocket.send_text(
+                    "set_continuous:" + json.dumps({"enabled": True})
+                )
+
+            except Exception as problema:
+                print(f"[horario] no se pudo avisar a {device_id}: {problema}")
+
+        aplicados.append(device_id)
+
+    log_audit(
+        "recording.schedule.apply_default",
+        request=request,
+        status=STATUS_SUCCESS,
+        details={
+            "aplicados": len(aplicados),
+            "respetados": len(respetados),
+            "piso_los_configurados": pisar,
+            "horario": recording_schedule.describe(por_defecto)
+        }
+    )
+
+    return {
+        "status": "ok",
+        "aplicados": len(aplicados),
+        "respetados": len(respetados),
+        "descripcion": recording_schedule.describe(por_defecto)
     }
 
 

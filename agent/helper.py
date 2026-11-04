@@ -106,11 +106,25 @@ class Ayudante:
 
             try:
 
+                # Lo que cuesta la foto, medido donde se hace.
+                #
+                # Es la parte del retardo que NO depende de la red, y
+                # separarla importa: sin este numero, un remoto lento
+                # se achaca siempre a la conexion, y puede que el
+                # tiempo se vaya aqui. Vale para decidir si cambiar
+                # la captura o cambiar el camino.
+                comenzado = time.monotonic()
+
+                imagen = self.agente.capture_screen()
+
+                captura_ms = round((time.monotonic() - comenzado) * 1000, 1)
+
                 mensaje = {
-                    "image": self.agente.capture_screen(),
+                    "image": imagen,
                     "mouse": self.agente.get_mouse_position(),
                     "width": self.agente.screen_geometry["width"],
-                    "height": self.agente.screen_geometry["height"]
+                    "height": self.agente.screen_geometry["height"],
+                    "captura_ms": captura_ms
                 }
 
                 if not self.mandar_al_servidor(

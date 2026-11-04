@@ -6655,6 +6655,10 @@ try {
 
     startCursorPolling();
 
+    // Y la medida, para que la pregunta "por que va lento"
+    // tenga numeros delante mientras esta pasando.
+    empezarAMedir();
+
 } catch (error) {
 
     console.error(
@@ -6664,6 +6668,147 @@ try {
 }
 
 }
+
+/* ==============================
+CUANTO CUESTA Y CUANTO TARDA ESTA SESION
+==============================
+
+Se mide para poder decidir con numeros. La pregunta concreta que
+responde es si merece la pena la conexion directa -unos 90 MB en
+cada equipo-, y esa no se contesta con "va lento".
+
+Son cuatro cifras y cada una señala a un culpable distinto:
+
+  panel->servidor   el viaje a la nube desde este navegador
+  servidor->equipo  el otro tramo del viaje
+  captura           lo que tarda el equipo en hacer la foto, que no
+                    depende de la red en absoluto
+  fps y KB/s        lo que cuesta mantener la sesion abierta
+
+Los dos primeros son lo que una conexion directa se ahorraria. Si
+suman poco, los 90 MB no valen la pena todavia y lo que hay que
+arreglar es la captura o el formato. */
+
+const MEDIDA_CADA_MS = 3000;
+
+let medidaTemporizador = null;
+
+async function medirIdaYVuelta() {
+
+    // Un endpoint barato y autenticado, para medir el viaje y no lo
+    // que tarda en responderse. Se mide varias veces y se toma la
+    // MEJOR: la peor incluye cualquier hipo del navegador, y lo que
+    // se busca es el coste del camino, no del momento.
+    let mejor = null;
+
+    for (let i = 0; i < 3; i++) {
+
+        const desde = performance.now();
+
+        try {
+            const r = await fetch("/api/users/me", { cache: "no-store" });
+            await r.text();
+
+        } catch (e) {
+            return null;
+        }
+
+        const tardo = performance.now() - desde;
+
+        if (mejor === null || tardo < mejor) {
+            mejor = tardo;
+        }
+    }
+
+    return Math.round(mejor);
+}
+
+
+async function refrescarMedida() {
+
+    const caja = document.getElementById("remote-medida");
+
+    if (!caja || !selectedDevice) {
+        return;
+    }
+
+    try {
+
+        const respuesta = await fetch(
+            `/api/devices/${selectedDevice.device_id}/diagnostico-remoto`
+        );
+
+        if (!respuesta.ok) {
+            caja.classList.add("hidden");
+            return;
+        }
+
+        const datos = await respuesta.json();
+
+        const alPanel = await medirIdaYVuelta();
+
+        const partes = [];
+
+        if (alPanel !== null) {
+            partes.push(`panel ${alPanel} ms`);
+        }
+
+        if (datos.ida_y_vuelta_ms !== null
+                && datos.ida_y_vuelta_ms !== undefined) {
+            partes.push(`equipo ${datos.ida_y_vuelta_ms} ms`);
+        }
+
+        if (datos.captura_ms) {
+            partes.push(`captura ${datos.captura_ms} ms`);
+        }
+
+        if (datos.fps) {
+            partes.push(`${datos.fps} fps`);
+        }
+
+        if (datos.kb_por_segundo) {
+            partes.push(`${datos.kb_por_segundo} KB/s`);
+        }
+
+        if (!partes.length) {
+            caja.classList.add("hidden");
+            return;
+        }
+
+        caja.textContent = partes.join("  ·  ");
+        caja.classList.remove("hidden");
+
+    } catch (error) {
+        // Medir no puede romper la sesion que se esta midiendo.
+        caja.classList.add("hidden");
+    }
+}
+
+
+function empezarAMedir() {
+
+    detenerLaMedida();
+
+    refrescarMedida();
+
+    medidaTemporizador = setInterval(refrescarMedida, MEDIDA_CADA_MS);
+}
+
+
+function detenerLaMedida() {
+
+    if (medidaTemporizador) {
+        clearInterval(medidaTemporizador);
+        medidaTemporizador = null;
+    }
+
+    const caja = document.getElementById("remote-medida");
+
+    if (caja) {
+        caja.classList.add("hidden");
+    }
+}
+
 
 /* ==============================
 TECLAS ESPECIALES DEL REMOTO
@@ -7238,6 +7383,8 @@ function empezarAArrastrar(evento, marco, tirador) {
 async function stopRemoteDesktop() {
 
 stopCursorPolling();
+
+detenerLaMedida();
 
 disableRemoteKeyboard();
 
@@ -12413,6 +12560,88 @@ document
 "click",
 saveSettings
 );
+
+
+/* Poner el horario de la empresa en los equipos que ya existen.
+
+   Va aparte del alta a proposito. El valor por defecto se aplica
+   cuando un equipo se da de alta y nada mas: si se reaplicara solo,
+   apagar la grabacion de una maquina concreta duraria hasta el
+   siguiente ciclo y nadie lo relacionaria con su causa.
+
+   Por eso esto es un boton: pasa cuando alguien lo pulsa. */
+async function aplicarHorarioPorDefecto() {
+
+    const boton = document.getElementById("aplicar-horario-defecto");
+    const estado = document.getElementById("aplicar-horario-estado");
+
+    if (!boton || !estado) {
+        return;
+    }
+
+    boton.disabled = true;
+
+    estado.classList.remove("hidden", "text-red-600", "text-emerald-600");
+    estado.classList.add("text-slate-500");
+    estado.textContent = "Aplicando...";
+
+    try {
+
+        const respuesta = await fetch(
+            "/api/recording/schedule/apply-default",
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ incluir_configurados: false })
+            }
+        );
+
+        const datos = await respuesta.json().catch(() => ({}));
+
+        if (!respuesta.ok) {
+
+            estado.className = "text-xs mt-2 text-red-600";
+            estado.textContent =
+                datos.message || "No se pudo aplicar el horario.";
+
+            return;
+        }
+
+        // Se dice lo que se hizo Y lo que no se toco. Lo segundo
+        // importa: quien pulsa esto quiere saber que no ha pisado
+        // la configuracion de nadie.
+        const partes = [
+            `Aplicado a ${datos.aplicados} equipo(s): ${datos.descripcion}.`
+        ];
+
+        if (datos.respetados) {
+            partes.push(
+                `${datos.respetados} con horario propio no se han tocado.`
+            );
+        }
+
+        estado.className = "text-xs mt-2 text-emerald-600";
+        estado.textContent = partes.join(" ");
+
+        loadDevices();
+
+    } catch (error) {
+
+        estado.className = "text-xs mt-2 text-red-600";
+        estado.textContent = "No se pudo aplicar el horario.";
+
+    } finally {
+        boton.disabled = false;
+    }
+}
+
+
+const botonHorarioDefecto =
+    document.getElementById("aplicar-horario-defecto");
+
+if (botonHorarioDefecto) {
+    botonHorarioDefecto.addEventListener("click", aplicarHorarioPorDefecto);
+}
 
 /* ==============================
 DASHBOARD
