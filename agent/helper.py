@@ -434,5 +434,55 @@ def main():
     Ayudante(agent).correr()
 
 
+def _dejar_constancia_del_fallo(error):
+    """
+    Escribe por que no arranco el ayudante, pase lo que pase.
+
+    Hace falta porque el ayudante corre con pythonw: sin consola, un
+    fallo al importar o al arrancar no se ve EN NINGUN SITIO. El
+    proceso muere y no queda rastro.
+
+    Paso en dos equipos. El servicio pedia el arranque cada minuto,
+    Windows contestaba que si, y el registro del ayudante llevaba un
+    dia entero sin una sola linea nueva. Sin saber si moria o si ni
+    siquiera llegaba a ejecutarse, no habia por donde empezar.
+
+    Se escribe con la biblioteca estandar y nada mas: lo que hay que
+    cazar es justo que falle un import del proyecto, asi que esta
+    funcion no puede depender de ninguno. Y si tampoco se puede
+    escribir, se calla: no va a morir dos veces por contarlo.
+    """
+
+    import datetime
+    import traceback
+
+    carpeta = os.path.join(
+        os.environ.get("ProgramData", r"C:\ProgramData"),
+        "RemoteAdmin", "logs"
+    )
+
+    try:
+        os.makedirs(carpeta, exist_ok=True)
+
+        with open(os.path.join(carpeta, "agent-helper-arranque.log"),
+                  "a", encoding="utf-8") as archivo:
+
+            archivo.write("\n%s  EL AYUDANTE NO ARRANCO\n"
+                          % datetime.datetime.now().isoformat(" ", "seconds"))
+            archivo.write("  python: %s\n" % sys.executable)
+            archivo.write("  guion:  %s\n" % os.path.abspath(__file__))
+            archivo.write("  %s: %s\n" % (type(error).__name__, error))
+            archivo.write(traceback.format_exc())
+
+    except Exception:
+        pass
+
+
 if __name__ == "__main__":
-    main()
+
+    try:
+        main()
+
+    except Exception as problema:
+        _dejar_constancia_del_fallo(problema)
+        raise

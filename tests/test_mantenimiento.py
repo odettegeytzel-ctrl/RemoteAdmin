@@ -633,9 +633,14 @@ def test_el_ayudante_no_depende_de_que_alguien_inicie_sesion():
     comprobar("El servicio vigila si falta el ayudante",
               "def _vigilar_al_ayudante(" in AGENTE)
 
+    # Las ordenes a tareas programadas pasan por un solo sitio,
+    # para que no haya dos formas de construirlas.
     comprobar("Y lo arranca el mismo",
               "def intentar_lanzar_ayudante(" in AGENTE
-              and '"schtasks", "/Run", "/TN", TAREA_DEL_AYUDANTE' in AGENTE)
+              and '_schtasks("/Run", "/TN", TAREA_DEL_AYUDANTE)' in AGENTE)
+
+    comprobar("Con los argumentos como lista, nunca como texto",
+              '["schtasks"] + list(argumentos)' in AGENTE)
 
     comprobar("El vigilante corre solo en el servicio",
               "target=_vigilar_al_ayudante" in AGENTE
@@ -771,6 +776,75 @@ def test_sin_pantalla_la_ventana_se_abre_igual():
 
     comprobar("La descarga de archivos sigue en la ventana",
               'id="file-download-path"' in HTML)
+
+
+def test_un_ayudante_atascado_se_desatasca_solo():
+    """
+    El vigilante pedia un arranque que Windows ignoraba.
+
+    Si la tarea YA esta en ejecucion -un ayudante vivo pero
+    atascado, que no consigue conectar con el servicio- Windows no
+    lanza una segunda instancia y devuelve exito igualmente. El
+    registro decia "Arranque solicitado" cada minuto, durante un
+    dia entero, mientras no arrancaba nada.
+
+    Se vio en dos equipos: quince peticiones seguidas con exito y
+    ni una linea nueva en el registro del ayudante.
+    """
+
+    AGENTE = io.open(RAIZ / "agent" / "agent.py", encoding="utf-8").read()
+
+    cuerpo = AGENTE.split("def intentar_lanzar_ayudante(", 1)[1][:2600]
+
+    comprobar("Se termina la tarea ANTES de relanzarla",
+              '_schtasks("/End"' in cuerpo
+              and cuerpo.index('"/End"') < cuerpo.index('"/Run"'),
+              "se relanza sin terminar la anterior")
+
+    comprobar("Y se dice cuando habia uno atascado",
+              "Habia uno atascado" in cuerpo)
+
+    # Lo otro que faltaba: saber si la tarea llego a ejecutarse. Es
+    # lo unico que distingue "no arranco" de "arranco y murio".
+    comprobar("Se consulta el resultado de la tarea",
+              '"/Query"' in cuerpo and '"/V", "/FO", "LIST"' in cuerpo)
+
+    comprobar("En español y en ingles, que Windows cambia de idioma",
+              '"Last Result"' in cuerpo and "ltimo resultado" in cuerpo)
+
+
+def test_si_el_ayudante_muere_al_arrancar_deja_rastro():
+    """
+    El ayudante corre con pythonw: sin consola. Un fallo al
+    importar no se ve EN NINGUN SITIO -el proceso muere antes de
+    abrir su propio registro- y desde fuera es indistinguible de
+    "no llego a ejecutarse".
+    """
+
+    AYUDANTE = io.open(RAIZ / "agent" / "helper.py", encoding="utf-8").read()
+
+    comprobar("El arranque va protegido",
+              "_dejar_constancia_del_fallo(problema)" in AYUDANTE)
+
+    cuerpo = AYUDANTE.split("def _dejar_constancia_del_fallo(", 1)[1][:2200]
+
+    comprobar("Se escribe el traceback",
+              "traceback.format_exc()" in cuerpo)
+
+    comprobar("Y con que interprete y que guion",
+              "sys.executable" in cuerpo and "__file__" in cuerpo)
+
+    # Lo que hay que cazar es justo que falle un import del
+    # proyecto, asi que esto no puede depender de ninguno.
+    comprobar("Sin depender de nada del proyecto",
+              "import agent" not in cuerpo
+              and "paths" not in cuerpo)
+
+    comprobar("Y si tampoco se puede escribir, se calla",
+              "except Exception:" in cuerpo and "pass" in cuerpo)
+
+    comprobar("El error se vuelve a lanzar, no se traga",
+              "raise" in AYUDANTE.split("_dejar_constancia_del_fallo(problema)", 1)[1][:60])
 
 
 def test_el_aviso_no_se_pone_delante_de_lo_que_escribes():
@@ -973,6 +1047,8 @@ def principal():
         test_el_panel_dice_el_motivo_de_verdad,
         test_el_control_remoto_tampoco_se_queda_en_negro,
         test_sin_pantalla_la_ventana_se_abre_igual,
+        test_un_ayudante_atascado_se_desatasca_solo,
+        test_si_el_ayudante_muere_al_arrancar_deja_rastro,
         test_el_ayudante_no_depende_de_que_alguien_inicie_sesion,
         test_no_se_confunde_sin_sesion_con_sin_ayudante
     ]

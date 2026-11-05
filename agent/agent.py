@@ -1783,14 +1783,8 @@ ESPERA_MINIMA = 60
 ESPERA_MAXIMA = 15 * 60
 
 
-def intentar_lanzar_ayudante():
-    """
-    Pide a Windows que arranque la tarea del ayudante.
-
-    Devuelve True si la orden se acepto. No significa que el
-    ayudante ya este: eso se sabra cuando se conecte al canal, y si
-    no lo hace, el vigilante volvera a intentarlo.
-    """
+def _schtasks(*argumentos):
+    """Una orden de tareas programadas. Devuelve (codigo, texto)."""
 
     import subprocess
 
@@ -1799,23 +1793,78 @@ def intentar_lanzar_ayudante():
         # ordenes: aqui no se construye ningun comando con texto que
         # venga de fuera.
         resultado = subprocess.run(
-            ["schtasks", "/Run", "/TN", TAREA_DEL_AYUDANTE],
+            ["schtasks"] + list(argumentos),
             capture_output=True, timeout=30
         )
 
     except Exception as error:
-        print(f"[ayudante] No se pudo pedir el arranque: {error}")
+        return None, str(error)
+
+    salida = (
+        (resultado.stdout or b"").decode(errors="replace")
+        + (resultado.stderr or b"").decode(errors="replace")
+    )
+
+    return resultado.returncode, salida.strip()
+
+
+def intentar_lanzar_ayudante():
+    """
+    Pide a Windows que arranque la tarea del ayudante.
+
+    Devuelve True si la orden se acepto. No significa que el
+    ayudante ya este: eso se sabra cuando se conecte al canal, y si
+    no lo hace, el vigilante volvera a intentarlo.
+
+    PRIMERO SE TERMINA LA TAREA, y esto es lo importante.
+
+    Si la tarea ya esta en ejecucion -un ayudante vivo pero
+    atascado, que no consigue conectar con el servicio- Windows NO
+    lanza una segunda instancia y devuelve exito igualmente. El
+    vigilante se pasaba el dia pidiendo un arranque que no ocurria,
+    y el registro decia "Arranque solicitado" cada minuto mientras
+    no arrancaba nada.
+
+    Paso en dos equipos durante un dia entero. Terminar antes de
+    arrancar convierte ese caso en uno que se arregla solo.
+
+    Y se deja dicho el resultado de la tarea, que es lo unico que
+    distingue "no llego a ejecutarse" de "se ejecuto y murio".
+    """
+
+    codigo_fin, _ = _schtasks("/End", "/TN", TAREA_DEL_AYUDANTE)
+
+    if codigo_fin == 0:
+        print("[ayudante] Habia uno atascado: terminado antes de relanzar")
+
+    codigo, salida = _schtasks("/Run", "/TN", TAREA_DEL_AYUDANTE)
+
+    if codigo is None:
+        print(f"[ayudante] No se pudo pedir el arranque: {salida}")
         return False
 
-    if resultado.returncode == 0:
+    if codigo == 0:
+
         print("[ayudante] Arranque solicitado")
+
+        # Que dice Windows que paso con la tarea. '0' es correcto;
+        # cualquier otra cosa es la pista que faltaba.
+        _, consulta = _schtasks(
+            "/Query", "/TN", TAREA_DEL_AYUDANTE, "/V", "/FO", "LIST"
+        )
+
+        for linea in (consulta or "").splitlines():
+
+            if ("ltimo resultado" in linea
+                    or "Last Result" in linea
+                    or "ltima hora de ejecuci" in linea
+                    or "Last Run Time" in linea):
+
+                print("[ayudante] %s" % linea.strip())
+
         return True
 
-    salida = (resultado.stdout or b"").decode(errors="replace").strip()
-    error = (resultado.stderr or b"").decode(errors="replace").strip()
-
-    print("[ayudante] No arranco (codigo %d): %s"
-          % (resultado.returncode, error or salida))
+    print("[ayudante] No arranco (codigo %s): %s" % (codigo, salida))
 
     return False
 
