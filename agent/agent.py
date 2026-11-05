@@ -1083,6 +1083,26 @@ def start_screen_recording(manual=True, origen=None):
     if origen is None:
         origen = owners.MANUAL if manual else owners.PROGRAMADA
 
+    # Un trozo manual empieza en un segmento NUEVO.
+    #
+    # Si la jornada ya esta grabando, su segmento en curso lleva un
+    # rato abierto: sin cortar aqui, el trozo manual arrastraria
+    # minutos de antes que nadie pidio grabar.
+    #
+    # Cortando en los dos extremos -al empezar y al terminar- el
+    # trozo queda formado por segmentos ENTEROS, y entonces no hay
+    # que recortar por dentro de ningun archivo ni crear una copia:
+    # el trozo es una lista de segmentos que se reproducen seguidos,
+    # igual que la jornada.
+    #
+    # El precio es un corte mas. La jornada ya son treinta y seis
+    # trozos al dia y se reproduce seguida: nadie nota el treinta y
+    # siete.
+    if origen == owners.MANUAL and duenos.grabando():
+
+        if screen_recorder.cortar_segmento():
+            print("[grabacion] Corte para empezar el trozo manual")
+
     hay_que_arrancar = duenos.tomar(origen)
 
     if hay_que_arrancar:
@@ -1135,6 +1155,18 @@ def stop_screen_recording(manual=True, origen=None):
     # las dos cosas en un boton tenia un efecto que nadie esperaba:
     # grabar diez segundos a mano para enseñar algo dejaba al equipo
     # sin grabar el resto de la jornada.
+    # Y termina cerrando el segmento, por lo mismo: asi el ultimo
+    # trozo del material es suyo entero y el video se puede ver en
+    # segundos, no cuando cierre el segmento quince minutos despues.
+    #
+    # Va ANTES de soltar al dueno: si se soltara primero y la
+    # jornada no sostuviera la captura, el grabador se pararia y no
+    # habria nada que cortar.
+    if origen == owners.MANUAL and manual and duenos.sostiene(owners.MANUAL):
+
+        if screen_recorder.cortar_segmento():
+            print("[grabacion] Corte para cerrar el trozo manual")
+
     if origen in owners.DEL_HORARIO:
         hay_que_parar = duenos.soltar_el_horario()
 

@@ -4731,6 +4731,44 @@ def recordings_days(request: Request, device_id: str = None,
     }
 
 
+@app.get("/api/recordings/clips")
+def recordings_clips(request: Request, device_id: str = None,
+                     start: str = None, end: str = None):
+    """
+    Los trozos grabados a mano, cada uno con sus segmentos en orden.
+
+    El boton de grabar a mano sirve para capturar algo concreto -un
+    error que enseñar, una gestion que documentar-, y esos trozos se
+    perdian entre los treinta y seis segmentos del dia. Aqui salen
+    por separado.
+
+    No son archivos aparte: el equipo corta el segmento al empezar y
+    al terminar, asi que el trozo son segmentos enteros que se
+    reproducen seguidos. Sin duplicar disco y sin que la jornada
+    cuente dos veces lo mismo.
+    """
+
+    usuario, error = require_permission(request, "recordings.view")
+
+    if error:
+        return error
+
+    trozos = recordings_mod.trozos_manuales(device_id, start, end)
+
+    if not is_platform_owner(usuario):
+
+        propia = organization_of(usuario)
+
+        equipos = {
+            equipo["device_id"] for equipo in get_devices()
+            if equipo.get("organization_id") == propia
+        }
+
+        trozos = [t for t in trozos if t["device_id"] in equipos]
+
+    return {"status": "ok", "clips": trozos}
+
+
 @app.get("/api/recordings")
 def recordings_list(request: Request, device_id: str = None,
                     start: str = None, end: str = None,

@@ -35,6 +35,7 @@ la epoca del año, que es la clase de fallo que nadie relaciona con
 su causa.
 """
 
+import io
 import os
 import sys
 import tempfile
@@ -411,6 +412,54 @@ def test_un_dia_con_huecos_no_se_disimula():
               "%s -> %s" % (dia["inicio"], dia["fin"]))
 
 
+def test_el_panel_abre_por_dia_y_reproduce_seguido():
+    """
+    La jornada no sirve de nada si hay que pedirla.
+
+    Quien abre Grabaciones quiere "el lunes de Recepcion". Los
+    treinta y seis segmentos sueltos son la respuesta a una
+    pregunta que nadie hace, asi que la vista por dia es la que
+    sale primero y las otras quedan a un clic.
+    """
+
+    JS = io.open(RAIZ / "frontend" / "app.js", encoding="utf-8").read()
+    HTML = io.open(RAIZ / "frontend" / "index.html", encoding="utf-8").read()
+
+    comprobar("Hay tres vistas",
+              'data-vista="jornadas"' in HTML
+              and 'data-vista="trozos"' in HTML
+              and 'data-vista="segmentos"' in HTML)
+
+    comprobar("Y se abre por dia",
+              'let vistaDeGrabaciones = "jornadas";' in JS)
+
+    comprobar("Al entrar se pinta la vista elegida, no la lista cruda",
+              "cambiarVistaDeGrabaciones(vistaDeGrabaciones)" in JS)
+
+    # --- reproducir seguido ---
+
+    cuerpo = JS.split("function reproducirSeguido(", 1)[1][:1800]
+
+    comprobar("Se reproduce la lista entera, no un segmento",
+              "colaDeReproduccion = ids.slice()" in cuerpo)
+
+    cola = JS.split("function siguienteDeLaCola(", 1)[1][:1600]
+
+    comprobar("Al terminar uno empieza el siguiente",
+              "video.onended" in cola
+              and "siguienteDeLaCola()" in cola)
+
+    comprobar("Y se dice cuantos quedan",
+              "quedan ${quedan}" in cola)
+
+    # El nombre del equipo, como TEXTO: lo escribe una persona y el
+    # hostname lo manda el equipo. Ninguno es marcado de confianza.
+    agrupadas = JS.split("function pintarAgrupadas(", 1)[1][:3000]
+
+    comprobar("El nombre del equipo se pinta como texto",
+              "celdaEquipo.textContent" in agrupadas)
+
+
 def test_sin_grabaciones_no_hay_jornadas():
 
     limpiar()
@@ -442,6 +491,7 @@ def principal():
         test_no_se_toca_ni_un_segmento,
         test_una_jornada_a_medias_se_ve_a_medias,
         test_un_dia_con_huecos_no_se_disimula,
+        test_el_panel_abre_por_dia_y_reproduce_seguido,
         test_sin_grabaciones_no_hay_jornadas,
     ]
 

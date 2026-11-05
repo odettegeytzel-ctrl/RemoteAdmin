@@ -75,6 +75,28 @@ class ScreenRecorder:
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
 
+        # Cortar el segmento AHORA, sin esperar a que cumpla sus
+        # quince minutos.
+        #
+        # Para que: un trozo grabado a mano tiene que quedar en
+        # archivos propios y poder verse enseguida. Si hubiera que
+        # esperar a que cerrara el segmento que lo contiene, el
+        # video no apareceria hasta un cuarto de hora despues, y
+        # para entonces quien lo grabo ya cerro el panel. Una
+        # funcion que llega tarde al unico momento en que se usa es
+        # una funcion que no se usa.
+        #
+        # Se corta al EMPEZAR y al TERMINAR el trozo manual. Entre
+        # esos dos cortes quedan segmentos enteros, que son
+        # exactamente el material del trozo: asi no hay que recortar
+        # por dentro de ningun archivo.
+        #
+        # El precio es un corte mas en la jornada. La jornada ya
+        # esta partida en treinta y seis trozos al dia y se
+        # reproduce seguida, asi que pasar a treinta y siete no lo
+        # nota nadie.
+        self._cortar_ya = threading.Event()
+
         self._running = False
         self._current_path = None
         self._segment_started = None
@@ -88,6 +110,28 @@ class ScreenRecorder:
     def is_recording(self):
         with self._lock:
             return self._running
+
+    def cortar_segmento(self):
+        """
+        Cierra el segmento en curso y abre otro, ahora.
+
+        Devuelve False si no se estaba grabando: entonces no hay
+        nada que cortar y quien llama no debe esperar un archivo
+        nuevo.
+
+        No interrumpe la grabacion. El bucle cierra el segmento por
+        el mismo camino que cuando cumple su duracion -con su
+        archivo bien terminado y su ficha- y sigue con el siguiente.
+        """
+
+        with self._lock:
+
+            if not self._running:
+                return False
+
+        self._cortar_ya.set()
+
+        return True
 
     def start(self):
 
@@ -297,6 +341,14 @@ class ScreenRecorder:
 
                             # Corta el segmento al cumplir la duración
                             if time.time() - segment_start >= self.segment_seconds:
+                                break
+
+                            # O cuando se pide expresamente. Es el
+                            # mismo corte de siempre, en el mismo
+                            # sitio: el segmento se cierra bien y el
+                            # bucle abre el siguiente.
+                            if self._cortar_ya.is_set():
+                                self._cortar_ya.clear()
                                 break
 
                             next_frame += frame_interval

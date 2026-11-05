@@ -790,6 +790,106 @@ def jornadas(device_id=None, start=None, end=None, zonas=None):
     return resultado
 
 
+def trozos_manuales(device_id=None, start=None, end=None):
+    """
+    Los trozos grabados a mano, cada uno con sus segmentos en orden.
+
+    Un trozo manual NO es un archivo aparte. El Agent corta el
+    segmento al empezar y al terminar, asi que el trozo queda
+    formado por segmentos ENTEROS: es una forma de mirarlos, igual
+    que la jornada.
+
+    Se hizo asi y no recortando un archivo nuevo por dos razones:
+
+      - un archivo recortado DUPLICA el disco de esos minutos, en
+        equipos que andan justos;
+
+      - y haria que la jornada contara dos veces el mismo material,
+        porque el trozo y los segmentos de los que sale conviven en
+        la misma carpeta.
+
+    No hace falta ninguna tabla nueva: un trozo manual ES una fila
+    de recording_intervals con origen 'manual', y el Agent ya las
+    informa.
+    """
+
+    connection = get_connection()
+
+    try:
+        consulta = (
+            "SELECT device_id, started_at, ended_at "
+            "FROM recording_intervals WHERE origin = 'manual'"
+        )
+
+        parametros = []
+
+        if device_id:
+            consulta += " AND device_id = ?"
+            parametros.append(device_id)
+
+        consulta += " ORDER BY started_at DESC"
+
+        filas = [dict(f) for f in connection.execute(consulta, parametros)]
+
+    except sqlite3.Error:
+        filas = []
+
+    finally:
+        connection.close()
+
+    resultado = []
+
+    for fila in filas:
+
+        desde = _momento(fila["started_at"])
+
+        if desde is None:
+            continue
+
+        # Un trozo todavia ABIERTO no se presenta: no se sabe cuanto
+        # dura y sus segmentos no estan todos cerrados. Aparecera en
+        # cuanto se detenga.
+        hasta = _momento(fila["ended_at"])
+
+        if hasta is None:
+            continue
+
+        segmentos = [
+            s for s in query_recordings(
+                fila["device_id"],
+                fila["started_at"],
+                fila["ended_at"]
+            )
+            # Solo los que caen DENTRO del trozo. query_recordings
+            # devuelve los que se solapan, y un segmento que empezo
+            # antes del corte no es material de este trozo.
+            if (_momento(s.get("started_at")) is not None
+                and _momento(s["started_at"]) >= desde
+                and (_momento(s.get("ended_at")) or _momento(s["started_at"]))
+                <= hasta)
+        ]
+
+        if not segmentos:
+            continue
+
+        segmentos.sort(key=lambda s: s["started_at"])
+
+        resultado.append({
+            "device_id": fila["device_id"],
+            "hostname": segmentos[0].get("hostname"),
+            "inicio": fila["started_at"],
+            "fin": fila["ended_at"],
+            "duracion_sec": int((hasta - desde).total_seconds()),
+            "segmentos": len(segmentos),
+            "size_bytes": sum(
+                int(s.get("size_bytes") or 0) for s in segmentos
+            ),
+            "ids": [s["id"] for s in segmentos],
+        })
+
+    return resultado
+
+
 def borrar_ficha(recording_id):
     """
     Quita la fila de una grabacion. Nada mas.

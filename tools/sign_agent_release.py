@@ -203,6 +203,57 @@ def generar_clave(destino):
     return 0
 
 
+def conflicto_de_version(version, contenido, carpeta=None):
+    """
+    Avisa si ya hay un paquete de esta version con OTRO contenido.
+
+    Un numero de version es una promesa de contenido, y el
+    actualizador de los equipos confia en ella: compara versiones y,
+    si coinciden, concluye que el equipo esta al dia.
+
+    Paso esto. Se firmo 1.8.0, se publico, un equipo se lo llevo, y
+    media hora despues se volvio a firmar 1.8.0 con codigo distinto.
+    Ese equipo quedo con el primero PARA SIEMPRE. No es un fallo del
+    actualizador -hace exactamente lo que debe- sino de quien
+    reutilizo el numero.
+
+    Este es el unico momento en que se puede evitar: despues de
+    publicar no hay vuelta atras para quien ya se lo llevo.
+
+    Devuelve el texto del problema, o None si no lo hay.
+    """
+
+    import hashlib
+
+    base = carpeta or os.path.join(RAIZ, "releases")
+
+    anterior = os.path.join(base, "agent-%s.zip" % version)
+
+    if not os.path.isfile(anterior):
+        return None
+
+    with open(anterior, "rb") as archivo:
+        de_antes = archivo.read()
+
+    if de_antes == contenido:
+        return None
+
+    return "\n".join([
+        "",
+        "ERROR: ya existe un agent-%s.zip DISTINTO." % version,
+        "",
+        "  el de disco: " + hashlib.sha256(de_antes).hexdigest()[:16],
+        "  el nuevo:    " + hashlib.sha256(contenido).hexdigest()[:16],
+        "",
+        "Un numero de version es una promesa de contenido. Si algun",
+        "equipo ya se llevo el de disco, nunca recibira este: su",
+        "actualizador vera la misma version y creera que esta al dia.",
+        "",
+        "Sube AGENT_VERSION en agent/version.py y vuelve a firmar.",
+        "",
+    ])
+
+
 def firmar(ruta_clave):
     """
     Arma el paquete de la version actual, lo firma y lo publica.
@@ -238,6 +289,14 @@ def firmar(ruta_clave):
     print(f"Empaquetando la version {version}")
 
     contenido = _construir_paquete()
+
+    # Un numero de version es una PROMESA DE CONTENIDO. Ver
+    # conflicto_de_version().
+    conflicto = conflicto_de_version(version, contenido)
+
+    if conflicto:
+        print(conflicto)
+        return 1
 
     manifiesto = release.build_manifest(version, contenido)
 

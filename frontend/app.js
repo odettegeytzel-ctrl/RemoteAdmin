@@ -9737,7 +9737,10 @@ if (view === "dashboard") {
         "hidden"
     );
 
-    loadRecordings();
+    // Se abre por DIA, que es la pregunta que se hace al entrar.
+    // Los segmentos sueltos siguen a un clic, para cuando hace
+    // falta bajar a ese detalle.
+    cambiarVistaDeGrabaciones(vistaDeGrabaciones);
 
 } else if (view === "install") {
 
@@ -11018,6 +11021,227 @@ await asegurarSesion();
 // horario invalida la paginación anterior.
 await pedirPaginaDeGrabaciones(0);
 
+}
+
+
+/* ==============================
+COMO SE MIRAN LAS GRABACIONES
+==============================
+
+Tres vistas sobre los mismos archivos. No se duplica ni se mueve
+nada: el equipo sigue guardando segmentos de quince minutos, y esto
+es la forma de mirarlos.
+
+  por dia     una fila por equipo y jornada, reproducida seguida
+  trozos      lo que alguien grabo a mano, por separado
+  segmentos   la lista de siempre, archivo por archivo
+
+La de por dia es la primera porque es la pregunta que se hace al
+entrar: "el lunes de Recepcion". Los treinta y seis archivos
+sueltos son la respuesta a una pregunta que nadie hace. */
+
+let vistaDeGrabaciones = "jornadas";
+
+/* La cola de reproduccion: los segmentos que faltan por ver de una
+   jornada o de un trozo. Al acabar uno, empieza el siguiente. */
+let colaDeReproduccion = [];
+let tituloDeLaCola = "";
+
+
+function pintarBotonesDeVista() {
+
+    document.querySelectorAll(".vy-vista").forEach(boton => {
+
+        const activa = boton.dataset.vista === vistaDeGrabaciones;
+
+        boton.classList.toggle("bg-slate-900", activa);
+        boton.classList.toggle("text-white", activa);
+        boton.classList.toggle("text-slate-600", !activa);
+    });
+}
+
+
+async function cambiarVistaDeGrabaciones(cual) {
+
+    vistaDeGrabaciones = cual;
+
+    pintarBotonesDeVista();
+
+    if (cual === "segmentos") {
+        loadRecordings();
+        return;
+    }
+
+    const tabla = document.getElementById("recordings-table");
+
+    if (!tabla) {
+        return;
+    }
+
+    tabla.innerHTML = recordingsMessageRow("Cargando...");
+
+    const destino = cual === "jornadas"
+        ? "/api/recordings/days"
+        : "/api/recordings/clips";
+
+    try {
+
+        const respuesta = await fetch(destino);
+
+        if (!respuesta.ok) {
+            tabla.innerHTML = recordingsMessageRow(
+                "No se pudieron cargar las grabaciones"
+            );
+            return;
+        }
+
+        const datos = await respuesta.json();
+
+        pintarAgrupadas(
+            cual === "jornadas" ? (datos.days || []) : (datos.clips || []),
+            cual
+        );
+
+    } catch (error) {
+        tabla.innerHTML = recordingsMessageRow(
+            "No se pudieron cargar las grabaciones"
+        );
+    }
+}
+
+
+function pintarAgrupadas(filas, cual) {
+
+    const tabla = document.getElementById("recordings-table");
+
+    if (!tabla) {
+        return;
+    }
+
+    if (!filas.length) {
+
+        tabla.innerHTML = recordingsMessageRow(
+            cual === "jornadas"
+                ? "No hay jornadas grabadas"
+                : "No hay trozos grabados a mano"
+        );
+
+        return;
+    }
+
+    tabla.innerHTML = "";
+
+    filas.forEach(fila => {
+
+        const tr = document.createElement("tr");
+        tr.className = "border-b border-slate-100 hover:bg-slate-50";
+
+        const inicio = formatRecordingDate(fila.inicio);
+        const fin = formatRecordingDate(fila.fin);
+
+        // Lo grabado y lo que duro de punta a punta son dos numeros
+        // distintos cuando la jornada tuvo huecos -el equipo
+        // apagado, la continua parada a media mañana-. Esa
+        // diferencia es informacion, no un error, y por eso se
+        // enseñan los dos.
+        const grabado = cual === "jornadas"
+            ? fila.duracion_grabada_sec
+            : fila.duracion_sec;
+
+        tr.innerHTML = `
+            <td class="px-6 py-4" data-equipo></td>
+            <td class="px-6 py-4 text-slate-600">${fila.fecha || inicio.date}</td>
+            <td class="px-6 py-4 text-slate-600">${inicio.time}</td>
+            <td class="px-6 py-4 text-slate-600">${fin.time}</td>
+            <td class="px-6 py-4 text-slate-600">${formatDuration(grabado)}</td>
+            <td class="px-6 py-4 text-slate-600">${formatBytes(fila.size_bytes)}</td>
+            <td class="px-6 py-4 text-slate-600" colspan="3">
+                ${fila.segmentos} trozo(s)${
+                    fila.solo_en_el_equipo
+                        ? ` · ${fila.solo_en_el_equipo} en el equipo`
+                        : ""
+                }
+            </td>
+            <td class="px-6 py-4" data-ver></td>
+        `;
+
+        // Como texto: el nombre lo escribe una persona y el hostname
+        // lo manda el equipo. Ninguno es marcado de confianza.
+        const celdaEquipo = tr.querySelector("[data-equipo]");
+        celdaEquipo.className = "px-6 py-4 font-medium text-slate-900";
+        celdaEquipo.textContent = fila.hostname || fila.device_id;
+
+        const boton = document.createElement("button");
+        boton.className =
+            "px-3 py-1.5 rounded-lg bg-slate-900 text-white text-xs";
+        boton.textContent = "Reproducir";
+
+        boton.addEventListener("click", () => {
+            reproducirSeguido(
+                fila.ids,
+                (fila.hostname || fila.device_id) + " · "
+                + (fila.fecha || inicio.date)
+            );
+        });
+
+        tr.querySelector("[data-ver]").appendChild(boton);
+
+        tabla.appendChild(tr);
+    });
+
+    pintarPieDeGrabaciones();
+}
+
+
+/* Reproduce una lista de segmentos, uno detras de otro.
+
+   Es lo que convierte treinta y seis archivos en "el lunes de
+   Recepcion". Los huecos -lo que no se grabo- no se rellenan: se
+   pasa al siguiente, y por eso se ve seguido aunque falten minutos
+   por el medio. */
+function reproducirSeguido(ids, titulo) {
+
+    if (!ids || !ids.length) {
+        return;
+    }
+
+    colaDeReproduccion = ids.slice();
+    tituloDeLaCola = titulo;
+
+    siguienteDeLaCola();
+}
+
+
+function siguienteDeLaCola() {
+
+    const video = document.getElementById("recording-video");
+
+    if (!colaDeReproduccion.length || !video) {
+        return;
+    }
+
+    const id = colaDeReproduccion.shift();
+
+    const quedan = colaDeReproduccion.length;
+
+    const titulo = document.getElementById("recording-player-title");
+
+    if (titulo) {
+        titulo.textContent =
+            tituloDeLaCola + (quedan ? ` · quedan ${quedan} trozo(s)` : "");
+    }
+
+    // Al terminar este, el siguiente. Se vuelve a poner en cada
+    // pase porque playRecording reasigna onerror y conviene no
+    // depender de que conserve lo que hubiera.
+    video.onended = () => {
+
+        if (colaDeReproduccion.length) {
+            siguienteDeLaCola();
+        }
+    };
+
+    playRecording(id, true);
 }
 
 
@@ -13374,3 +13598,13 @@ document
 
 // Tema, menu del usuario y cajon de navegacion
 conectarInterfazVeyra();
+
+
+document.querySelectorAll(".vy-vista").forEach(boton => {
+    boton.addEventListener(
+        "click",
+        () => cambiarVistaDeGrabaciones(boton.dataset.vista)
+    );
+});
+
+pintarBotonesDeVista();

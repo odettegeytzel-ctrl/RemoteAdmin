@@ -576,6 +576,66 @@ def test_una_actualizacion_conserva_todo_lo_del_equipo():
         shutil.rmtree(base, ignore_errors=True)
 
 
+def test_no_se_firma_dos_veces_la_misma_version_con_contenido_distinto():
+    """
+    Un numero de version es una PROMESA DE CONTENIDO.
+
+    Paso en produccion: se firmo 1.8.0, se publico, un equipo se lo
+    llevo a las 22:25, y a las 22:54 se volvio a firmar 1.8.0 con
+    codigo distinto. Ese equipo quedo con el primero para siempre.
+
+    Su actualizador compara versiones, ve "1.8.0 = 1.8.0" y
+    concluye que esta al dia. Y hace bien: el fallo no es suyo, es
+    de quien reutilizo el numero. Por eso la comprobacion va donde
+    se firma, que es el unico momento en que todavia se puede
+    evitar.
+    """
+
+    import importlib.util
+    import tempfile as tmp
+
+    spec = importlib.util.spec_from_file_location(
+        "firmador_de_pruebas",
+        str(RAIZ / "tools" / "sign_agent_release.py")
+    )
+
+    firmador = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(firmador)
+
+    carpeta = tmp.mkdtemp(prefix="version-")
+
+    try:
+
+        comprobar("Sin paquete previo no hay conflicto",
+                  firmador.conflicto_de_version("9.9.9", b"abc", carpeta)
+                  is None)
+
+        with open(os.path.join(carpeta, "agent-9.9.9.zip"), "wb") as archivo:
+            archivo.write(b"abc")
+
+        # Volver a firmar lo MISMO es inofensivo: el paquete que
+        # sale es identico, asi que ningun equipo se queda atras.
+        comprobar("Refirmar contenido identico se permite",
+                  firmador.conflicto_de_version("9.9.9", b"abc", carpeta)
+                  is None)
+
+        aviso = firmador.conflicto_de_version("9.9.9", b"otra cosa", carpeta)
+
+        comprobar("Mismo numero con OTRO contenido se rechaza",
+                  aviso is not None)
+
+        comprobar("Y se dice que hay que subir la version",
+                  "Sube AGENT_VERSION" in (aviso or ""),
+                  str(aviso)[:120])
+
+        comprobar("Ensenando los dos hashes, para poder compararlos",
+                  "el de disco:" in (aviso or "")
+                  and "el nuevo:" in (aviso or ""))
+
+    finally:
+        shutil.rmtree(carpeta, ignore_errors=True)
+
+
 def test_una_libreria_nueva_llega_sola():
     """
     Hasta aqui el actualizador solo reemplazaba CODIGO.
@@ -1667,6 +1727,7 @@ def main():
         test_un_paquete_no_puede_escribir_fuera_de_su_sitio,
         test_un_paquete_incompleto_se_rechaza,
         test_una_actualizacion_conserva_todo_lo_del_equipo,
+        test_no_se_firma_dos_veces_la_misma_version_con_contenido_distinto,
         test_una_libreria_nueva_llega_sola,
         test_un_paquete_sin_ruedas_no_llama_a_pip,
         test_si_falla_la_libreria_se_vuelve_atras_entero,
