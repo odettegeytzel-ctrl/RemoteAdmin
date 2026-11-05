@@ -135,7 +135,12 @@ def test_cada_sesion_empieza_desplegada():
     minimizado seria desconcertante.
     """
 
-    inicio = JS.split("async function startRemoteDesktop() {", 1)[1][:2500]
+    # La ventana se mide en caracteres, asi que crece cada vez que
+    # startRemoteDesktop gana una rama. La ultima fue la que abre la
+    # ventana sin pantalla cuando no hay ayudante, y empujo la
+    # llamada mas alla del recorte: la prueba fallaba sin que el
+    # comportamiento hubiera cambiado.
+    inicio = JS.split("async function startRemoteDesktop() {", 1)[1][:4500]
 
     comprobar("Al abrir se despliega",
               "plegarRemoto(false)" in inicio)

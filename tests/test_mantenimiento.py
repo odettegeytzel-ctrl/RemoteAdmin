@@ -725,6 +725,54 @@ def test_no_se_confunde_sin_sesion_con_sin_ayudante():
         servidor.interactive_logins.pop(clave, None)
 
 
+def test_sin_pantalla_la_ventana_se_abre_igual():
+    """
+    Un agujero que abrio el propio arreglo del rectangulo negro.
+
+    Al negarse a abrir la ventana cuando no hay ayudante, se dejo
+    sin acceso a la transferencia de archivos y a la descarga de
+    registros, que viven DENTRO de esa ventana. Y esas dos las
+    atiende el servicio: funcionan perfectamente sin nadie con la
+    sesion iniciada.
+
+    O sea: se bloqueaba justo la unica herramienta con la que se
+    puede averiguar por que falta el escritorio. Quien lo sufrio lo
+    dijo en una linea: "como descargo si no se ve la pantalla".
+    """
+
+    JS = io.open(RAIZ / "frontend" / "app.js", encoding="utf-8").read()
+
+    cuerpo = JS.split("async function startRemoteDesktop(", 1)[1][:3600]
+
+    comprobar("La ventana se abre aunque no haya pantalla",
+              'remoteScreen.classList.remove("hidden");' in cuerpo)
+
+    comprobar("Pero no se pide la imagen",
+              "image.removeAttribute(\"src\")" in cuerpo)
+
+    comprobar("Y donde iria la pantalla se dice el motivo",
+              "avisoEnLugarDePantalla(" in cuerpo)
+
+    comprobar("Con el texto que da el servidor",
+              "datos.message" in cuerpo)
+
+    # La capa se crea desde JS sobre el contenedor de la pantalla,
+    # no esta escrita en el HTML.
+    comprobar("Existe esa capa",
+              "function avisoEnLugarDePantalla(" in JS
+              and 'caja.id = "remote-sin-pantalla"' in JS)
+
+    comprobar("Y se quita cuando si hay pantalla",
+              "ocultarAvisoDePantalla()" in cuerpo)
+
+    # Lo que tiene que seguir alcanzable: es lo que sirve para
+    # diagnosticar.
+    HTML = io.open(RAIZ / "frontend" / "index.html", encoding="utf-8").read()
+
+    comprobar("La descarga de archivos sigue en la ventana",
+              'id="file-download-path"' in HTML)
+
+
 def test_el_aviso_no_se_pone_delante_de_lo_que_escribes():
     """
     La version anterior dejaba pasar TODOS los clics
@@ -924,6 +972,7 @@ def principal():
         test_ante_la_duda_el_equipo_antiguo_sigue_funcionando,
         test_el_panel_dice_el_motivo_de_verdad,
         test_el_control_remoto_tampoco_se_queda_en_negro,
+        test_sin_pantalla_la_ventana_se_abre_igual,
         test_el_ayudante_no_depende_de_que_alguien_inicie_sesion,
         test_no_se_confunde_sin_sesion_con_sin_ayudante
     ]

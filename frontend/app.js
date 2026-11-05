@@ -6571,6 +6571,52 @@ try {
 CONTROL REMOTO
 ============================== */
 
+
+/* Lo que se ve donde iria la pantalla cuando no hay pantalla.
+
+   Un rectangulo negro no dice nada y parece una averia. Esto dice
+   que pasa, y deja a la vista el resto de la ventana: la
+   transferencia de archivos y la descarga de registros siguen
+   funcionando, porque las atiende el servicio y no necesitan
+   escritorio. Son justamente las herramientas con las que se
+   averigua por que falta el escritorio. */
+function avisoEnLugarDePantalla(texto) {
+
+    const contenedor =
+        document.getElementById("remote-screen-container");
+
+    if (!contenedor) {
+        return;
+    }
+
+    let caja = document.getElementById("remote-sin-pantalla");
+
+    if (!caja) {
+
+        caja = document.createElement("div");
+        caja.id = "remote-sin-pantalla";
+        caja.className =
+            "absolute inset-0 flex items-center justify-center p-6 "
+            + "text-center text-sm text-amber-200 bg-slate-900";
+
+        contenedor.appendChild(caja);
+    }
+
+    caja.textContent = texto;
+    caja.classList.remove("hidden");
+}
+
+
+function ocultarAvisoDePantalla() {
+
+    const caja = document.getElementById("remote-sin-pantalla");
+
+    if (caja) {
+        caja.classList.add("hidden");
+    }
+}
+
+
 async function startRemoteDesktop() {
 
 if (!selectedDevice) {
@@ -6629,8 +6675,33 @@ try {
             aviso.classList.remove("hidden");
         }
 
+        // La ventana se ABRE igual, aunque no haya pantalla.
+        //
+        // Dentro viven la transferencia de archivos y la descarga,
+        // que las atiende el SERVICIO y funcionan perfectamente sin
+        // nadie con la sesion iniciada. Cerrar la ventana entera
+        // por no poder enseñar la pantalla dejaba sin acceso a lo
+        // unico que sirve para averiguar POR QUE no hay pantalla:
+        // los registros del equipo.
+        //
+        // Lo que no se hace es fingir: no se pide la imagen, no se
+        // sigue el cursor, y donde iria la pantalla se dice que
+        // pasa en vez de un rectangulo negro.
+        remoteScreen.classList.remove("hidden");
+
+        image.removeAttribute("src");
+
+        avisoEnLugarDePantalla(
+            datos.message || "No se puede mostrar la pantalla de este equipo."
+        );
+
+        plegarRemoto(false);
+        colocarTiradoresRemotos();
+
         return;
     }
+
+    ocultarAvisoDePantalla();
 
     remoteScreen.classList.remove(
         "hidden"
