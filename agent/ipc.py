@@ -416,7 +416,14 @@ def _leer_exactamente(handle, cantidad, timeout_ms):
     return leidos
 
 
-def _leer_sin_prisa(handle, cantidad):
+# Cada cuanto despierta la espera del siguiente mensaje para mirar
+# si el canal sigue en pie. Un segundo: lo bastante corto para que
+# soltar el tubo se note enseguida, y lo bastante largo para no
+# gastar nada estando parado.
+LATIDO_DE_ESPERA_MS = 1000
+
+
+def _leer_sin_prisa(handle, cantidad, sigue_conectado=None):
     """
     Como _leer_exactamente, pero sin limite de tiempo.
 
@@ -425,6 +432,24 @@ def _leer_sin_prisa(handle, cantidad):
     El limite de tiempo se aplica una vez empezado el mensaje, con
     _leer_exactamente, para que un mensaje a medias no deje el canal
     colgado.
+
+    "Sin prisa" no quiere decir "para siempre", y esa diferencia
+    costo varios dias de equipos sin escritorio.
+
+    Antes esto esperaba con WaitForSingleObject(INFINITE). Cuando un
+    envio fallaba, el canal se marcaba como caido y se llamaba a
+    DisconnectNamedPipe... que NO despierta una lectura pendiente.
+    El hilo lector se quedaba colgado para siempre: el servicio
+    creia que no habia ayudante, nadie volvia a aceptar conexiones,
+    y ningun ayudante nuevo podia entrar. Solo lo arreglaba
+    reiniciar el servicio, una vez al dia.
+
+    Tampoco se puede cancelar la lectura desde fuera: CancelIoEx no
+    esta en esta version de pywin32, y CancelIo solo alcanza a lo
+    que pidio el mismo hilo.
+
+    Asi que se espera a ratos y entre uno y otro se pregunta si el
+    canal sigue en pie. Si ya no lo esta, se suelta.
     """
 
     import pywintypes
@@ -445,9 +470,20 @@ def _leer_sin_prisa(handle, cantidad):
             if error.winerror != 997:
                 raise
 
-        win32event.WaitForSingleObject(
-            overlapped.hEvent, win32event.INFINITE
-        )
+        while True:
+
+            estado = win32event.WaitForSingleObject(
+                overlapped.hEvent, LATIDO_DE_ESPERA_MS
+            )
+
+            if estado != win32event.WAIT_TIMEOUT:
+                break
+
+            # Nadie ha escrito todavia. Si el canal se solto
+            # mientras tanto, no tiene sentido seguir esperando un
+            # mensaje que no va a llegar nunca.
+            if sigue_conectado is not None and not sigue_conectado():
+                raise IPCError("El canal se solto mientras se esperaba")
 
         obtenidos = win32file.GetOverlappedResult(handle, overlapped, True)
 
@@ -470,14 +506,16 @@ def _cerrar_evento(overlapped):
         pass
 
 
-def _recibir_mensaje(handle, timeout_ms):
+def _recibir_mensaje(handle, timeout_ms, sigue_conectado=None):
     """Un mensaje completo: cabecera sin prisa, cuerpo con limite."""
 
     cabecera = b""
 
     while len(cabecera) < 4:
 
-        cabecera += _leer_sin_prisa(handle, 4 - len(cabecera))
+        cabecera += _leer_sin_prisa(
+            handle, 4 - len(cabecera), sigue_conectado
+        )
 
     longitud = desempaquetar_longitud(cabecera)
 
@@ -628,7 +666,38 @@ class CanalDeServicio:
         return pid
 
     def desconectar(self):
-        """Suelta al ayudante actual, dejando el tubo listo para otro."""
+        """
+        Suelta al ayudante actual, dejando el tubo listo para otro.
+
+        Marcar _conectado a False NO es cosmetico: es lo que hace
+        que el hilo lector se entere y suelte el tubo. Y eso no
+        era asi, y es el fallo que dejo a varios equipos sin
+        escritorio durante dias.
+
+        El hilo que escucha al ayudante espera un mensaje con
+        WaitForSingleObject(INFINITE). DisconnectNamedPipe NO
+        despierta esa espera, asi que el hilo se quedaba colgado
+        para siempre:
+
+          - el servicio creia que no habia ayudante, aunque
+            estuviera vivo al otro lado;
+          - nadie volvia a esperar_ayudante(), de modo que ningun
+            ayudante nuevo podia conectarse NUNCA;
+          - y pedir el arranque de la tarea no servia de nada,
+            porque el proceso ya estaba corriendo.
+
+        Lo unico que lo desatascaba era reiniciar el servicio, cosa
+        que pasa una vez al dia con la comprobacion de version. En
+        los registros se veia clavado: se recuperaba a la misma hora
+        cada dia y volvia a romperse despues.
+
+        No se cancela la operacion pendiente porque no se puede:
+        CancelIoEx no esta en esta version de pywin32, y CancelIo
+        solo alcanza a lo que pidio el MISMO hilo -aqui quien envia
+        y quien lee son distintos-. La solucion es que la espera
+        deje de ser infinita y mire esta bandera: ver
+        _leer_sin_prisa.
+        """
 
         self._conectado = False
 
@@ -696,7 +765,12 @@ class CanalDeServicio:
             raise HelperUnavailable("No hay ayudante interactivo conectado")
 
         try:
-            return _recibir_mensaje(self._tubo, IO_TIMEOUT_MS)
+            # Se pasa la bandera: si otro hilo suelta el tubo
+            # mientras aqui se espera un mensaje, esta lectura se
+            # entera y vuelve en vez de quedarse colgada.
+            return _recibir_mensaje(
+                self._tubo, IO_TIMEOUT_MS, lambda: self._conectado
+            )
 
         except Exception as error:
 
