@@ -138,6 +138,54 @@ def requires_desktop(mensaje):
     return orden.startswith(INTERACTIVE_PREFIXES)
 
 
+# Ajustes que el servicio recibe y el ayudante CUMPLE.
+#
+# No son de escritorio -guardar un horario no necesita pantalla- y
+# por eso los atiende el servicio, que sobrevive a que el usuario
+# cierre sesion. Pero quien tiene que cumplirlos es el ayudante,
+# porque el grabador vive ahi: en la Sesion 0 no hay pantalla que
+# capturar.
+#
+# Asi que el servicio se los queda Y se los pasa. Hacia falta
+# decirlo aqui porque el ayudante vuelve a comprobar cada orden que
+# le llega, y al no ser de escritorio las descartaba:
+#
+#     [ayudante] Orden descartada: no es de escritorio (set_schedule)
+#
+# Esa linea salio en los siete equipos durante tres dias. El
+# servicio habia dejado de grabar -que era lo correcto- y el
+# ayudante nunca recibia el horario, asi que no grababa NADIE.
+AJUSTES_QUE_CUMPLE_EL_AYUDANTE = (
+    "set_schedule:",
+    "set_continuous:",
+    "schedule_suppression:",
+)
+
+
+def el_ayudante_debe_atender(mensaje):
+    """
+    Si el ayudante tiene que ejecutar esta orden.
+
+    Es mas amplio que requires_desktop: ademas de lo que necesita
+    pantalla, incluye los ajustes de grabacion que el servicio le
+    reenvia para que los cumpla.
+
+    Se mantiene como una lista BLANCA, igual que la otra: lo que no
+    este escrito aqui, el ayudante no lo ejecuta aunque se lo pidan
+    por el canal.
+    """
+
+    if not isinstance(mensaje, str):
+        return False
+
+    orden = mensaje.strip()
+
+    return (
+        requires_desktop(orden)
+        or orden.startswith(AJUSTES_QUE_CUMPLE_EL_AYUDANTE)
+    )
+
+
 def classify(mensaje):
     """Devuelve KIND_INTERACTIVE o KIND_BACKGROUND."""
 

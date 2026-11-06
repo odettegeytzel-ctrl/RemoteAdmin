@@ -261,6 +261,67 @@ def test_el_agent_de_una_pieza_sigue_grabando():
 # 2. EL HORARIO LLEGA A QUIEN LO CUMPLE
 # ==================================================================
 
+def test_el_ayudante_ACEPTA_el_horario_que_le_mandan():
+    """
+    El fallo que dejo a los siete equipos sin grabar tres dias.
+
+    El servicio recibe el horario -guardarlo no necesita pantalla- y
+    se lo pasa al ayudante, que es quien tiene que cumplirlo porque
+    el grabador vive ahi.
+
+    Pero el ayudante vuelve a comprobar cada orden que le llega, y
+    lo hacia con requires_desktop. El horario NO es de escritorio,
+    asi que lo descartaba nada mas recibirlo:
+
+        [ayudante] Orden descartada: no es de escritorio (set_schedule)
+
+    Esa linea salio en los siete equipos, decenas de veces, durante
+    tres dias. El servicio habia dejado de grabar -que era lo
+    correcto, en la Sesion 0 no hay pantalla- y el ayudante nunca
+    recibia el horario. No grababa NADIE, y el panel no tenia forma
+    de saberlo.
+    """
+
+    import commands
+
+    for ajuste in ('set_schedule:{"enabled": true}',
+                   'set_continuous:{"enabled": true}',
+                   'schedule_suppression:{"slot": null}'):
+
+        nombre = ajuste.split(":", 1)[0]
+
+        # Siguen sin ser de escritorio: eso era correcto y no cambia.
+        comprobar("%s no necesita pantalla" % nombre,
+                  not commands.requires_desktop(ajuste))
+
+        # Pero el ayudante SI tiene que atenderlos.
+        comprobar("y aun asi el ayudante lo atiende" ,
+                  commands.el_ayudante_debe_atender(ajuste),
+                  "lo descartaria: " + ajuste)
+
+    # La guarda del ayudante usa la comprobacion amplia, no la otra.
+    comprobar("El ayudante comprueba con el_ayudante_debe_atender",
+              "commands.el_ayudante_debe_atender(orden)" in AYUDANTE
+              and "if not commands.requires_desktop(orden):" not in AYUDANTE)
+
+    # Y sabe ejecutarlos: dejarlos pasar sin hacer nada seria el
+    # mismo resultado con otra cara.
+    comprobar("Y sabe aplicarlos",
+              "agente.apply_schedule(horario)" in AYUDANTE
+              and "agente.apply_continuous(" in AYUDANTE)
+
+    comprobar("Por las mismas funciones que usaba el servicio",
+              "apply_schedule" in AGENTE and "apply_continuous" in AGENTE)
+
+    # Lo que NO debe pasar: que el ayudante acepte cualquier cosa.
+    # Sigue siendo una lista blanca.
+    for ajena in ("get_processes:{}", "power_action:{}",
+                  "store_recording:{}", "file_download_start:{}"):
+
+        comprobar("El ayudante sigue sin atender %s" % ajena.split(":")[0],
+                  not commands.el_ayudante_debe_atender(ajena))
+
+
 def test_los_ajustes_llegan_al_ayudante():
     """
     El servicio los guarda porque sobrevive al cierre de sesion. El
@@ -486,6 +547,7 @@ def principal():
         test_el_servicio_no_graba_nunca,
         test_el_ayudante_si_graba,
         test_el_agent_de_una_pieza_sigue_grabando,
+        test_el_ayudante_ACEPTA_el_horario_que_le_mandan,
         test_los_ajustes_llegan_al_ayudante,
         test_sin_ayudante_el_ajuste_no_se_pierde,
         test_lo_que_produce_el_ayudante_no_se_pierde,

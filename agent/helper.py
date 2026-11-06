@@ -175,13 +175,26 @@ class Ayudante:
         """
         Atiende una orden de escritorio.
 
-        Se vuelve a comprobar aqui que la orden es de escritorio. El
+        Se vuelve a comprobar aqui lo que le corresponde. El
         servicio ya lo decidio, pero este proceso es el que tiene el
-        raton: no ejecuta nada que no le corresponda, aunque se lo
-        pidan por el canal.
+        raton: no ejecuta nada que no le toque, aunque se lo pidan
+        por el canal.
+
+        La comprobacion es el_ayudante_debe_atender y no
+        requires_desktop, y la diferencia costo tres dias sin grabar
+        en los siete equipos: los ajustes de grabacion NO son de
+        escritorio -guardar un horario no necesita pantalla- pero
+        los cumple el ayudante, porque el grabador vive aqui.
+
+        Con requires_desktop se descartaban nada mas llegar:
+
+            [ayudante] Orden descartada: no es de escritorio (set_schedule)
+
+        El servicio habia dejado de grabar, que era lo correcto, y
+        el ayudante nunca recibia el horario. No grababa nadie.
         """
 
-        if not commands.requires_desktop(orden):
+        if not commands.el_ayudante_debe_atender(orden):
             print(
                 "[ayudante] Orden descartada: no es de escritorio "
                 f"({commands.nombre_de_la_orden(orden)})"
@@ -189,6 +202,46 @@ class Ayudante:
             return
 
         agente = self.agente
+
+        # --- los ajustes de grabacion ---
+        #
+        # Los recibe el servicio y los cumple el ayudante, porque el
+        # grabador vive aqui. Se aplican por las MISMAS funciones
+        # que usaba el servicio: un segundo camino para lo mismo
+        # seria un segundo sitio donde olvidarse de algo.
+
+        if orden.startswith("set_schedule:"):
+
+            try:
+                horario = json.loads(orden.split(":", 1)[1])
+            except json.JSONDecodeError:
+                horario = {}
+
+            agente.apply_schedule(horario)
+            agente.report_status_threadsafe()
+            return
+
+        if orden.startswith("set_continuous:"):
+
+            try:
+                datos = json.loads(orden.split(":", 1)[1])
+            except json.JSONDecodeError:
+                datos = {}
+
+            agente.apply_continuous(bool(datos.get("enabled")))
+            agente.report_status_threadsafe()
+            return
+
+        if orden.startswith("schedule_suppression:"):
+
+            try:
+                datos = json.loads(orden.split(":", 1)[1])
+            except json.JSONDecodeError:
+                datos = {}
+
+            agente.recording_scheduler.aplicar_supresion(datos.get("slot"))
+            agente._aplicar_decision_del_horario()
+            return
 
         if orden == "start_screen_stream":
             self.empezar_a_transmitir()
