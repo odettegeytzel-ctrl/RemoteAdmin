@@ -576,6 +576,51 @@ def test_una_actualizacion_conserva_todo_lo_del_equipo():
         shutil.rmtree(base, ignore_errors=True)
 
 
+def test_al_actualizar_tambien_se_reinicia_el_ayudante():
+    """
+    Lo que hacia inutiles todas las correcciones del ayudante.
+
+    El actualizador reemplaza los archivos y reiniciaba SOLO la
+    tarea del servicio. El ayudante es otro proceso, de larga vida,
+    y nadie lo reiniciaba: seguia ejecutando el codigo con el que
+    arranco.
+
+    En un equipo real se vio el mismo pid de ayudante los dias 3, 4
+    y 5, atravesando reinicios del servicio y una actualizacion.
+    Durante esos dias se corrigieron en helper.py tres cosas -que
+    aceptara el horario, que dejara rastro al morir, que informara
+    su estado- y NINGUNA llego a ejecutarse en ninguna maquina. Los
+    archivos estaban en el disco; el proceso que los lee, no.
+
+    Es la clase de fallo que hace perder dias: cada arreglo se
+    publica, se comprueba que llego, y no cambia nada.
+    """
+
+    AGENTE = io.open(RAIZ / "agent" / "agent.py", encoding="utf-8").read()
+
+    cuerpo = AGENTE.split("def reiniciar_el_servicio(", 1)[1][:2200]
+
+    comprobar("Se termina la tarea del ayudante",
+              'TAREA_DEL_AYUDANTE' in cuerpo
+              and '"/End"' in cuerpo)
+
+    # El orden importa: si se reiniciara el servicio primero, el
+    # ayudante viejo se reconectaria al tubo nuevo y seguiria con
+    # su codigo antiguo.
+    comprobar("Y ANTES de reiniciar el servicio",
+              cuerpo.index("TAREA_DEL_AYUDANTE")
+              < cuerpo.index('"RemoteAdminAgent"'),
+              "se reinicia el servicio antes de soltar al ayudante")
+
+    comprobar("El servicio se reinicia igual que antes",
+              '["schtasks", "/End", "/TN", "RemoteAdminAgent"]' in cuerpo
+              and '["schtasks", "/Run", "/TN", "RemoteAdminAgent"]' in cuerpo)
+
+    # Y el actualizador sigue llamando a esto al aplicar
+    comprobar("El actualizador lo usa al instalar",
+              "reiniciar=reiniciar_el_servicio" in AGENTE)
+
+
 def test_no_se_firma_dos_veces_la_misma_version_con_contenido_distinto():
     """
     Un numero de version es una PROMESA DE CONTENIDO.
@@ -1727,6 +1772,7 @@ def main():
         test_un_paquete_no_puede_escribir_fuera_de_su_sitio,
         test_un_paquete_incompleto_se_rechaza,
         test_una_actualizacion_conserva_todo_lo_del_equipo,
+        test_al_actualizar_tambien_se_reinicia_el_ayudante,
         test_no_se_firma_dos_veces_la_misma_version_con_contenido_distinto,
         test_una_libreria_nueva_llega_sola,
         test_un_paquete_sin_ruedas_no_llama_a_pip,

@@ -6595,9 +6595,15 @@ function avisoEnLugarDePantalla(texto) {
 
         caja = document.createElement("div");
         caja.id = "remote-sin-pantalla";
+        // pointer-events-none no es decoracion: sin eso la capa
+        // se come los clics. Ocupa todo el contenedor y los
+        // tiradores de redimensionar viven dentro, asi que la
+        // ventana se quedaba sin poder cambiar de tamano justo
+        // cuando no hay pantalla que ver.
         caja.className =
             "absolute inset-0 flex items-center justify-center p-6 "
-            + "text-center text-sm text-amber-200 bg-slate-900";
+            + "text-center text-sm text-amber-200 bg-slate-900 "
+            + "pointer-events-none";
 
         contenedor.appendChild(caja);
     }

@@ -192,6 +192,7 @@ def update_system_info(device_id, system_info):
             architecture    = COALESCE(?, architecture),
             manufacturer    = COALESCE(?, manufacturer),
             model           = COALESCE(?, model),
+            utc_offset_minutes = COALESCE(?, utc_offset_minutes),
             system_info_at  = ?
         WHERE device_id = ?
         """,
@@ -213,6 +214,7 @@ def update_system_info(device_id, system_info):
             system_info.get("architecture"),
             system_info.get("manufacturer"),
             system_info.get("model"),
+            system_info.get("utc_offset_minutes"),
             datetime.now(timezone.utc).isoformat(),
             device_id
         )

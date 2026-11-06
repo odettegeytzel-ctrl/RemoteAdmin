@@ -685,6 +685,13 @@ def init_db():
         "storage_used": "INTEGER",
         "windows_version": "TEXT",
         "architecture": "TEXT",
+
+        # Minutos de desfase del equipo respecto a UTC.
+        #
+        # Para agrupar sus grabaciones por DIA en su hora y no en la
+        # del servidor. NULL mientras el equipo no lo haya dicho, y
+        # entonces se agrupa por UTC, que es lo unico que se sabe.
+        "utc_offset_minutes": "INTEGER",
         "manufacturer": "TEXT",
         "model": "TEXT",
         "last_alert_status": "TEXT",

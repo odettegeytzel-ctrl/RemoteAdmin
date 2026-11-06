@@ -692,6 +692,39 @@ def _zonas_por_equipo():
     return {fila["device_id"]: fila["timezone"] for fila in filas}
 
 
+def _desfases_por_equipo():
+    """
+    Minutos de desfase respecto a UTC que informa cada equipo.
+
+    Es lo que de verdad resuelve el corte del dia. La zona del
+    horario suele estar puesta como "local" -que significa "la hora
+    del equipo"- y eso el servidor no lo puede resolver: acababa
+    agrupando por UTC, y una jornada mexicana de 8 a 17 cae a
+    caballo de dos fechas UTC. En el panel salia una fila cuyo fin
+    era ANTERIOR a su inicio, porque mezclaba dos tardes.
+
+    El desfase lo manda el propio equipo con su ficha. Un equipo
+    que todavia no lo haya dicho no aparece aqui, y entonces se cae
+    a lo de antes.
+    """
+
+    connection = get_connection()
+
+    try:
+        filas = connection.execute(
+            "SELECT device_id, utc_offset_minutes FROM devices "
+            "WHERE utc_offset_minutes IS NOT NULL"
+        ).fetchall()
+
+    except sqlite3.Error:
+        filas = []
+
+    finally:
+        connection.close()
+
+    return {f["device_id"]: f["utc_offset_minutes"] for f in filas}
+
+
 def jornadas(device_id=None, start=None, end=None, zonas=None):
     """
     Los segmentos agrupados por equipo y dia.
@@ -709,6 +742,8 @@ def jornadas(device_id=None, start=None, end=None, zonas=None):
     if zonas is None:
         zonas = _zonas_por_equipo()
 
+    desfases = _desfases_por_equipo()
+
     agrupadas = {}
 
     for segmento in query_recordings(device_id, start, end):
@@ -721,9 +756,21 @@ def jornadas(device_id=None, start=None, end=None, zonas=None):
             # aparte, para que no desaparezca del panel.
             continue
 
+        # Primero la zona configurada, si se puede resolver. Si no
+        # -lo normal, porque suele estar como "local"-, el desfase
+        # que informa el propio equipo. Y si tampoco, UTC.
         zona = _zona_del_equipo(zonas.get(segmento["device_id"]))
 
-        local = comienzo.astimezone(zona) if zona else comienzo
+        if zona is not None:
+            local = comienzo.astimezone(zona)
+
+        else:
+            minutos = desfases.get(segmento["device_id"])
+
+            local = (
+                comienzo + timedelta(minutes=minutos)
+                if minutos is not None else comienzo
+            )
 
         clave = (segmento["device_id"], local.date().isoformat())
 

@@ -284,6 +284,88 @@ def test_el_dia_se_corta_en_la_hora_del_equipo():
               len(grabaciones.jornadas()) == 2)
 
 
+def test_el_dia_se_corta_con_el_desfase_que_informa_el_equipo():
+    """
+    El caso REAL, que la zona configurada no cubria.
+
+    La zona del horario suele estar puesta como "local" -que
+    significa "la hora del equipo"- y eso el servidor no lo puede
+    resolver. Acababa agrupando por UTC, y una jornada mexicana cae
+    a caballo de dos fechas UTC.
+
+    En el panel salia esto:
+
+        2026-10-14   inicio 06:02 p.m.   fin 02:21 p.m.
+
+    Un fin ANTERIOR a su inicio, porque la fila mezclaba dos tardes
+    locales. No era un dato mal guardado: era el dia cortado por el
+    sitio equivocado.
+
+    Ahora el propio equipo informa cuantos minutos va respecto a
+    UTC, y el corte se hace con eso.
+    """
+
+    limpiar()
+    equipo("mx", "PC-MX")          # sin zona configurada
+
+    conexion = database.get_connection()
+    conexion.execute(
+        "UPDATE devices SET utc_offset_minutes = ? WHERE device_id = ?",
+        (-360, "mx")               # Mexico: seis horas por detras
+    )
+    conexion.commit()
+    conexion.close()
+
+    # 18:00 locales del lunes = 00:00 UTC del martes
+    segmento("mx", "2026-11-03T00:00:00+00:00",
+             "2026-11-03T00:15:00+00:00")
+
+    # 10:00 locales del lunes = 16:00 UTC del lunes
+    segmento("mx", "2026-11-02T16:00:00+00:00",
+             "2026-11-02T16:15:00+00:00")
+
+    dias = grabaciones.jornadas()
+
+    comprobar("Las dos caen en el mismo dia del equipo",
+              len(dias) == 1, "salieron %d jornadas" % len(dias))
+
+    if not dias:
+        return
+
+    comprobar("Y es el lunes, su dia",
+              dias[0]["fecha"] == "2026-11-02", dias[0]["fecha"])
+
+    comprobar("Con los dos segmentos",
+              dias[0]["segmentos"] == 2, str(dias[0]["segmentos"]))
+
+    # Y lo que se veia mal: el fin no puede ir antes que el inicio.
+    inicio = grabaciones._momento(dias[0]["inicio"])
+    fin = grabaciones._momento(dias[0]["fin"])
+
+    comprobar("El fin no va antes que el inicio",
+              fin >= inicio,
+              "%s -> %s" % (dias[0]["inicio"], dias[0]["fin"]))
+
+
+def test_un_equipo_que_no_ha_dicho_su_hora_no_rompe_nada():
+    """
+    Un Agent anterior no informa el desfase. Ahi se agrupa por UTC,
+    que es lo unico que se sabe, y no se inventa ninguno.
+    """
+
+    limpiar()
+    equipo("viejo", "PC-VIEJO")
+
+    segmento("viejo", "2026-11-02T16:00:00+00:00",
+             "2026-11-02T16:15:00+00:00")
+
+    dias = grabaciones.jornadas()
+
+    comprobar("Se agrupa igual, sin inventar hora",
+              len(dias) == 1 and dias[0]["fecha"] == "2026-11-02",
+              str(dias))
+
+
 def test_una_zona_que_no_existe_no_revienta():
     """
     La zona la escribe una persona en el panel. Si se equivoca, la
@@ -487,6 +569,8 @@ def principal():
         test_cada_dia_por_su_lado,
         test_cada_equipo_por_su_lado,
         test_el_dia_se_corta_en_la_hora_del_equipo,
+        test_el_dia_se_corta_con_el_desfase_que_informa_el_equipo,
+        test_un_equipo_que_no_ha_dicho_su_hora_no_rompe_nada,
         test_una_zona_que_no_existe_no_revienta,
         test_no_se_toca_ni_un_segmento,
         test_una_jornada_a_medias_se_ve_a_medias,

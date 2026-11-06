@@ -1622,6 +1622,26 @@ def reiniciar_el_servicio():
 
     import subprocess
 
+    # EL AYUDANTE TAMBIEN. Y esto faltaba.
+    #
+    # El actualizador reemplaza los archivos y reiniciaba solo la
+    # tarea del servicio. El ayudante es OTRO proceso, de larga
+    # vida, y nadie lo reiniciaba nunca: seguia ejecutando el codigo
+    # con el que arranco, que podia ser de hace dias.
+    #
+    # Se vio en un equipo real: el mismo pid de ayudante los dias 3,
+    # 4 y 5, atravesando reinicios del servicio y una actualizacion.
+    # Todo lo corregido en helper.py durante esos dias estaba en el
+    # disco y no se ejecutaba en ninguna maquina.
+    #
+    # Se termina ANTES de reiniciar el servicio. Al volver, el
+    # servicio recrea el tubo y el ayudante nuevo se conecta; si
+    # tardara, el vigilante lo arranca en el siguiente minuto.
+    subprocess.run(
+        ["schtasks", "/End", "/TN", TAREA_DEL_AYUDANTE],
+        capture_output=True, timeout=30
+    )
+
     # Lista de argumentos, nunca una cadena para el interprete de
     # ordenes: aqui no se construye ningun comando con texto de fuera.
     subprocess.run(
@@ -2405,9 +2425,28 @@ def get_system_info():
         except PermissionError:
             continue
 
+    # Cuantos minutos va este equipo respecto a UTC.
+    #
+    # Lo necesita el servidor para agrupar las grabaciones POR DIA.
+    # Una jornada de 8 a 17 en Mexico cae a caballo de dos fechas
+    # UTC, asi que agrupando por UTC una fila mezclaba dos tardes y
+    # el panel mostraba un fin anterior a su inicio.
+    #
+    # Se manda el desfase y no el nombre de la zona a proposito: el
+    # nombre hay que resolverlo con una base de datos de husos que
+    # el servidor puede no tener, y el desfase es un numero que vale
+    # tal cual. Lo malo del desfase -que cambia con el horario de
+    # verano- no afecta aqui: se usa para decidir a que dia
+    # pertenece un momento, y se informa cada vez que el equipo
+    # conecta.
+    desfase = datetime.now().astimezone().utcoffset()
+
     return {
         "hostname": socket.gethostname(),
         "username": getpass.getuser(),
+        "utc_offset_minutes": (
+            int(desfase.total_seconds() // 60) if desfase else 0
+        ),
         "operating_system": platform.platform(),
         "ip_address": get_local_ip(),
         "processor": platform.processor(),
