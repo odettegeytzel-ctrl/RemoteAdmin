@@ -146,6 +146,52 @@ def set_storage_state(recording_id, estado, status=None):
     return True
 
 
+def _completar_medidas(connection, fila, ended_at, duration_sec, size_bytes):
+    """
+    Rellena lo que falta de una ficha que ya existe.
+
+    Solo las MEDIDAS -fin, duracion y tamano-, nunca el estado. Una
+    grabacion archivada no vuelve a "solo local" por esto.
+
+    Y solo hacia la verdad: la duracion se pone si no habia, y el
+    tamano solo si el nuevo es mayor. Un archivo que se esta
+    escribiendo crece; si llegara una medida menor, seria una foto
+    mas vieja que la que ya hay.
+    """
+
+    cambios = {}
+
+    # Un fin igual al inicio no es un fin: es lo que se anota
+    # cuando el archivo se vio a medio escribir.
+    sin_fin = (
+        not fila["ended_at"]
+        or fila["ended_at"] == fila["started_at"]
+    )
+
+    if sin_fin and ended_at and ended_at != fila["started_at"]:
+        cambios["ended_at"] = ended_at
+
+    if not fila["duration_sec"] and duration_sec:
+        cambios["duration_sec"] = duration_sec
+
+    if size_bytes and size_bytes > (fila["size_bytes"] or 0):
+        cambios["size_bytes"] = size_bytes
+
+    if not cambios:
+        return False
+
+    connection.execute(
+        "UPDATE recordings SET "
+        + ", ".join("%s = ?" % campo for campo in cambios)
+        + " WHERE id = ?",
+        list(cambios.values()) + [fila["id"]]
+    )
+
+    connection.commit()
+
+    return True
+
+
 def register_local_recording(device_id, path, started_at, ended_at,
                              duration_sec, size_bytes):
     """
@@ -156,9 +202,27 @@ def register_local_recording(device_id, path, started_at, ended_at,
     mantiene fuera de la retencion del servidor y de todo lo que sirve
     archivos, que filtran por status='stored'.
 
-    Si la ficha ya existe no se duplica ni se pisa: una grabacion ya
-    archivada no debe volver a "solo local" porque llegue un aviso
-    repetido del Agent.
+    Si la ficha ya existe no se duplica: una grabacion ya archivada
+    no debe volver a "solo local" porque llegue un aviso repetido
+    del Agent. Pero SI se completan sus medidas, y esa diferencia
+    importa.
+
+    Por que: el equipo manda su catalogo cada vez que conecta, y
+    ahi ve el archivo del segmento que se esta grabando AHORA, a
+    medio escribir. Se creaba la ficha con esa foto -medio mega,
+    cero segundos- y cuando quince minutos despues llegaba el aviso
+    del segmento terminado, con su duracion y su tamano de verdad,
+    se descartaba por existir ya.
+
+    Resultado: cada grabacion se quedaba congelada en el instante
+    en que empezo. En el panel salia "Duracion: Desconocida" y
+    medio mega, para un video de quince minutos y cuarenta y cinco.
+
+    Las medidas solo crecen hacia la verdad: se rellena lo que
+    falta y el tamano solo si es mayor, porque un archivo que se
+    esta escribiendo crece y nunca encoge. Lo que NUNCA se toca es
+    el estado -status, storage_state, keep-: eso es lo que la regla
+    original protegia y sigue protegido.
 
     Devuelve (id, creada).
     """
@@ -168,11 +232,18 @@ def register_local_recording(device_id, path, started_at, ended_at,
     try:
 
         existente = connection.execute(
-            "SELECT id FROM recordings WHERE device_id = ? AND path = ?",
+            "SELECT id, started_at, ended_at, duration_sec, size_bytes "
+            "FROM recordings WHERE device_id = ? AND path = ?",
             (device_id, path)
         ).fetchone()
 
         if existente is not None:
+
+            _completar_medidas(
+                connection, existente,
+                ended_at, duration_sec, size_bytes
+            )
+
             return existente["id"], False
 
         cursor = connection.execute(

@@ -95,6 +95,15 @@ def equipo(identificador, hostname="PC", zona=None):
     conexion.close()
 
 
+BASE = "2026-11-02T10:%02d:00+00:00"
+
+
+def t(minutos):
+    """Un instante del 2 de noviembre, a tantos minutos de las 10:00."""
+
+    return BASE % minutos
+
+
 def segmento(identificador, inicio, fin, duracion=900, tamano=45_000_000,
              estado="local_only", status="local"):
 
@@ -164,6 +173,147 @@ def test_una_jornada_es_una_fila():
 
     comprobar("Lleva el nombre del equipo",
               dia["hostname"] == "RECEPCION", str(dia["hostname"]))
+
+
+def test_una_ficha_a_medias_se_completa_cuando_el_segmento_termina():
+    """
+    Por que cada grabacion salia con "Duracion: Desconocida".
+
+    El equipo manda su catalogo cada vez que conecta, y ahi ve el
+    archivo del segmento que se esta grabando AHORA, a medio
+    escribir. Se creaba la ficha con esa foto -medio mega, cero
+    segundos- y quince minutos despues, cuando llegaba el aviso del
+    segmento TERMINADO con su duracion de verdad, se descartaba por
+    existir ya.
+
+    Visto en produccion con la primera grabacion buena en tres
+    semanas:
+
+        el equipo informo:  21:35:46 -> 21:50:47   (15 min)
+        en la base quedo:   21:36:38 -> 21:36:38   0.5 MB  0 s
+
+    Mismo archivo. La ficha se quedo congelada en el instante en
+    que empezo.
+    """
+
+    limpiar()
+    equipo("eq1")
+
+    # La foto de cuando se estaba escribiendo
+    conexion = database.get_connection()
+    conexion.execute(
+        "INSERT INTO recordings (device_id, started_at, ended_at, "
+        "duration_sec, size_bytes, path, status, storage_state, keep) "
+        "VALUES ('eq1', ?, ?, 0, 524288, 'eq1/rec_1.mp4', "
+        "'local', 'local_only', 0)",
+        (t(0), t(0))
+    )
+    conexion.commit()
+    conexion.close()
+
+    # Y ahora el aviso del segmento terminado, con lo de verdad
+    identificador, creada = grabaciones.register_local_recording(
+        "eq1", "eq1/rec_1.mp4", t(0), t(15), 900, 47_000_000
+    )
+
+    comprobar("No se duplica la ficha", creada is False)
+
+    conexion = database.get_connection()
+    fila = conexion.execute(
+        "SELECT * FROM recordings WHERE id = ?", (identificador,)
+    ).fetchone()
+    total = conexion.execute("SELECT COUNT(*) FROM recordings").fetchone()[0]
+    conexion.close()
+
+    comprobar("Y sigue habiendo una sola", total == 1, str(total))
+
+    comprobar("Ahora tiene su duracion",
+              fila["duration_sec"] == 900, str(fila["duration_sec"]))
+
+    comprobar("Y su tamano de verdad",
+              fila["size_bytes"] == 47_000_000, str(fila["size_bytes"]))
+
+    comprobar("Y un fin que no es su inicio",
+              fila["ended_at"] == t(15), str(fila["ended_at"]))
+
+
+def test_completar_medidas_no_resucita_una_grabacion_archivada():
+    """
+    La regla original existia por algo: una grabacion ya archivada
+    en el servidor no puede volver a "solo local" porque llegue un
+    aviso del equipo, que conserva su copia.
+
+    Eso se respeta: se completan las MEDIDAS y nunca el estado.
+    """
+
+    limpiar()
+    equipo("eq1")
+
+    conexion = database.get_connection()
+    conexion.execute(
+        "INSERT INTO recordings (device_id, started_at, ended_at, "
+        "duration_sec, size_bytes, path, status, storage_state, keep) "
+        "VALUES ('eq1', ?, ?, 0, 100, 'eq1/rec_2.mp4', "
+        "'stored', 'server_stored', 1)",
+        (t(0), t(0))
+    )
+    conexion.commit()
+    conexion.close()
+
+    grabaciones.register_local_recording(
+        "eq1", "eq1/rec_2.mp4", t(0), t(15), 900, 47_000_000
+    )
+
+    conexion = database.get_connection()
+    fila = conexion.execute(
+        "SELECT * FROM recordings WHERE path = 'eq1/rec_2.mp4'"
+    ).fetchone()
+    conexion.close()
+
+    comprobar("Sigue archivada en el servidor",
+              fila["storage_state"] == "server_stored"
+              and fila["status"] == "stored",
+              "%s / %s" % (fila["status"], fila["storage_state"]))
+
+    comprobar("Y sigue marcada para conservar", fila["keep"] == 1)
+
+    comprobar("Pero sus medidas si se completan",
+              fila["duration_sec"] == 900)
+
+
+def test_una_medida_mas_vieja_no_pisa_a_una_mejor():
+    """
+    Un archivo que se escribe CRECE. Si llega un tamano menor es
+    una foto mas vieja que la que ya hay, y hacerle caso seria
+    retroceder.
+    """
+
+    limpiar()
+    equipo("eq1")
+
+    grabaciones.register_local_recording(
+        "eq1", "eq1/rec_3.mp4", t(0), t(15), 900, 47_000_000
+    )
+
+    # Llega una foto antigua, del archivo a medio escribir
+    grabaciones.register_local_recording(
+        "eq1", "eq1/rec_3.mp4", t(0), t(0), 0, 500_000
+    )
+
+    conexion = database.get_connection()
+    fila = conexion.execute(
+        "SELECT * FROM recordings WHERE path = 'eq1/rec_3.mp4'"
+    ).fetchone()
+    conexion.close()
+
+    comprobar("El tamano no retrocede",
+              fila["size_bytes"] == 47_000_000, str(fila["size_bytes"]))
+
+    comprobar("Ni la duracion",
+              fila["duration_sec"] == 900, str(fila["duration_sec"]))
+
+    comprobar("Ni el fin",
+              fila["ended_at"] == t(15), str(fila["ended_at"]))
 
 
 def test_los_segmentos_van_en_orden():
@@ -565,6 +715,9 @@ def principal():
 
     pruebas = [
         test_una_jornada_es_una_fila,
+        test_una_ficha_a_medias_se_completa_cuando_el_segmento_termina,
+        test_completar_medidas_no_resucita_una_grabacion_archivada,
+        test_una_medida_mas_vieja_no_pisa_a_una_mejor,
         test_los_segmentos_van_en_orden,
         test_cada_dia_por_su_lado,
         test_cada_equipo_por_su_lado,
