@@ -871,6 +871,26 @@ interactive_sessions = {}
 interactive_logins = {}
 
 
+def conexion_vigente(device_id, websocket):
+    """
+    True si ESA conexion es la que el servidor tiene registrada.
+
+    El registro de agentes va por device_id, asi que una reconexion
+    pisa la entrada anterior. Cuando despues se muere la conexion
+    vieja, limpiar por device_id se lleva por delante a la nueva, que
+    esta viva.
+
+    Comprobar la identidad del socket -y no solo el device_id- es lo
+    unico que distingue "este equipo se fue" de "esta conexion
+    concreta se fue".
+    """
+
+    if not device_id:
+        return False
+
+    return connected_agents.get(device_id) is websocket
+
+
 def motivo_sin_escritorio(device_id):
     """
     Por que no se puede tocar la pantalla de este equipo, en
@@ -2791,6 +2811,34 @@ async def agent_websocket(websocket: WebSocket):
                 )
 
     except WebSocketDisconnect:
+
+        # Si este equipo ya volvio a conectarse, esta conexion vieja
+        # NO debe limpiar nada.
+        #
+        # El registro va por device_id, asi que una reconexion pisa
+        # la entrada anterior. Si despues se muere la conexion vieja
+        # y limpia por device_id, borra a la NUEVA, que esta viva:
+        #
+        #   22:29:57  conexion A    connected_agents[D] = A
+        #   22:30:37  conexion B    connected_agents[D] = B
+        #   22:30:57  muere A       pop(D)  ->  se lleva a B
+        #
+        # El equipo se queda con su WebSocket abierto y el servidor
+        # sin saberlo. Y no se nota, porque el latido va por HTTP: el
+        # panel lo enseña en linea mientras no funciona nada de lo
+        # que necesita el canal -pantalla, control remoto, horario,
+        # actualizacion-. Un equipo asi estuvo media hora invisible.
+        #
+        # Pasa justo cuando la red va mal, que es cuando hay
+        # reconexiones, y sera mas frecuente cuantos mas equipos
+        # haya.
+        if device_id and not conexion_vigente(device_id, websocket):
+
+            print(
+                f"Agent disconnected (conexion vieja): {device_id}"
+            )
+
+            device_id = None
 
         if device_id:
 
