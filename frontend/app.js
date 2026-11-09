@@ -13570,6 +13570,60 @@ async function copiarCredencialDeInstalacion() {
 }
 
 
+/* Retira una credencial de instalacion.
+
+   Una credencial sin usar no es un resto inofensivo: autoriza dar de
+   alta un equipo en la organizacion, y vive hasta que alguien la
+   retira. Sin un boton aqui, la unica forma era la API, asi que en
+   la practica no se retiraba ninguna y se acumulaban.
+
+   Se confirma siempre. No es destructivo para ningun dato -no borra
+   equipos ni grabaciones- pero si la credencial estaba a medio usar
+   en una instalacion en curso, esa instalacion fallara, y quien
+   pulsa debe saberlo. */
+async function revocarCredencial(credencial, boton) {
+
+    const nombre = credencial.label || "sin etiqueta";
+
+    const usada = (credencial.uses || 0) > 0;
+
+    const aviso = usada
+        ? "Se revoca la credencial \"" + nombre + "\".\n\n"
+          + "Los equipos ya dados de alta con ella NO se ven "
+          + "afectados: cada uno tiene su propia identidad."
+        : "Se revoca la credencial \"" + nombre + "\", que no se ha "
+          + "usado nunca.\n\n"
+          + "Si hay una instalacion en marcha con ella, fallara.";
+
+    if (!window.confirm(aviso + "\n\n¿Continuar?")) {
+        return;
+    }
+
+    boton.disabled = true;
+    boton.textContent = "Revocando...";
+
+    try {
+
+        const respuesta = await fetch(
+            "/api/enrollment-tokens/" + encodeURIComponent(credencial.id),
+            { method: "DELETE" }
+        );
+
+        if (!respuesta.ok) {
+            boton.disabled = false;
+            boton.textContent = "No se pudo";
+            return;
+        }
+
+        await cargarCredencialesDeInstalacion();
+
+    } catch (error) {
+        boton.disabled = false;
+        boton.textContent = "No se pudo";
+    }
+}
+
+
 async function cargarCredencialesDeInstalacion() {
 
     const lista =
@@ -13612,23 +13666,59 @@ async function cargarCredencialesDeInstalacion() {
             const fila = document.createElement("div");
 
             fila.className =
-                "flex items-center justify-between py-1.5 "
+                "flex items-center justify-between gap-3 py-1.5 "
                 + "border-b border-slate-100";
 
-            const nombre = document.createElement("span");
+            const izquierda = document.createElement("div");
+            izquierda.className = "min-w-0";
+
+            const nombre = document.createElement("div");
 
             nombre.textContent =
                 credencial.label || "Sin etiqueta";
 
-            const usos = document.createElement("span");
+            const detalle = document.createElement("div");
 
-            usos.className = "text-xs text-slate-400";
+            detalle.className = "text-xs text-slate-400";
 
-            usos.textContent =
-                (credencial.uses || 0) + " uso(s)";
+            // Sin usar NO es lo mismo que usada: una credencial sin
+            // estrenar sigue autorizando dar de alta un equipo en la
+            // organizacion, y es la que conviene retirar. Se dice
+            // con esas palabras en vez de "0 uso(s)", que se lee
+            // como un dato y no como un aviso.
+            const usada = (credencial.uses || 0) > 0;
 
-            fila.appendChild(nombre);
-            fila.appendChild(usos);
+            detalle.textContent = usada
+                ? ((credencial.uses || 0) + " uso(s)"
+                   + (credencial.last_used_at
+                      ? " · ultimo " + credencial.last_used_at.slice(0, 10)
+                      : ""))
+                : "sin usar"
+                  + (credencial.created_at
+                     ? " · creada el " + credencial.created_at.slice(0, 10)
+                     : "");
+
+            if (!usada) {
+                detalle.className = "text-xs text-amber-600";
+            }
+
+            izquierda.appendChild(nombre);
+            izquierda.appendChild(detalle);
+
+            const borrar = document.createElement("button");
+
+            borrar.type = "button";
+            borrar.className =
+                "shrink-0 px-2 py-1 rounded-lg border border-slate-200 "
+                + "text-xs text-slate-600 hover:bg-slate-50";
+            borrar.textContent = "Revocar";
+
+            borrar.addEventListener("click", () => {
+                revocarCredencial(credencial, borrar);
+            });
+
+            fila.appendChild(izquierda);
+            fila.appendChild(borrar);
 
             lista.appendChild(fila);
         });
