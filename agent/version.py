@@ -14,7 +14,7 @@ actualizacion en un downgrade silencioso.
 import re
 
 
-AGENT_VERSION = "1.14.0"
+AGENT_VERSION = "1.15.0"
 
 
 VERSION_PATTERN = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
