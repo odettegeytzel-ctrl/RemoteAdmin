@@ -2729,6 +2729,17 @@ async def agent_websocket(websocket: WebSocket):
                 # Una orden concreta no se pudo entregar porque no
                 # hay escritorio. Hasta ahora este mensaje llegaba y
                 # NADIE lo leia: el panel daba la accion por buena.
+                #
+                # Lo que este aviso dice es que FALTA EL AYUDANTE, y
+                # nada mas. No dice si hay alguien con la sesion
+                # abierta: eso lo informa 'interactive_session:', que
+                # es otro mensaje y mide otra cosa.
+                #
+                # Durante un tiempo esto se registraba como "no hay
+                # sesion iniciada", y mando a una persona a iniciar
+                # sesion en dos equipos que ya la tenian abierta. Lo
+                # que les faltaba era el ayudante, que es justo lo
+                # unico que este mensaje prueba.
                 try:
                     datos = json.loads(message.split(":", 1)[1])
                 except json.JSONDecodeError:
@@ -2745,10 +2756,21 @@ async def agent_websocket(websocket: WebSocket):
                     details={"orden": orden}
                 )
 
-                print(
-                    f"[sesion] {device_id} no pudo con '{orden}': "
-                    "no hay sesion iniciada"
-                )
+                # Si consta que hay alguien dentro, se dice: es la
+                # diferencia entre "manda a alguien a iniciar sesion"
+                # y "al equipo le falta el ayudante".
+                if interactive_logins.get(device_id):
+                    detalle = "falta el ayudante (la sesion SI esta iniciada)"
+
+                elif interactive_logins.get(device_id) is None:
+                    detalle = (
+                        "falta el ayudante; no consta si hay sesion iniciada"
+                    )
+
+                else:
+                    detalle = "falta el ayudante y nadie tiene sesion abierta"
+
+                print(f"[sesion] {device_id} no pudo con '{orden}': {detalle}")
 
 
             elif message == "pong":
