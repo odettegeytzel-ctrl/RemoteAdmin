@@ -96,6 +96,10 @@ BACKGROUND_PREFIXES_EXPECTED = (
     # escritorio: se piden por API de Windows, no tocando la pantalla.
     "power_action:",
 
+    # Comprobar si hay version nueva, ahora. La cumple el SERVICIO,
+    # que es quien se actualiza; el ayudante no tiene nada que ver.
+    "check_update",
+
     # Archivado de grabaciones y ajustes. El grabador vive en el
     # ayudante, pero decidir el horario o la retencion no necesita
     # escritorio: son ajustes que el servicio guarda y transmite.

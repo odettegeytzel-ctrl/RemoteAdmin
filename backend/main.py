@@ -5554,6 +5554,125 @@ async def list_device_services(device_id: str, request: Request):
 
 
 # ==============================
+# EMPUJAR UNA ACTUALIZACION
+# ==============================
+#
+# El Agent comprueba su version cada cierto tiempo por su cuenta. Eso
+# basta para el dia a dia y no basta para una correccion urgente: sin
+# forma de empujarla, la ultima maquina tarda hasta un intervalo
+# entero en recibirla y no hay nada que hacer mientras.
+#
+# Esto paso de verdad: una semana de grabaciones perdidas, la
+# correccion publicada y lista en el servidor, y una tarde entera
+# mirando como cada equipo la recogia a su hora.
+#
+# La orden no lleva ninguna version ni ninguna ruta: dice "comprueba
+# ahora", y el Agent hace exactamente lo que ya hacia solo -pedir el
+# manifiesto, verificar la firma, decidir-. No hay forma de usarla
+# para instalar nada que no estuviera ya publicado y firmado.
+
+
+async def pedir_que_compruebe_version(device_id):
+    """
+    Manda 'check_update' a un equipo. True si se pudo mandar.
+
+    No espera respuesta: si hay version nueva, el Agent se actualiza
+    y se reinicia, asi que la confirmacion que importa es la version
+    que informe al volver a conectarse.
+    """
+
+    websocket = connected_agents.get(device_id)
+
+    if not websocket:
+        return False
+
+    try:
+        await websocket.send_text("check_update")
+        return True
+
+    except Exception as error:
+        print(f"[update] no se pudo avisar a {device_id}: {error}")
+        return False
+
+
+@app.post("/api/devices/{device_id}/check-update")
+async def device_check_update(device_id: str, request: Request):
+    """Pide a UN equipo que compruebe su version ahora."""
+
+    usuario, error = require_permission(request, "devices.manage")
+
+    if error:
+        return error
+
+    if not await pedir_que_compruebe_version(device_id):
+
+        log_audit(
+            "agent.check_update", request=request, device_id=device_id,
+            status=STATUS_ERROR, details="El equipo no esta conectado"
+        )
+
+        return JSONResponse(
+            status_code=409,
+            content={"status": "error",
+                     "message": "El equipo no esta conectado"}
+        )
+
+    log_audit(
+        "agent.check_update", request=request, device_id=device_id,
+        details="Comprobacion de version pedida desde el panel"
+    )
+
+    return {
+        "status": "ok",
+        "message": (
+            "Se le pidio al equipo que compruebe su version. Si hay una "
+            "nueva se actualizara y se reiniciara solo."
+        )
+    }
+
+
+@app.post("/api/agent/check-update")
+async def agent_check_update_all(request: Request):
+    """
+    Se lo pide a TODOS los equipos conectados.
+
+    Es el caso real: se publica una correccion y se quiere en toda la
+    flota ya, no en seis horas y en desorden.
+    """
+
+    usuario, error = require_permission(request, "devices.manage")
+
+    if error:
+        return error
+
+    # Una copia de las claves: mandar mensajes puede cerrar
+    # conexiones y no se puede recorrer el diccionario mientras
+    # cambia de tamano.
+    equipos = list(connected_agents.keys())
+
+    avisados = 0
+
+    for device_id in equipos:
+
+        if await pedir_que_compruebe_version(device_id):
+            avisados += 1
+
+    log_audit(
+        "agent.check_update", request=request,
+        details="Comprobacion pedida a %d de %d equipos conectados"
+                % (avisados, len(equipos))
+    )
+
+    return {
+        "status": "ok",
+        "avisados": avisados,
+        "conectados": len(equipos),
+        "message": "Se le pidio a %d equipo(s) que comprueben su version."
+                   % avisados
+    }
+
+
+# ==============================
 # ACCIONES SOBRE EL EQUIPO (bloquear, cerrar sesion, reiniciar, apagar)
 # ==============================
 

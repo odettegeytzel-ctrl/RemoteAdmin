@@ -57,7 +57,7 @@ except ImportError:
 # Cada cuanto se pregunta si hay version nueva. Seis horas: una
 # actualizacion no es urgente, y preguntar cada minuto multiplicado
 # por todos los equipos administrados es trafico para nada.
-CHECK_INTERVAL_SECONDS = 6 * 60 * 60
+CHECK_INTERVAL_SECONDS = 60 * 60
 
 # Tope de lo que se admite descargar. El paquete real ronda los 60 KB;
 # el limite esta para que un servidor que responda cualquier cosa no

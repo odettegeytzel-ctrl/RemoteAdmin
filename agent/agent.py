@@ -1673,6 +1673,82 @@ def reiniciar_el_servicio():
     )
 
 
+# Para que dos comprobaciones no se pisen. Puede haber dos motivos a
+# la vez: el reloj y una orden del panel. Dos actualizaciones
+# simultaneas descomprimiendo sobre la misma carpeta es justo lo que
+# no se puede permitir.
+_comprobando_version = threading.Lock()
+
+
+def comprobar_version_ahora(motivo="reloj"):
+    """
+    Una comprobacion de version, ya. Devuelve True si se actualizo.
+
+    La usan el reloj y la orden 'check_update' del panel, que es el
+    motivo de que esto este aqui y no dentro del bucle: sin una orden
+    para empujar, una correccion urgente tarda hasta un intervalo
+    entero en llegar al ultimo equipo, y con treinta equipos eso es
+    una tarde entera sin poder hacer nada.
+
+    Si ya hay una comprobacion en marcha, no se repite: se responde
+    False y no se espera. Lo que importa es no descomprimir dos veces
+    sobre la misma carpeta, no atender las dos ordenes.
+
+    Propaga los errores: quien llama decide si reintenta con espera
+    -el bucle- o si solo lo anota -la orden-.
+    """
+
+    if not _comprobando_version.acquire(blocking=False):
+        print("[update] Ya hay una comprobacion en marcha (%s)" % motivo)
+        return False
+
+    try:
+
+        token = get_agent_device_token()
+
+        if not token:
+            # Todavia sin identidad: no hay nada que actualizar
+            return False
+
+        print("[update] Comprobando version (%s)" % motivo)
+
+        return bool(updater.check_and_update(
+            SERVER_URL,
+            {"X-Agent-Token": token},
+            REQUESTS_VERIFY,
+            INSTALL_DIR,
+            instalada=versionado.AGENT_VERSION,
+            registrar=print,
+            reiniciar=reiniciar_el_servicio
+        ))
+
+    finally:
+        _comprobando_version.release()
+
+
+def atender_orden_de_actualizar():
+    """
+    Cumple la orden 'check_update' del panel, en su propio hilo.
+
+    En un hilo porque descargar y descomprimir bloquea, y el
+    WebSocket tiene que seguir atendiendo lo demas mientras.
+    """
+
+    def trabajo():
+
+        try:
+            comprobar_version_ahora("orden del panel")
+
+        except Exception as error:
+            print(f"[update] La orden de actualizar fallo: {error}")
+
+    threading.Thread(
+        target=trabajo,
+        name="CheckUpdateOnDemand",
+        daemon=True
+    ).start()
+
+
 def _bucle_de_actualizacion():
     """
     Comprueba cada tanto si hay version nueva.
@@ -1692,22 +1768,7 @@ def _bucle_de_actualizacion():
 
         try:
 
-            token = get_agent_device_token()
-
-            if not token:
-                # Todavia sin identidad: no hay nada que actualizar
-                time.sleep(updater.CHECK_INTERVAL_SECONDS)
-                continue
-
-            resultado = updater.check_and_update(
-                SERVER_URL,
-                {"X-Agent-Token": token},
-                REQUESTS_VERIFY,
-                INSTALL_DIR,
-                instalada=versionado.AGENT_VERSION,
-                registrar=print,
-                reiniciar=reiniciar_el_servicio
-            )
+            resultado = comprobar_version_ahora("reloj")
 
             intentos = 0
 
@@ -4089,6 +4150,17 @@ async def websocket_connection():
                             and message.startswith(AJUSTES_DEL_AYUDANTE)):
 
                         recordar_ajuste(message)
+
+                    if message == "check_update":
+
+                        # Empujar una actualizacion desde el panel.
+                        # Sin esto, una correccion urgente tarda
+                        # hasta un intervalo entero en llegar al
+                        # ultimo equipo y no hay forma de acelerarla.
+                        if AGENT_ROLE != ROLE_HELPER:
+                            atender_orden_de_actualizar()
+
+                        continue
 
                     if message == "ping":
 
