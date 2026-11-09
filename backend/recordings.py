@@ -1492,3 +1492,112 @@ def _momento(texto):
         valor = valor.replace(tzinfo=timezone.utc)
 
     return valor
+
+
+# ==============================
+# JORNADAS: UN VIDEO POR DIA Y EQUIPO
+# ==============================
+
+# Estado de un segmento que ya vive dentro del video de su jornada.
+#
+# No se borra la fila: se le cambia el estado. Los listados filtran
+# con lista blanca -status IN ('stored','local')-, asi que un estado
+# nuevo desaparece del panel sin tocar ni una consulta, y queda el
+# rastro de que ese trozo existio y en que dia acabo.
+ESTADO_UNIDO = "merged"
+
+
+def marcar_segmentos_unidos(device_id, rutas, fecha):
+    """
+    Retira del panel los trozos que ya estan dentro del video del dia.
+
+    Hace falta porque el catalogo del equipo solo ANADE: cuando el
+    Agent borra los treinta y seis segmentos del disco, sus fichas se
+    quedarian para siempre apuntando a archivos que no existen, y el
+    panel enseñaria la jornada mas treinta y seis fantasmas.
+
+    Lo que NO se toca:
+
+        las ya archivadas    si una copia esta en el servidor, esa
+                             copia sigue ahi y sigue siendo valida;
+                             marcarla la escondería teniendo archivo
+
+        las de otro equipo   el device_id es el de la conexion
+                             autenticada, nunca uno del mensaje
+
+    Devuelve cuantas se marcaron.
+    """
+
+    if not device_id or not rutas:
+        return 0
+
+    connection = get_connection()
+
+    try:
+
+        marcadas = 0
+
+        for ruta in rutas:
+
+            cursor = connection.execute(
+                """
+                UPDATE recordings
+                   SET status = ?, invalid_reason = ?
+                 WHERE device_id = ?
+                   AND path = ?
+                   AND status = 'local'
+                """,
+                (
+                    ESTADO_UNIDO,
+                    "unida en la jornada %s" % fecha,
+                    device_id,
+                    ruta
+                )
+            )
+
+            marcadas += cursor.rowcount
+
+        connection.commit()
+
+        return marcadas
+
+    finally:
+        connection.close()
+
+
+def extremos_de_los_segmentos(device_id, rutas):
+    """
+    (primer inicio, ultimo fin) de esos segmentos, segun el servidor.
+
+    El video del dia necesita saber de cuando a cuando va. Se calcula
+    con lo que YA tiene el servidor en vez de pedirselo al equipo: son
+    fechas que llegaron una por una cuando cada segmento se cerro, y
+    por tanto las mejor medidas que hay.
+    """
+
+    if not device_id or not rutas:
+        return (None, None)
+
+    connection = get_connection()
+
+    try:
+
+        huecos = ",".join("?" for _ in rutas)
+
+        fila = connection.execute(
+            """
+            SELECT MIN(started_at) AS desde, MAX(ended_at) AS hasta
+              FROM recordings
+             WHERE device_id = ?
+               AND path IN (%s)
+            """ % huecos,
+            [device_id] + list(rutas)
+        ).fetchone()
+
+        if not fila:
+            return (None, None)
+
+        return (fila["desde"], fila["hasta"])
+
+    finally:
+        connection.close()

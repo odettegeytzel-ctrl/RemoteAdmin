@@ -45,6 +45,7 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 
 import imageio_ffmpeg
 
@@ -494,3 +495,134 @@ def _borrar_los_trozos(segmentos):
             pass
 
     return borrados
+
+
+# ==============================
+# QUE DIAS ESTAN LISTOS PARA CERRARSE
+# ==============================
+#
+# El grabador deja los trozos en <equipo>\AAAA\MM\DD\, por fecha
+# LOCAL del equipo. Esa es la fecha que entiende una persona cuando
+# dice "la grabacion del lunes", y es la que se usa aqui.
+
+# Un dia de hoy no se cierra hasta que lleva un rato sin crecer. El
+# segmento dura quince minutos, asi que veinte deja margen de sobra
+# para no pillar uno a medio escribir.
+QUIETUD = 20 * 60
+
+
+def dias_con_segmentos(raiz):
+    r"""
+    Los dias que tienen trozos sueltos: [(fecha, carpeta)].
+
+    Se recorre AAAA\MM\DD y se descarta cualquier nombre que no sea
+    el que escribe el grabador: en esa carpeta no deberia haber nada
+    mas, y si lo hay, no es asunto de esto.
+    """
+
+    encontrados = []
+
+    for anio in _subcarpetas(raiz, 4):
+
+        for mes in _subcarpetas(os.path.join(raiz, anio), 2):
+
+            carpeta_mes = os.path.join(raiz, anio, mes)
+
+            for dia in _subcarpetas(carpeta_mes, 2):
+
+                carpeta = os.path.join(carpeta_mes, dia)
+
+                if segmentos_del_dia(carpeta):
+                    encontrados.append(
+                        ("%s-%s-%s" % (anio, mes, dia), carpeta)
+                    )
+
+    return sorted(encontrados)
+
+
+def _subcarpetas(ruta, digitos):
+    """Subcarpetas cuyo nombre son exactamente N digitos."""
+
+    try:
+        nombres = os.listdir(ruta)
+
+    except OSError:
+        return []
+
+    return sorted(
+        n for n in nombres
+        if len(n) == digitos
+        and n.isdigit()
+        and os.path.isdir(os.path.join(ruta, n))
+    )
+
+
+def _ultimo_cambio(segmentos):
+    """Cuando se escribio por ultima vez en el dia, o None."""
+
+    marcas = []
+
+    for trozo in segmentos:
+
+        try:
+            marcas.append(os.path.getmtime(trozo))
+
+        except OSError:
+            pass
+
+    return max(marcas) if marcas else None
+
+
+def dias_por_cerrar(raiz, hoy, dentro_de_la_franja, ahora=None,
+                    quietud=QUIETUD):
+    """
+    Los dias que ya se pueden unir, y por que se deja fuera el resto.
+
+    Un dia PASADO esta cerrado por definicion: nadie va a escribir
+    mas en el. Se une siempre, y eso recupera solo lo que quedo a
+    medias por un apagon o por un equipo que estuvo apagado a las
+    cinco.
+
+    El dia de HOY es el delicado, y pide las dos cosas:
+
+        fuera de la franja      si estamos dentro del horario, la
+                                jornada no ha terminado. Sin esto,
+                                desactivar la continua media hora a
+                                media manana se veria como "el dia
+                                acabo" y se uniria una jornada que
+                                todavia tenia seis horas por delante
+
+        y sin crecer un rato    porque un segmento a medio escribir
+                                no se puede unir: el MP4 no tiene
+                                indice hasta que se cierra
+
+    'dentro_de_la_franja' lo decide quien llama, que es el que tiene
+    el horario. Aqui no se interpreta ningun horario: este modulo
+    junta archivos.
+    """
+
+    if ahora is None:
+        ahora = time.time()
+
+    listos = []
+
+    for fecha, carpeta in dias_con_segmentos(raiz):
+
+        if fecha < hoy:
+            listos.append((fecha, carpeta))
+            continue
+
+        if fecha > hoy:
+            # Un dia en el futuro: el reloj del equipo se movio. No se
+            # toca, que no se sabe si todavia va a escribir ahi.
+            continue
+
+        if dentro_de_la_franja:
+            continue
+
+        ultimo = _ultimo_cambio(segmentos_del_dia(carpeta))
+
+        if ultimo is not None and (ahora - ultimo) >= quietud:
+            listos.append((fecha, carpeta))
+
+    return listos

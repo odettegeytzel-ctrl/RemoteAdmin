@@ -353,18 +353,20 @@ from paths import (
     get_data_dir,
     get_config_dir,
     get_logs_dir,
-    get_recordings_dir
+    get_recordings_dir,
+    get_device_recordings_dir
 )
 
 import commands
 import ipc
+import jornada
 import release
 import updater
 import version as versionado
 import storage
 import inventory
 
-from scheduler import RecordingScheduler
+from scheduler import RecordingScheduler, should_be_recording
 import owners
 import power
 
@@ -2322,6 +2324,160 @@ def soltar_el_candado_del_env():
     print("Lectura del .env concedida a la sesion interactiva")
 
     return True
+
+
+# ==============================
+# CERRAR LA JORNADA: UN VIDEO POR DIA Y EQUIPO
+# ==============================
+#
+# Se graba en trozos de quince minutos porque un MP4 no se puede
+# reproducir hasta que se cierra, y un kiosco se apaga de un botonazo
+# sin avisar. Pero lo que hay que GUARDAR es la jornada entera en un
+# solo archivo: es lo que una persona descarga, archiva o entrega.
+#
+# Lo hace el SERVICIO, no el ayudante, por dos razones:
+#
+#   a las cinco puede no haber     si lo hiciera el ayudante, moriria
+#   nadie con la sesion abierta    con la sesion y no habria video
+#
+#   unir archivos no necesita      es leer y escribir disco, nada que
+#   escritorio                     ver con la pantalla
+#
+# Esa es la misma leccion que costo una semana de grabaciones: lo que
+# no necesita escritorio no debe depender de que alguien tenga la
+# sesion iniciada.
+
+# Cada cuanto se mira si hay dias que cerrar. No corre prisa: un dia
+# pasado seguira estando pasado dentro de diez minutos.
+INTERVALO_DE_CIERRE = 10 * 60
+
+
+def horario_vigente():
+    """
+    El ultimo horario que mando el servidor, o {} si no hay ninguno.
+
+    El servicio lo guarda en _ajustes_vigentes para pasarselo al
+    ayudante; aqui se reaprovecha para saber si la jornada de hoy ya
+    termino.
+    """
+
+    mensaje = _ajustes_vigentes.get("set_schedule:")
+
+    if not mensaje:
+        return {}
+
+    try:
+        return json.loads(mensaje.split(":", 1)[1])
+
+    except (ValueError, IndexError):
+        return {}
+
+
+def _ruta_relativa(ruta):
+    """
+    La ruta como la nombra el servidor: desde la raiz de grabaciones
+    y con barras normales, igual que en su base de datos.
+    """
+
+    try:
+        relativa = os.path.relpath(ruta, str(get_recordings_dir()))
+
+    except ValueError:
+        return os.path.basename(ruta)
+
+    return relativa.replace("\\", "/")
+
+
+def avisar_de_la_jornada(fecha, resultado):
+    """
+    Le dice al servidor que ese dia quedo en un solo archivo.
+
+    Va explicito y no se deduce de un catalogo: el catalogo solo
+    ANADE, nunca retira, asi que sin este aviso las fichas de los
+    treinta y seis trozos se quedarian para siempre apuntando a
+    archivos que ya no existen, y el panel enseñaria la jornada mas
+    treinta y seis fantasmas.
+
+    Se manda tambien la duracion real. El catalogo la informa como
+    cero -no la mide-, y de ahi vienen las grabaciones que el panel
+    enseña con 0 s teniendo cientos de megas dentro.
+    """
+
+    archivo = resultado.get("archivo")
+
+    if not archivo:
+        return False
+
+    try:
+        tamano = os.path.getsize(archivo)
+
+    except OSError:
+        return False
+
+    carga = {
+        "fecha": fecha,
+        "filename": os.path.basename(archivo),
+        "path": _ruta_relativa(archivo),
+        "size_bytes": tamano,
+        "duration_sec": int(jornada.duracion(archivo) or 0),
+        "segmentos": [
+            _ruta_relativa(t) for t in (resultado.get("segmentos") or [])
+        ]
+    }
+
+    return send_ws_threadsafe("jornada_unida:" + json.dumps(carga))
+
+
+def cerrar_las_jornadas_pendientes():
+    """
+    Une los dias que ya terminaron. Uno por vuelta de reloj.
+
+    Los dias pasados se cierran siempre; el de hoy solo cuando el
+    horario dice que la jornada acabo y hace un rato que no se
+    escribe. Lo decide jornada.dias_por_cerrar: aqui solo se le dice
+    que hora es y si estamos dentro de la franja.
+    """
+
+    device_id = get_device_id()
+
+    if not device_id:
+        return 0
+
+    raiz = get_device_recordings_dir(device_id)
+
+    dentro = should_be_recording(horario_vigente())
+
+    hoy = datetime.now().strftime("%Y-%m-%d")
+
+    cerradas = 0
+
+    for fecha, carpeta in jornada.dias_por_cerrar(raiz, hoy, dentro):
+
+        resultado = jornada.cerrar_la_jornada(carpeta, fecha,
+                                              registrar=print)
+
+        if resultado.get("unida"):
+            avisar_de_la_jornada(fecha, resultado)
+            cerradas += 1
+
+    return cerradas
+
+
+def _cerrar_jornadas_loop():
+
+    # Un respiro al arrancar: el Agent todavia se esta enrolando y
+    # conectando, y no hay prisa ninguna por unir nada.
+    time.sleep(120)
+
+    while True:
+
+        try:
+            cerrar_las_jornadas_pendientes()
+
+        except Exception as error:
+            print(f"[jornada] Error al cerrar jornadas: {error}")
+
+        time.sleep(INTERVALO_DE_CIERRE)
 
 
 def get_device_id():
@@ -4486,6 +4642,16 @@ async def main():
         # Va aqui y no en el instalador porque asi se arregla tambien
         # el equipo que ya esta instalado, en su siguiente arranque.
         soltar_el_candado_del_env()
+
+        # Cerrar las jornadas: unir los trozos de cada dia en un solo
+        # video. En el SERVICIO y no en el ayudante, porque a las
+        # cinco puede no quedar nadie con la sesion abierta y unir
+        # archivos no necesita escritorio.
+        threading.Thread(
+            target=_cerrar_jornadas_loop,
+            name="DayMerge",
+            daemon=True
+        ).start()
 
         threading.Thread(
             target=_atender_al_ayudante,

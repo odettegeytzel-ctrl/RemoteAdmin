@@ -59,6 +59,8 @@ from backend.auth import (
     TOKEN_HOURS
 )
 from backend.recordings import (
+    marcar_segmentos_unidos,
+    extremos_de_los_segmentos,
     guardar_tramos,
     tramos_de_grabacion,
     add_recording,
@@ -2653,6 +2655,30 @@ async def agent_websocket(websocket: WebSocket):
                     print(
                         f"[grabaciones] {nuevas} fichas nuevas de {device_id}"
                     )
+
+
+            elif message.startswith("jornada_unida:"):
+
+                # El equipo unio los trozos de un dia en un solo
+                # video y borro los trozos. Hay que hacer dos cosas:
+                # anotar el video del dia y retirar del panel las
+                # fichas de los segmentos, que ya no tienen archivo.
+                #
+                # Llega explicito y no se deduce comparando
+                # catalogos: el catalogo solo anade, nunca retira.
+                try:
+                    carga = json.loads(message.split(":", 1)[1])
+
+                except json.JSONDecodeError:
+                    carga = None
+
+                if isinstance(carga, dict):
+
+                    try:
+                        anotar_jornada_unida(device_id, carga)
+
+                    except Exception as error:
+                        print(f"[jornada] no se pudo anotar: {error}")
 
 
             elif message.startswith("recording_status:"):
@@ -5771,6 +5797,104 @@ def registrar_ficha_local(device_id, ficha):
         return None
 
     return recording_id if creada else None
+
+
+# ==============================
+# LA JORNADA UNIDA: UN VIDEO POR DIA Y EQUIPO
+# ==============================
+
+import re as _re
+
+# <equipo>/AAAA/MM/DD/jornada_AAAA-MM-DD.mp4 y nada mas.
+#
+# La ruta la calcula el equipo, asi que se valida entera aqui en vez
+# de confiar en ella: es lo unico que separa "anotar el video del
+# dia" de "dejar que un equipo escriba una fila apuntando a donde
+# quiera".
+RUTA_DE_JORNADA = _re.compile(
+    r"^(?P<equipo>[A-Za-z0-9_-]{1,64})/"
+    r"(?P<anio>\d{4})/(?P<mes>\d{2})/(?P<dia>\d{2})/"
+    r"jornada_(?P=anio)-(?P=mes)-(?P=dia)\.mp4$"
+)
+
+
+def ruta_de_jornada_valida(device_id, ruta, fecha):
+    """
+    True si esa ruta es la del video de ese dia y de ESE equipo.
+
+    Se exige que las tres cosas concuerden -carpeta, nombre y fecha
+    anunciada-, porque cada una viene del mismo sitio y una sola no
+    prueba nada.
+    """
+
+    encaje = RUTA_DE_JORNADA.match(str(ruta or ""))
+
+    if not encaje:
+        return False
+
+    if encaje.group("equipo") != device_id:
+        return False
+
+    del_nombre = "%s-%s-%s" % (
+        encaje.group("anio"), encaje.group("mes"), encaje.group("dia")
+    )
+
+    return del_nombre == str(fecha or "")
+
+
+def anotar_jornada_unida(device_id, carga):
+    """
+    Anota el video del dia y retira las fichas de sus trozos.
+
+    El orden importa y es este: primero se anota la jornada, luego se
+    marcan los segmentos. Si se hiciera al reves y algo fallara en
+    medio, el dia se quedaria sin ninguna ficha visible -ni los
+    trozos ni la jornada- y en el panel pareceria que ese dia no se
+    grabo nada.
+
+    Las fechas del dia no las manda el equipo: se sacan de las fichas
+    que el servidor ya tiene de cada segmento, que son las mejor
+    medidas que existen -llegaron una a una, al cerrarse cada trozo-.
+    """
+
+    fecha = str(carga.get("fecha") or "")
+    ruta = str(carga.get("path") or "")
+
+    if not ruta_de_jornada_valida(device_id, ruta, fecha):
+        print(f"[jornada] ruta rechazada de {device_id}: {ruta!r}")
+        return False
+
+    # Solo rutas de este equipo, y con la forma que escribe el Agent.
+    segmentos = [
+        s for s in (carga.get("segmentos") or [])
+        if isinstance(s, str) and s.startswith(device_id + "/")
+    ]
+
+    desde, hasta = extremos_de_los_segmentos(device_id, segmentos)
+
+    try:
+        register_local_recording(
+            device_id=device_id,
+            path=ruta,
+            started_at=desde or "",
+            ended_at=hasta or "",
+            duration_sec=int(carga.get("duration_sec") or 0),
+            size_bytes=int(carga.get("size_bytes") or 0)
+        )
+
+    except Exception as error:
+        print(f"[jornada] no se pudo anotar el video del dia: {error}")
+        return False
+
+    retiradas = marcar_segmentos_unidos(device_id, segmentos, fecha)
+
+    print(
+        f"[jornada] {device_id} {fecha}: un video de "
+        f"{int(carga.get('size_bytes') or 0) // 1048576} MB, "
+        f"{retiradas} trozos retirados del panel"
+    )
+
+    return True
 
 
 # ==============================

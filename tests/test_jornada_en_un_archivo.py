@@ -47,6 +47,7 @@ import io
 import os
 import subprocess
 import sys
+import time
 import tempfile
 
 from pathlib import Path
@@ -320,6 +321,129 @@ def prueba_rutas_con_comillas_y_barras():
               texto)
 
 
+def arbol_de_dias(dias):
+    """Una carpeta de equipo con sus dias, como la deja el grabador."""
+
+    raiz = tempfile.mkdtemp(prefix="equipo-")
+
+    for fecha, cuantos in dias.items():
+
+        anio, mes, dia = fecha.split("-")
+        carpeta = os.path.join(raiz, anio, mes, dia)
+        os.makedirs(carpeta, exist_ok=True)
+
+        for i in range(cuantos):
+            video_de_prueba(
+                os.path.join(carpeta, "rec_%d.mp4" % (1790000000 + i * 900)),
+                1
+            )
+
+    return raiz
+
+
+def prueba_encuentra_los_dias():
+
+    raiz = arbol_de_dias({"2026-11-07": 2, "2026-11-08": 1, "2026-11-09": 3})
+
+    hallados = [f for f, _ in jornada.dias_con_segmentos(raiz)]
+
+    comprobar("encuentra los tres dias",
+              hallados == ["2026-11-07", "2026-11-08", "2026-11-09"],
+              hallados)
+
+    comprobar("una raiz vacia no da nada",
+              jornada.dias_con_segmentos(
+                  tempfile.mkdtemp(prefix="vacio-")) == [])
+
+
+def prueba_los_dias_pasados_se_cierran_siempre():
+    """
+    Nadie va a escribir mas en un dia que ya paso.
+
+    Es lo que recupera solo lo que quedo a medias: un apagon a las
+    16:50, un equipo que estuvo apagado a las cinco, o los dias de
+    octubre que nunca se unieron.
+    """
+
+    raiz = arbol_de_dias({"2026-11-07": 2, "2026-11-08": 1})
+
+    listos = [f for f, _ in jornada.dias_por_cerrar(
+        raiz, hoy="2026-11-09", dentro_de_la_franja=True)]
+
+    comprobar("los dos dias pasados se cierran",
+              listos == ["2026-11-07", "2026-11-08"],
+              listos)
+
+    comprobar("y se cierran aunque ahora mismo se este grabando",
+              len(listos) == 2)
+
+
+def prueba_hoy_no_se_cierra_dentro_de_la_franja():
+    """
+    El caso que importa: parar la continua a media manana.
+
+    Sin esta condicion, media hora de pausa se leeria como "el dia
+    termino" y se uniria una jornada con seis horas por delante.
+    """
+
+    raiz = arbol_de_dias({"2026-11-09": 2})
+
+    # Los trozos son de hace mucho: solo la franja lo retiene.
+    viejo = time.time() - 3 * 3600
+    for f, c in jornada.dias_con_segmentos(raiz):
+        for trozo in jornada.segmentos_del_dia(c):
+            os.utime(trozo, (viejo, viejo))
+
+    dentro = jornada.dias_por_cerrar(
+        raiz, hoy="2026-11-09", dentro_de_la_franja=True)
+
+    comprobar("dentro de la franja, hoy NO se cierra",
+              dentro == [], dentro)
+
+    fuera = [f for f, _ in jornada.dias_por_cerrar(
+        raiz, hoy="2026-11-09", dentro_de_la_franja=False)]
+
+    comprobar("fuera de la franja, hoy si se cierra",
+              fuera == ["2026-11-09"], fuera)
+
+
+def prueba_hoy_no_se_cierra_si_acaba_de_crecer():
+    """
+    Un segmento a medio escribir no se puede unir: el MP4 no tiene
+    indice hasta que se cierra.
+    """
+
+    raiz = arbol_de_dias({"2026-11-09": 2})
+
+    recien = jornada.dias_por_cerrar(
+        raiz, hoy="2026-11-09", dentro_de_la_franja=False)
+
+    comprobar("recien escrito, hoy no se cierra",
+              recien == [], recien)
+
+    listos = [f for f, _ in jornada.dias_por_cerrar(
+        raiz, hoy="2026-11-09", dentro_de_la_franja=False,
+        ahora=time.time() + jornada.QUIETUD + 1)]
+
+    comprobar("pasada la quietud, ya si",
+              listos == ["2026-11-09"], listos)
+
+
+def prueba_un_dia_en_el_futuro_no_se_toca():
+    """
+    El reloj del equipo se movio. No se sabe si todavia va a escribir
+    ahi, asi que no se toca.
+    """
+
+    raiz = arbol_de_dias({"2026-11-20": 2})
+
+    listos = jornada.dias_por_cerrar(
+        raiz, hoy="2026-11-09", dentro_de_la_franja=False,
+        ahora=time.time() + jornada.QUIETUD + 1)
+
+    comprobar("un dia en el futuro se deja en paz", listos == [], listos)
+
+
 def principal():
 
     print("ffmpeg:", FFMPEG)
@@ -332,6 +456,11 @@ def principal():
     prueba_el_dia_no_se_come_a_si_mismo()
     prueba_una_carpeta_vacia_no_revienta()
     prueba_rutas_con_comillas_y_barras()
+    prueba_encuentra_los_dias()
+    prueba_los_dias_pasados_se_cierran_siempre()
+    prueba_hoy_no_se_cierra_dentro_de_la_franja()
+    prueba_hoy_no_se_cierra_si_acaba_de_crecer()
+    prueba_un_dia_en_el_futuro_no_se_toca()
 
     print()
 

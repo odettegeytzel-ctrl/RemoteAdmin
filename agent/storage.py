@@ -51,8 +51,23 @@ STORAGE_LIMIT_BYTES = _mb_desde_entorno("REMOTEADMIN_LOCAL_STORAGE_MB", 5120)
 # anterior: el equipo gestionado no puede quedarse sin disco por grabar.
 MIN_FREE_BYTES = _mb_desde_entorno("REMOTEADMIN_MIN_FREE_MB", 2048)
 
-# Los nombres que genera el grabador: rec_<marca de tiempo>.mp4
-MANAGED_NAME = re.compile(r"^rec_\d+\.mp4$")
+# Los nombres que genera RemoteAdmin, y solo esos:
+#
+#   rec_<marca de tiempo>.mp4      cada segmento, segun se graba
+#   jornada_<AAAA-MM-DD>.mp4       el dia entero, al unir sus segmentos
+#
+# El archivo del dia TIENE que entrar aqui: esta misma funcion decide
+# que aparece en el catalogo, que se puede reproducir, que se puede
+# descargar y que limpia la retencion. Fuera de esta lista, la
+# jornada unida seria un archivo invisible ocupando disco.
+#
+# Y se amplia con un patron exacto, no relajando el que habia: esto
+# es ademas la unica puerta al borrado, asi que lo que no encaje
+# letra por letra no se toca. Las dos alternativas van ancladas por
+# separado para que ninguna herede la laxitud de la otra.
+MANAGED_NAME = re.compile(
+    r"^(?:rec_\d+|jornada_\d{4}-\d{2}-\d{2})\.mp4$"
+)
 
 
 def is_managed_recording(path):
