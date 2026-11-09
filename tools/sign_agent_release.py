@@ -373,6 +373,26 @@ def _construir_paquete():
     debe tocarla.
     """
 
+    # Antes de firmar nada: que no falte ningun modulo del Agent.
+    #
+    # Esto no es una comprobacion de estilo. Un modulo que no entre
+    # en el paquete deja a TODOS los equipos sin Agent al
+    # actualizarse, porque el actualizador reemplaza la carpeta
+    # entera y agent.py no se podra importar. Y la firma no protege
+    # de esto en absoluto: un paquete incompleto se firma igual de
+    # bien que uno completo.
+    olvidados = packaging.modulos_del_agente_fuera_de_la_lista()
+
+    if olvidados:
+        raise SystemExit(
+            "No se firma: estos modulos de agent/ no entran en "
+            "el paquete y el equipo no arrancaria tras "
+            "actualizar:" + chr(10)
+            + chr(10).join("  " + m for m in olvidados)
+            + chr(10) + chr(10)
+            + "Anadelos a PACKAGE_FILES en backend/packaging.py."
+        )
+
     buffer = io.BytesIO()
 
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as paquete:

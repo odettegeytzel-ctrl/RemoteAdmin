@@ -81,6 +81,12 @@ PACKAGE_FILES = (
     # no se puede importar y un equipo que no arranca.
     "agent/owners.py",
 
+    # Unir los trozos de un dia en un solo video. agent.py lo importa
+    # al arrancar, asi que es de la misma familia que owners.py y
+    # maintenance.py: si falta, el Agent no se puede importar y el
+    # equipo se queda sin arrancar despues de actualizar.
+    "agent/jornada.py",
+
     "agent/paths.py",
     "agent/release.py",
     "agent/power.py",
@@ -101,6 +107,58 @@ PACKAGE_FILES = (
 # construye con texto que venga del usuario ni del nombre de la
 # organizacion, que podria traer barras o acentos.
 PACKAGE_FILENAME = "RemoteAdmin-Agent-Windows.zip"
+
+
+def modulos_del_agente_fuera_de_la_lista():
+    """
+    Modulos de agent/ que existen en disco y NO van en el paquete.
+
+    Por que existe esto
+    -------------------
+
+    PACKAGE_FILES es una lista a mano, y el actualizador reemplaza la
+    carpeta agent ENTERA. Un modulo nuevo que no se anada aqui no
+    viaja: el equipo actualiza, agent.py lo importa, revienta, y se
+    queda sin arrancar. En los siete a la vez, porque todos reciben
+    el mismo paquete firmado.
+
+    Y no es un peligro teorico. Al firmar la 1.15.0, jornada.py se
+    quedo fuera: el paquete pesaba lo normal, la firma era correcta,
+    el manifiesto decia la verdad, y habria dejado la flota entera
+    sin Agent. Lo que lo detecto fue mirar dentro del zip a mano.
+
+    Tres comentarios de esta misma lista -clipboard, maintenance,
+    owners- avisan cada uno por su cuenta de este mismo riesgo. Tres
+    avisos escritos y el cuarto caso ocurrio igual, porque un aviso
+    no comprueba nada. Esto si lo comprueba.
+
+    Devuelve la lista de rutas relativas que faltan, vacia si esta
+    todo.
+    """
+
+    carpeta = os.path.join(PROJECT_DIR, "agent")
+
+    try:
+        nombres = os.listdir(carpeta)
+
+    except OSError:
+        return []
+
+    en_la_lista = set(PACKAGE_FILES)
+
+    faltan = []
+
+    for nombre in sorted(nombres):
+
+        if not nombre.endswith(".py"):
+            continue
+
+        relativo = "agent/" + nombre
+
+        if relativo not in en_la_lista:
+            faltan.append(relativo)
+
+    return faltan
 
 
 class PackagingError(RuntimeError):
