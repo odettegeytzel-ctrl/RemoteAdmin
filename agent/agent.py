@@ -63,7 +63,23 @@ ENV_PATH = os.path.join(
     ".env"
 )
 
-load_dotenv(ENV_PATH)
+# El .env puede estar fuera de alcance: el instalador lo cierra a
+# SYSTEM y administradores porque al nacer lleva la credencial de ALTA
+# de la organizacion. El ayudante, que corre como el usuario de la
+# sesion, no siempre puede leerlo.
+#
+# No es motivo para no arrancar. Lo que el .env aporta es la direccion
+# del servidor, y el ayudante no habla con el servidor: sus ajustes se
+# los pasa el servicio por el canal. Morir aqui deja al equipo sin
+# escritorio -sin pantalla, sin grabacion- por un archivo que no
+# necesita.
+try:
+    load_dotenv(ENV_PATH)
+    ENV_ILEGIBLE = ""
+except OSError as fallo:
+    # Se guarda el motivo en vez de imprimirlo: a esta altura todavia
+    # no hay registro montado, y quien lo necesita es el diagnostico.
+    ENV_ILEGIBLE = f"{type(fallo).__name__}: {fallo}"
 
 # Dirección del servidor RemoteAdmin (configurable para PCs remotas)
 SERVER_URL = os.getenv(
@@ -2193,6 +2209,119 @@ def retirar_credencial_de_alta():
 
     except OSError:
         return False
+
+
+# Quien esta sentado en el equipo. Mas estrecho que 'Users': no
+# alcanza a cuentas de servicio ni a sesiones de red, solo a la sesion
+# interactiva, que es exactamente donde corre el ayudante.
+SID_DE_LA_SESION_INTERACTIVA = "*S-1-5-4"
+
+
+def el_env_guarda_la_credencial_de_alta():
+    """
+    True si el .env todavia lleva la credencial de ALTA con valor.
+
+    Se mira el contenido, no si acabamos de limpiarla: un equipo que se
+    dio de alta hace semanas tiene la linea vacia y nadie va a volver a
+    limpiarla nunca.
+    """
+
+    try:
+
+        with open(ENV_PATH, "r", encoding="utf-8") as handle:
+
+            for linea in handle:
+
+                if linea.strip().startswith("AGENT_TOKEN="):
+                    return bool(linea.split("=", 1)[1].strip())
+
+    except OSError:
+        # Si no se puede leer, se asume lo peor y no se toca nada.
+        return True
+
+    return False
+
+
+def el_usuario_de_la_sesion_ya_puede_leer_el_env():
+    """
+    True si el permiso de lectura ya esta puesto.
+
+    Se consulta antes de ponerlo para no reescribir la ACL en cada
+    arranque: seria escribir por escribir, y cada escritura es una
+    oportunidad de dejar el archivo peor de como estaba.
+    """
+
+    try:
+
+        consulta = subprocess.run(
+            ["icacls", ENV_PATH],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+    salida = (consulta.stdout or "").upper()
+
+    return "S-1-5-4" in salida or "INTERACTIVE" in salida
+
+
+def soltar_el_candado_del_env():
+    """
+    Da lectura del .env a quien tiene la sesion abierta, una vez que el
+    archivo ya no guarda ningun secreto.
+
+    El instalador cierra el .env a SYSTEM y administradores, y hace
+    bien: al nacer lleva la credencial de ALTA de la organizacion, con
+    la que se pueden dar de alta mas equipos. Pero en cuanto este
+    equipo se enrola, esa credencial se borra (retirar_credencial_de_alta)
+    y lo que queda es la direccion del servidor. El candado, en cambio,
+    se quedaba puesto para siempre.
+
+    Y el ayudante corre como el usuario de la sesion. Si no puede leer
+    el .env, revienta al importar este modulo y el equipo se queda sin
+    escritorio: sin pantalla y sin grabacion, por proteger un archivo
+    que ya no protege nada.
+
+    Lo llama solo el servicio, que es quien corre como SYSTEM y puede
+    cambiar permisos. Si falla no se interrumpe nada: el ayudante tiene
+    ademas su propia red, porque un .env ilegible ya no lo mata.
+    """
+
+    if not os.path.isfile(ENV_PATH):
+        return False
+
+    # Mientras la credencial este ahi, el candado se queda.
+    if el_env_guarda_la_credencial_de_alta():
+        return False
+
+    if el_usuario_de_la_sesion_ya_puede_leer_el_env():
+        return False
+
+    try:
+
+        resultado = subprocess.run(
+            [
+                "icacls", ENV_PATH,
+                "/grant", f"{SID_DE_LA_SESION_INTERACTIVA}:(R)"
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+    if resultado.returncode != 0:
+        print(f"No se pudo abrir el .env al usuario: {resultado.stderr}")
+        return False
+
+    print("Lectura del .env concedida a la sesion interactiva")
+
+    return True
 
 
 def get_device_id():
@@ -4348,6 +4477,15 @@ async def main():
 
     # Canal con el ayudante, solo en el papel 'service'
     if AGENT_ROLE == ROLE_SERVICE:
+
+        # Antes de levantar el canal: el ayudante necesita poder leer
+        # el .env para importar este modulo, y hasta aqui el permiso se
+        # quedaba en los administradores para siempre. Se suelta solo
+        # si el archivo ya no guarda la credencial de alta.
+        #
+        # Va aqui y no en el instalador porque asi se arregla tambien
+        # el equipo que ya esta instalado, en su siguiente arranque.
+        soltar_el_candado_del_env()
 
         threading.Thread(
             target=_atender_al_ayudante,
