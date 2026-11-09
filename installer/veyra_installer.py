@@ -328,20 +328,61 @@ def _lo_que_falta_del_paquete():
     return falta
 
 
+# Lo que se sabe del equipo antes de instalar. Son TRES estados y no
+# dos, y confundir los dos ultimos es un defecto con consecuencias:
+#
+#   {"device_id": ...}   esta dado de alta, y se sabe cual es
+#   None                 no esta dado de alta
+#   ILEGIBLE             hay un archivo de identidad y NO se pudo
+#                        leer, asi que no se sabe nada
+ILEGIBLE = "ilegible"
+
+
 def identidad_existente():
     """
-    Identidad del equipo si ya estaba dado de alta, o None.
+    Identidad del equipo, None si no hay, ILEGIBLE si no se pudo leer.
 
     Solo se devuelve el identificador. El token individual esta en el
     mismo archivo y NO se lee: no hace falta para nada aqui.
+
+    Por que hay un tercer estado
+    ----------------------------
+
+    identity.json vive en la carpeta config, restringida a SYSTEM y a
+    los administradores. Esta ventana corre SIN elevar -solo se pide
+    el permiso al pulsar Instalar-, y un administrador sin elevar
+    tiene el token filtrado: tambien se le deniega.
+
+    Hasta ahora un PermissionError se trataba igual que "no hay
+    archivo", y la ventana anunciaba "este equipo todavia no esta
+    dado de alta" y pedia credencial para un equipo que llevaba
+    meses funcionando. Decir "no hay identidad" cuando lo que pasa es
+    "no puedo leerla" manda a quien instala a dar de alta otra vez un
+    equipo que ya estaba, y eso le cuesta su historial.
+
+    Es el mismo fallo que tuvo el ayudante con el .env: no distinguir
+    "no esta" de "no me dejan verlo".
     """
 
     try:
         with open(IDENTITY_FILE, "r", encoding="utf-8") as archivo:
             datos = json.load(archivo)
 
-    except (OSError, ValueError):
+    except FileNotFoundError:
+        # Este si es concluyente: no hay identidad.
         return None
+
+    except PermissionError:
+        return ILEGIBLE
+
+    except OSError:
+        # Cualquier otro problema de disco tampoco prueba que no
+        # exista. Ante la duda, no se concluye.
+        return ILEGIBLE if os.path.exists(IDENTITY_FILE) else None
+
+    except ValueError:
+        # El archivo esta pero no se entiende. Tampoco es "no hay".
+        return ILEGIBLE
 
     identificador = datos.get("device_id")
 
@@ -813,7 +854,26 @@ class Ventana:
         fila += 1
 
         # --- Estado del equipo ---
-        if self.ya_instalado:
+        if self.ya_instalado == ILEGIBLE:
+
+            # Ni se afirma que este dado de alta ni que no lo este:
+            # no se sabe, y decirlo es lo unico honesto. Se explica
+            # ademas que hacer, porque tiene arreglo inmediato.
+            texto = (
+                "No se pudo comprobar si este equipo ya esta dado de "
+                "alta: hay un archivo de identidad y no se puede "
+                "leer.\n\n"
+                "Casi siempre es porque esta ventana no se abrio como "
+                "administrador. Cierrala, abrela con el boton derecho "
+                "> 'Ejecutar como administrador', y volvera a "
+                "saberlo.\n\n"
+                "Si continuas sin eso y el equipo YA estaba dado de "
+                "alta, la instalacion se detendra sola sin tocar "
+                "nada."
+            )
+            color = "#b60"
+
+        elif self.ya_instalado:
             texto = (
                 "Este equipo ya esta dado de alta.\n"
                 f"Identificador: {self.ya_instalado['device_id']}\n\n"
@@ -854,7 +914,12 @@ class Ventana:
         fila += 1
 
         # --- Credencial, solo si hace falta ---
-        if not self.ya_instalado:
+        #
+        # Con la identidad ILEGIBLE se enseña igual, porque puede que
+        # de verdad sea un equipo nuevo. Lo que NO se hace es
+        # exigirla: ese es el caso que mandaba a dar de alta otra vez
+        # un equipo que ya estaba.
+        if self.ya_instalado is None or self.ya_instalado == ILEGIBLE:
 
             ttk.Label(marco, text="Credencial:").grid(
                 row=fila, column=0, sticky="w"
@@ -892,7 +957,9 @@ class Ventana:
 
         self.boton_instalar = ttk.Button(
             botones,
-            text="Actualizar" if self.ya_instalado else "Instalar",
+            text=("Actualizar"
+                  if self.ya_instalado and self.ya_instalado != ILEGIBLE
+                  else "Instalar"),
             command=self.instalar
         )
         self.boton_instalar.pack(side="left", padx=8)
@@ -978,7 +1045,7 @@ class Ventana:
             )
             return
 
-        if not self.ya_instalado:
+        if self.ya_instalado is None:
 
             if not credencial:
                 messagebox.showwarning(
