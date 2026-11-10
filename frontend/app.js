@@ -10641,20 +10641,73 @@ try {
     const current =
         select.value;
 
-    // Mantiene "Todos" y reconstruye el resto
-    select.innerHTML =
-        '<option value="">Todos</option>' +
-        devices.map(d =>
-            `<option value="${d.device_id}">${d.hostname || d.device_id}</option>`
-        ).join("");
+    // Por el nombre que se le PUSO, no por el de Windows.
+    //
+    // Tres hostnames estan repetidos entre seis equipos, porque las
+    // maquinas se clonaron de la misma imagen. Un desplegable por
+    // hostname enseñaria "DESKTOP-8J0TJK8" tres veces y no habria
+    // manera de saber cual es cual: el filtro existiria y no
+    // serviria.
+    //
+    // nombreDeEquipo() es la misma regla que usa el resto del panel
+    // -el alias si lo tiene, el nombre de Windows si no- y vive en
+    // un solo sitio justamente para que ninguna vista se invente la
+    // suya. Aqui estaba inventada.
+    const ordenados = devices.slice().sort((a, b) =>
+        nombreDeEquipo(a).localeCompare(
+            nombreDeEquipo(b), "es", { numeric: true }
+        )
+    );
+
+    // Se construye con createElement y textContent, no pegando HTML
+    // en texto: el alias lo escribe una persona y puede traer < o &.
+    select.replaceChildren();
+
+    const todos = document.createElement("option");
+    todos.value = "";
+    todos.textContent = "Todos";
+    select.appendChild(todos);
+
+    ordenados.forEach(equipo => {
+
+        const opcion = document.createElement("option");
+
+        opcion.value = equipo.device_id;
+        opcion.textContent = nombreDeEquipo(equipo);
+
+        select.appendChild(opcion);
+    });
 
     select.value = current;
 
 } catch (error) {
-    // Si falla, el filtro queda solo con "Todos"
+    // Si falla, el filtro queda solo con "Todos". Se deja dicho en
+    // la consola: un desplegable vacio en silencio fue justo lo que
+    // costo encontrar este fallo.
+    console.warn(
+        "No se pudo llenar el filtro de equipos de Grabaciones:",
+        error
+    );
 }
 
 }
+
+// Buscar recarga LA VISTA EN LA QUE SE ESTA.
+//
+// El boton estaba conectado directamente a loadRecordings, que es el
+// cargador de SEGMENTOS. Pulsar Buscar estando en la vista por dia
+// no filtraba nada: te cambiaba de vista sin decirlo, y lo que
+// aparecia eran los segmentos sueltos.
+function buscarEnGrabaciones() {
+
+    if (vistaDeGrabaciones === "segmentos") {
+        loadRecordings();
+        return;
+    }
+
+    cambiarVistaDeGrabaciones(vistaDeGrabaciones);
+}
+
 
 function buildRecordingsQuery() {
 
@@ -11155,11 +11208,27 @@ async function cambiarVistaDeGrabaciones(cual) {
         return;
     }
 
+    // El desplegable de equipos lo llenaba SOLO loadRecordings(), y
+    // por aqui no se pasa: la vista por dia -que es como se abre
+    // Grabaciones- se quedaba con el unico "Todos" que trae escrito
+    // el HTML. No habia por quien filtrar.
+    //
+    // Se espera a que termine, para que las opciones esten puestas
+    // antes de leer cual esta elegida.
+    await populateRecordingsDeviceFilter();
+
     tabla.innerHTML = recordingsMessageRow("Cargando...");
 
-    const destino = cual === "jornadas"
+    const base = cual === "jornadas"
         ? "/api/recordings/days"
         : "/api/recordings/clips";
+
+    // Los dos endpoints aceptan device_id, start y end desde que se
+    // escribieron; lo que faltaba era mandarselos. Sin esto, elegir
+    // un equipo no cambiaba nada: se pedia la lista entera.
+    const consulta = buildRecordingsQuery();
+
+    const destino = consulta ? `${base}?${consulta}` : base;
 
     try {
 
@@ -12715,7 +12784,7 @@ document
 )
 .addEventListener(
 "click",
-loadRecordings
+buscarEnGrabaciones
 );
 
 // Eje responsive: redibuja la línea de tiempo al cambiar el tamaño de ventana
@@ -12744,7 +12813,7 @@ document
     document.getElementById("recordings-start").value = "";
     document.getElementById("recordings-end").value = "";
     document.getElementById("recordings-range-info").classList.add("hidden");
-    loadRecordings();
+    buscarEnGrabaciones();
 }
 );
 
