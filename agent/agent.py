@@ -1325,6 +1325,44 @@ def _aplicar_decision_del_horario():
     return None
 
 
+# Para no arrancar dos veces el hilo del horario. Dos hilos
+# evaluando la misma decision se pisan: uno abre la grabacion y el
+# otro la ve abierta a medias.
+_horario_en_marcha = threading.Event()
+
+
+def arrancar_el_horario():
+    """
+    Pone en marcha el hilo que cumple el horario. Idempotente.
+
+    Lo llama el AYUDANTE, que es quien tiene escritorio y por tanto
+    el unico que puede grabar algo que no sea una pantalla negra.
+
+    Antes esto se hacia en main(), que el ayudante no ejecuta: el
+    hilo no lo arrancaba nadie y el horario solo se evaluaba al
+    recibir un mensaje del servidor.
+    """
+
+    if AGENT_ROLE == ROLE_SERVICE:
+        # En la Sesion 0 no hay pantalla que grabar.
+        return False
+
+    if _horario_en_marcha.is_set():
+        return False
+
+    _horario_en_marcha.set()
+
+    threading.Thread(
+        target=_schedule_loop,
+        name="RecordingSchedule",
+        daemon=True
+    ).start()
+
+    print("[horario] Hilo del horario en marcha")
+
+    return True
+
+
 def _schedule_loop():
     """
     Comprueba el horario cada poco, en un hilo propio.
@@ -4695,13 +4733,12 @@ async def main():
     # NO en el papel 'service': programar una grabacion ahi acabaria
     # capturando la Sesion 0, que es una pantalla negra. El horario lo
     # cumple el ayudante, que si tiene escritorio.
-    if AGENT_ROLE != ROLE_SERVICE:
-
-        threading.Thread(
-            target=_schedule_loop,
-            name="RecordingSchedule",
-            daemon=True
-        ).start()
+    # El papel 'standalone' no tiene ayudante: se cumple el horario a
+    # si mismo. El 'service' no graba nunca, y el 'helper' lo arranca
+    # al conectarse con el servicio, que es cuando de verdad empieza
+    # a existir.
+    if AGENT_ROLE == ROLE_STANDALONE:
+        arrancar_el_horario()
 
     # Canal con el ayudante, solo en el papel 'service'
     if AGENT_ROLE == ROLE_SERVICE:

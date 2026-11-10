@@ -424,6 +424,31 @@ class Ayudante:
         # grabaciones guardadas en el equipo.
         self.agente.registrar_emisor(self.mandar_al_servidor)
 
+        # EL HILO DEL HORARIO. Aqui, y en ningun otro sitio.
+        #
+        # Vivia en agent.main(), con esta condicion:
+        #
+        #     if AGENT_ROLE != ROLE_SERVICE:
+        #         threading.Thread(target=_schedule_loop).start()
+        #
+        # y un comentario que decia "el horario lo cumple el
+        # ayudante, que si tiene escritorio". Correcto en la
+        # intencion y falso en los hechos: el ayudante NO ejecuta
+        # agent.main() -tiene el suyo, e importa agent como
+        # biblioteca-, asi que ese hilo no lo arrancaba nadie.
+        #
+        # Lo que quedaba era esto: el horario solo se evaluaba cuando
+        # llegaba un mensaje, porque apply_schedule y apply_continuous
+        # llaman a la decision directamente. Asi, una jornada
+        # empezaba en el mismo segundo en que el servidor mandaba sus
+        # ajustes -al conectarse, o al tocar algo en el panel- y
+        # nunca a la hora que decia el horario.
+        #
+        # En los registros se ve exacto: cada "Empieza la franja" cae
+        # en el mismo segundo que un "Grabacion continua ACTIVADA".
+        # Ni uno lo disparo el reloj. Las 08:00 no llegaron nunca.
+        self.agente.arrancar_el_horario()
+
         intentos = 0
 
         while True:
