@@ -3283,17 +3283,55 @@ def _contexto_de_captura():
     return contexto
 
 
-def capture_screen():
+def soltar_el_contexto_de_captura():
     """
-    Un fotograma de la pantalla, en JPEG y base64.
+    Tira el contexto de captura de ESTE hilo para que el siguiente
+    fotograma se haga uno nuevo.
 
-    SINCRONA y lenta: ~60 ms. No debe llamarse desde el bucle de
-    eventos, porque mientras tanto el Agent no atiende nada mas.
-    screen_stream la lanza en un hilo por eso.
+    Hace falta porque el contexto de mss no es solo un objeto de
+    Python: por debajo guarda un descriptor de dibujo de la pantalla
+    y un mapa de bits del tamano del monitor, pedidos a Windows una
+    sola vez y conservados. Si la pantalla cambia debajo -se cambia
+    la resolucion, el monitor se duerme y despierta, se conecta o se
+    corta un escritorio remoto, el driver de video se reinicia- esos
+    recursos quedan apuntando a algo que ya no existe.
+
+    Y entonces Windows NO suele dar un error: BitBlt copia negro y
+    dice que todo fue bien. El contexto nunca se tiraba, asi que una
+    vez que se quedaba negro lo estaba para siempre, hasta que
+    alguien reiniciaba el ayudante.
+
+    Es exactamente lo que le pasaba a un equipo que grababa bien
+    todo el dia -sus videos pesan megas, tienen contenido- y cuya
+    pantalla en vivo se veia en negro. El grabador no lo sufre
+    porque abre su propio contexto al empezar cada grabacion y lo
+    cierra al acabar; la pantalla en vivo lo cacheaba para siempre.
+    """
+
+    contexto = getattr(_captura_local, "mss", None)
+
+    _captura_local.mss = None
+
+    if contexto is not None:
+
+        try:
+            contexto.close()
+
+        except Exception:
+            # Si ya estaba roto, cerrarlo puede fallar. Da igual:
+            # lo que importaba era dejar de usarlo.
+            pass
+
+
+def _un_fotograma():
+    """
+    Captura y escala. Devuelve la imagen, sin comprimir todavia.
+
+    Separada de capture_screen para poder repetirla con un contexto
+    nuevo sin repetir la compresion a JPEG.
     """
 
     screen = _contexto_de_captura()
-
 
     monitor = screen.monitors[1]
 
@@ -3329,6 +3367,75 @@ def capture_screen():
         "width": image.width,
         "height": image.height
     })
+
+    return image
+
+
+def _esta_todo_negro(image):
+    """
+    getbbox() devuelve el rectangulo de lo que NO es negro, y None si
+    no hay nada. Lo hace en C sobre la imagen ya reducida, asi que
+    cuesta menos que la escala que acaba de hacerse.
+    """
+
+    try:
+        return image.getbbox() is None
+
+    except Exception:
+        return False
+
+
+def capture_screen():
+    """
+    Un fotograma de la pantalla, en JPEG y base64.
+
+    SINCRONA y lenta: ~60 ms. No debe llamarse desde el bucle de
+    eventos, porque mientras tanto el Agent no atiende nada mas.
+    screen_stream la lanza en un hilo por eso.
+
+    Reintenta UNA vez con un contexto nuevo en los dos casos en que
+    el contexto cacheado puede haberse quedado invalido:
+
+      - la captura lanza una excepcion (el 'BitBlt failed' que ya se
+        vio en el registro de un equipo real)
+
+      - sale un fotograma completamente negro, que es lo que hace
+        Windows cuando el descriptor esta roto y no se queja
+
+    Lo segundo tambien pasa cuando la pantalla esta negra de verdad
+    -el monitor dormido, la sesion bloqueada- y ahi el reintento no
+    arregla nada ni estorba: vuelve a salir negro y se manda negro,
+    que es la verdad. El coste es una captura de mas, y solo cuando
+    no hay nada que ver.
+    """
+
+    try:
+        image = _un_fotograma()
+
+    except Exception as fallo:
+
+        print("[pantalla] Captura fallida (%s). Rehaciendo el contexto"
+              % type(fallo).__name__)
+
+        soltar_el_contexto_de_captura()
+
+        # Si este tambien falla, el error sube: quien transmite ya
+        # sabe tratarlo, y fingir un fotograma seria peor.
+        image = _un_fotograma()
+
+    else:
+
+        if _esta_todo_negro(image):
+
+            soltar_el_contexto_de_captura()
+
+            try:
+                image = _un_fotograma()
+
+            except Exception:
+                # Con el contexto nuevo tampoco se pudo. Se manda el
+                # negro que si se tiene.
+                pass
 
     buffer = io.BytesIO()
 
